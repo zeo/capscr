@@ -1,3 +1,2 @@
+#[allow(dead_code)]
 mod tile;
-
-pub use tile::Tile;

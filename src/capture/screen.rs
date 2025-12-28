@@ -3,6 +3,7 @@ use image::RgbaImage;
 use xcap::Monitor;
 
 use super::{Capture, MonitorInfo};
+use super::hdr::HdrCapture;
 
 pub struct ScreenCapture {
     monitor_id: Option<u32>,
@@ -131,6 +132,13 @@ const MAX_CAPTURE_PIXELS: u64 = 256 * 1024 * 1024;
 
 impl Capture for ScreenCapture {
     fn capture(&self) -> Result<RgbaImage> {
+        if HdrCapture::is_hdr_available() {
+            let hdr = HdrCapture::new();
+            if let Ok(img) = hdr.capture_hdr() {
+                return Ok(img);
+            }
+        }
+
         let monitor = self.find_monitor()?;
         let img = monitor.capture_image()?;
 

@@ -1,14 +1,9 @@
-use iced::widget::{button, column, container, horizontal_space, row, text};
-use iced::{Alignment, Element, Length};
+use iced::widget::{button, container, horizontal_space, row, text};
+use iced::{Alignment, Border, Color, Element, Length};
 
-use crate::capture::CaptureMode;
 use crate::config::ImageFormat;
 use crate::recording::RecordingState;
-use crate::ui::components::Tile;
-use crate::ui::style::{
-    container_style, primary_button_style, surface_container_style,
-    MonochromeTheme,
-};
+use crate::ui::style::{primary_button_style, MonochromeTheme};
 use crate::ui::Message;
 
 pub struct MainView;
@@ -18,41 +13,11 @@ impl MainView {
         theme: &MonochromeTheme,
         recording_state: RecordingState,
         current_format: ImageFormat,
-        frame_count: usize,
+        _frame_count: usize,
     ) -> Element<'static, Message> {
-        let screen_tile = Tile::new("[ ]", "Screen").with_sublabel(CaptureMode::FullScreen.display_name());
-        let window_tile = Tile::new("[=]", "Window").with_sublabel(CaptureMode::Window.display_name());
-        let region_tile = Tile::new("[/]", "Region").with_sublabel(CaptureMode::Region.display_name());
-        let hdr_tile = Tile::new("[H]", "HDR").with_sublabel(CaptureMode::HdrScreen.display_name());
-        let gif_sublabel = match recording_state {
-            RecordingState::Idle => "Record clip".to_string(),
-            RecordingState::Recording => format!("{} frames", frame_count),
-            RecordingState::Processing => "Processing...".to_string(),
-        };
-        let gif_tile = Tile::new("(o)", "GIF").with_sublabel(&gif_sublabel);
-
-        let style_surface = surface_container_style(theme);
-        let style_container = container_style(theme);
-
-        let tiles_row = row![
-            screen_tile.view(theme, Message::Capture(CaptureMode::FullScreen)),
-            window_tile.view(theme, Message::ShowWindowPicker),
-            region_tile.view(theme, Message::Capture(CaptureMode::Region)),
-            hdr_tile.view(theme, Message::Capture(CaptureMode::HdrScreen)),
-            gif_tile.view(theme, Message::ToggleGifRecording),
-        ]
-        .spacing(16)
-        .align_y(Alignment::Center);
-
-        let tiles_container = container(tiles_row)
-            .width(Length::Shrink)
-            .padding(20)
-            .style(move |_| style_surface);
-
-        let style_surface2 = surface_container_style(theme);
         let format_buttons = ImageFormat::all()
             .iter()
-            .fold(row![].spacing(8), |r, &fmt| {
+            .fold(row![].spacing(4), |r, &fmt| {
                 let is_selected = fmt == current_format;
                 let label = fmt.display_name();
 
@@ -63,42 +28,59 @@ impl MainView {
                 };
 
                 r.push(
-                    button(text(label).size(12))
-                        .padding([6, 12])
+                    button(text(label).size(11))
+                        .padding([4, 8])
                         .style(move |_t, _s| style)
                         .on_press(Message::SetFormat(fmt)),
                 )
             });
 
+        let recording_indicator = match recording_state {
+            RecordingState::Idle => text("").size(11),
+            RecordingState::Recording => text("[REC]").size(11),
+            RecordingState::Processing => text("[...]").size(11),
+        };
+
         let settings_style = crate::ui::style::tile_button_style(theme);
-        let settings_btn = button(text("Settings").size(12))
-            .padding([6, 12])
+        let settings_btn = button(text("[=]").size(11))
+            .padding([4, 8])
             .style(move |_t, _s| settings_style)
             .on_press(Message::ShowSettings);
 
-        let bottom_bar = row![format_buttons, horizontal_space(), settings_btn]
-            .spacing(16)
-            .align_y(Alignment::Center);
-
-        let bottom_container = container(bottom_bar)
-            .width(Length::Fill)
-            .padding(16)
-            .style(move |_| style_surface2);
-
-        let main_content = column![
-            container(column![].height(Length::Fill)).height(Length::FillPortion(1)),
-            tiles_container,
-            container(column![].height(Length::Fill)).height(Length::FillPortion(1)),
-            bottom_container,
+        let toolbar = row![
+            format_buttons,
+            recording_indicator,
+            horizontal_space(),
+            settings_btn,
         ]
-        .align_x(Alignment::Center)
-        .spacing(16);
+        .spacing(8)
+        .padding(8)
+        .align_y(Alignment::Center);
 
-        container(main_content)
+        let surface = theme.surface();
+        let border_color = if theme.is_dark {
+            Color::from_rgb(0.3, 0.3, 0.3)
+        } else {
+            Color::from_rgb(0.7, 0.7, 0.7)
+        };
+
+        container(toolbar)
             .width(Length::Fill)
             .height(Length::Fill)
-            .padding(20)
-            .style(move |_| style_container)
+            .style(move |_| container::Style {
+                background: Some(iced::Background::Color(Color::from_rgba(
+                    surface.r,
+                    surface.g,
+                    surface.b,
+                    0.95,
+                ))),
+                border: Border {
+                    color: border_color,
+                    width: 1.0,
+                    radius: 8.0.into(),
+                },
+                ..Default::default()
+            })
             .into()
     }
 }

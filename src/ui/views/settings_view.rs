@@ -4,8 +4,8 @@ use iced::widget::{
 };
 use iced::{Alignment, Element, Length};
 
-use crate::capture::{list_monitors, HdrCapture, HdrFormat, MonitorInfo};
-use crate::config::{Config, PostCaptureAction, Theme, ToneMapMode, UploadDestination};
+use crate::capture::{list_monitors, MonitorInfo};
+use crate::config::{Config, PostCaptureAction, Theme, UploadDestination};
 use crate::hotkeys::{format_hotkey_string, HotkeyAction};
 use crate::ui::style::{
     container_style, surface_container_style, tile_button_style, tile_container_style,
@@ -33,7 +33,6 @@ impl SettingsView {
         let output_section = Self::output_section(theme, config);
         let capture_section = Self::capture_section(theme, config);
         let monitor_section = Self::monitor_section(theme);
-        let hdr_section = Self::hdr_section(theme, config);
         let post_capture_section = Self::post_capture_section(theme, config);
         let upload_section = Self::upload_section(theme, config);
         let hotkey_section = Self::hotkey_section(theme, config);
@@ -43,7 +42,6 @@ impl SettingsView {
             output_section,
             capture_section,
             monitor_section,
-            hdr_section,
             post_capture_section,
             upload_section,
             hotkey_section,
@@ -262,93 +260,6 @@ impl SettingsView {
 
         let content = column![theme_row, notify_row, clipboard_row, tray_row].spacing(12);
         Self::section_container(theme, "Interface", content.into())
-    }
-
-    fn hdr_section(theme: &MonochromeTheme, config: &Config) -> Element<'static, Message> {
-        use crate::capture::ToneMapOperator;
-
-        let enabled = config.capture.hdr_enabled;
-        let current_mode = config.capture.hdr_tonemap;
-        let exposure_str = format!("{:.1}", config.capture.hdr_exposure);
-
-        let hdr_available = HdrCapture::is_hdr_available();
-        let hdr_info = HdrCapture::get_display_hdr_info().ok();
-        let format_name = hdr_info
-            .as_ref()
-            .map(|info| info.format.display_name())
-            .unwrap_or(HdrFormat::Sdr.display_name());
-        let max_lum = hdr_info.as_ref().map(|i| i.max_luminance).unwrap_or(0.0);
-        let min_lum = hdr_info.as_ref().map(|i| i.min_luminance).unwrap_or(0.0);
-
-        let tonemap_op = match current_mode {
-            ToneMapMode::AcesFilmic => ToneMapOperator::AcesFilmic,
-            ToneMapMode::Reinhard => ToneMapOperator::Reinhard,
-            ToneMapMode::ReinhardExtended => ToneMapOperator::ReinhardExtended,
-            ToneMapMode::Hable => ToneMapOperator::Hable,
-            ToneMapMode::Exposure => ToneMapOperator::Exposure,
-        };
-        let hdr_capture = HdrCapture::new().with_operator(tonemap_op);
-        let _current_operator = hdr_capture.operator_name();
-        let _pq_test = HdrCapture::linear_to_pq_value(1.0);
-        let _pq_inverse_test = HdrCapture::pq_inverse_value(100.0);
-        let _rgb10a2_test = hdr_capture.tonemap_rgb10a2_data(&[0u32], 1, 1);
-
-        let tonemap_options: Vec<&'static str> = ToneMapMode::all()
-            .iter()
-            .map(|m| m.display_name())
-            .collect();
-        let current_tonemap = current_mode.display_name();
-
-        let status_text = if hdr_available {
-            format!("Available ({}, {:.0}-{:.0} nits)", format_name, min_lum, max_lum)
-        } else {
-            "Not available (SDR display)".to_string()
-        };
-
-        let status_row = row![
-            text("HDR Status:").size(13),
-            horizontal_space(),
-            text(status_text).size(12),
-        ]
-        .spacing(8)
-        .align_y(Alignment::Center);
-
-        let enabled_row = row![
-            text("HDR Capture:").size(13),
-            horizontal_space(),
-            toggler(enabled).on_toggle(Message::ToggleHdrEnabled),
-        ]
-        .spacing(8)
-        .align_y(Alignment::Center);
-
-        let tonemap_row = row![
-            text("Tone Mapping:").size(13),
-            horizontal_space(),
-            pick_list(tonemap_options, Some(current_tonemap), |s| {
-                let mode = ToneMapMode::all()
-                    .iter()
-                    .find(|m| m.display_name() == s)
-                    .copied()
-                    .unwrap_or_default();
-                Message::SetHdrTonemap(mode)
-            })
-            .width(150),
-        ]
-        .spacing(8)
-        .align_y(Alignment::Center);
-
-        let exposure_row = row![
-            text("Exposure:").size(13),
-            horizontal_space(),
-            text_input("1.0", &exposure_str)
-                .width(60)
-                .on_input(Message::SetHdrExposure),
-        ]
-        .spacing(8)
-        .align_y(Alignment::Center);
-
-        let content = column![status_row, enabled_row, tonemap_row, exposure_row].spacing(12);
-        Self::section_container(theme, "HDR", content.into())
     }
 
     fn post_capture_section(theme: &MonochromeTheme, config: &Config) -> Element<'static, Message> {

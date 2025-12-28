@@ -5,11 +5,13 @@ pub mod views;
 use iced::{Element, Task, Theme};
 use image::RgbaImage;
 
-use crate::capture::{CaptureMode, HdrCapture, Rectangle, RegionCapture, ToneMapOperator, WindowCapture, WindowInfo, list_windows};
+use crate::capture::{CaptureMode, Rectangle, RegionCapture, WindowCapture, WindowInfo};
 use crate::clipboard::{save_image, show_notification, ClipboardManager};
-use crate::config::{Config, ImageFormat, PostCaptureAction, ToneMapMode, UploadDestination};
+use crate::config::{Config, ImageFormat, PostCaptureAction, UploadDestination};
 use crate::hotkeys::{HotkeyAction, HotkeyManager};
+use crate::overlay::{RegionSelector, WindowDetector};
 use crate::recording::{GifRecorder, RecordingSettings, RecordingState};
+use crate::sound::Sound;
 use crate::upload::{CustomUploader, ImageUploader, UploadService};
 
 use self::style::MonochromeTheme;
@@ -52,9 +54,6 @@ pub enum Message {
     SetCustomFormName(String),
     SetCustomResponsePath(String),
     DismissPostCapture,
-    ToggleHdrEnabled(bool),
-    SetHdrTonemap(ToneMapMode),
-    SetHdrExposure(String),
 }
 
 #[derive(Debug, Clone)]
@@ -139,17 +138,7 @@ impl App {
                 return self.perform_capture(mode);
             }
             Message::ShowWindowPicker => {
-                self.view = View::WindowPicker;
-                return Task::perform(
-                    async {
-                        WindowCapture::list_application_windows().unwrap_or_else(|_| {
-                            list_windows().unwrap_or_default().into_iter().filter(|w| {
-                                w.is_visible && w.width > 50 && w.height > 50
-                            }).collect()
-                        })
-                    },
-                    Message::WindowsListed,
-                );
+                return self.perform_capture(CaptureMode::Window);
             }
             Message::HideWindowPicker => {
                 self.view = View::Main;
@@ -166,7 +155,21 @@ impl App {
                 let _ = self.config.save();
             }
             Message::ShowSettings => {
-                self.view = View::Settings;
+                let _ = self.config.save();
+                if let Some(config_path) = Config::config_path() {
+                    #[cfg(windows)]
+                    {
+                        let _ = std::process::Command::new("notepad")
+                            .arg(&config_path)
+                            .spawn();
+                    }
+                    #[cfg(not(windows))]
+                    {
+                        let _ = std::process::Command::new("xdg-open")
+                            .arg(&config_path)
+                            .spawn();
+                    }
+                }
             }
             Message::HideSettings => {
                 self.view = View::Main;
@@ -242,7 +245,7 @@ impl App {
                         return self.perform_capture(CaptureMode::FullScreen);
                     }
                     HotkeyAction::CaptureWindow => {
-                        self.view = View::WindowPicker;
+                        return self.perform_capture(CaptureMode::Window);
                     }
                     HotkeyAction::CaptureRegion => {
                         return self.perform_capture(CaptureMode::Region);
@@ -255,6 +258,7 @@ impl App {
             Message::CaptureComplete(result) => {
                 match result {
                     Ok(path) => {
+                        Sound::Screenshot.play();
                         self.last_save_path = Some(std::path::PathBuf::from(&path));
                         if let Some(ref mut cb) = self.clipboard {
                             let _ = cb.copy_file_path(&path);
@@ -278,6 +282,7 @@ impl App {
                 self.gif_recorder = None;
                 match result {
                     Ok(path) => {
+                        Sound::Screenshot.play();
                         if self.config.ui.show_notifications {
                             let _ = show_notification("GIF Saved", &format!("Saved to {}", path));
                         }
@@ -389,6 +394,7 @@ impl App {
                 self.pending_image = None;
                 match result {
                     Ok((url, delete_url)) => {
+                        Sound::Upload.play();
                         self.last_upload_url = Some(url.clone());
                         self.last_delete_url = delete_url.clone();
                         if self.config.upload.copy_url_to_clipboard {
@@ -437,20 +443,6 @@ impl App {
                 self.view = View::Main;
                 self.pending_image = None;
             }
-            Message::ToggleHdrEnabled(val) => {
-                self.config.capture.hdr_enabled = val;
-                let _ = self.config.save();
-            }
-            Message::SetHdrTonemap(mode) => {
-                self.config.capture.hdr_tonemap = mode;
-                let _ = self.config.save();
-            }
-            Message::SetHdrExposure(val) => {
-                if let Ok(exp) = val.parse::<f32>() {
-                    self.config.capture.hdr_exposure = exp.clamp(0.1, 10.0);
-                    let _ = self.config.save();
-                }
-            }
         }
         Task::none()
     }
@@ -478,28 +470,17 @@ impl App {
                     },
                 )
             }
-            CaptureMode::Window => Task::none(),
-            CaptureMode::HdrScreen => {
-                let hdr_enabled = self.config.capture.hdr_enabled;
-                let tonemap_mode = self.config.capture.hdr_tonemap;
-                let exposure = self.config.capture.hdr_exposure;
-
+            CaptureMode::Window => {
                 Task::perform(
                     async move {
-                        let tonemap_op = match tonemap_mode {
-                            ToneMapMode::AcesFilmic => ToneMapOperator::AcesFilmic,
-                            ToneMapMode::Reinhard => ToneMapOperator::Reinhard,
-                            ToneMapMode::ReinhardExtended => ToneMapOperator::ReinhardExtended,
-                            ToneMapMode::Hable => ToneMapOperator::Hable,
-                            ToneMapMode::Exposure => ToneMapOperator::Exposure,
-                        };
-
-                        let hdr_capture = HdrCapture::new()
-                            .with_operator(tonemap_op)
-                            .with_exposure(exposure)
-                            .with_auto_tonemap(hdr_enabled);
-
-                        hdr_capture.capture_hdr()
+                        use crate::capture::Capture;
+                        let window_id = WindowDetector::select();
+                        if let Some(id) = window_id {
+                            let capture = WindowCapture::new(id);
+                            capture.capture()
+                        } else {
+                            Err(anyhow::anyhow!("Window selection cancelled"))
+                        }
                     },
                     |result| match result {
                         Ok(image) => Message::ImageCaptured(CapturedImage {
@@ -512,18 +493,14 @@ impl App {
             CaptureMode::Region => {
                 Task::perform(
                     async move {
-                        use crate::capture::{Capture, RegionCapture, ScreenCapture};
-                        let full = ScreenCapture::all_monitors()?;
-                        let w = full.width();
-                        let h = full.height();
-                        let capture = RegionCapture::from_coords(
-                            (w / 4) as i32,
-                            (h / 4) as i32,
-                            (w * 3 / 4) as i32,
-                            (h * 3 / 4) as i32,
-                        );
-                        let _region_info = capture.region();
-                        capture.capture()
+                        use crate::capture::Capture;
+                        let region = RegionSelector::select();
+                        if let Some(rect) = region {
+                            let capture = RegionCapture::new(rect);
+                            capture.capture()
+                        } else {
+                            Err(anyhow::anyhow!("Region selection cancelled"))
+                        }
                     },
                     |result| match result {
                         Ok(image) => Message::ImageCaptured(CapturedImage {
@@ -637,6 +614,7 @@ impl App {
             if let Some(ref mut clipboard) = self.clipboard {
                 match clipboard.copy_image(image) {
                     Ok(()) => {
+                        Sound::Screenshot.play();
                         if self.config.ui.show_notifications {
                             let _ = show_notification("Copied", "Image copied to clipboard");
                         }

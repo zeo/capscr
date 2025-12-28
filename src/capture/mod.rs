@@ -22,18 +22,6 @@ pub enum CaptureMode {
     FullScreen,
     Window,
     Region,
-    HdrScreen,
-}
-
-impl CaptureMode {
-    pub fn display_name(&self) -> &'static str {
-        match self {
-            CaptureMode::FullScreen => "Full Screen",
-            CaptureMode::Window => "Window",
-            CaptureMode::Region => "Region",
-            CaptureMode::HdrScreen => "HDR Screen",
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -130,13 +118,6 @@ mod tests {
         assert_eq!(rect.height, 100);
     }
 
-    #[test]
-    fn test_capture_mode_display_names() {
-        assert_eq!(CaptureMode::FullScreen.display_name(), "Full Screen");
-        assert_eq!(CaptureMode::Window.display_name(), "Window");
-        assert_eq!(CaptureMode::Region.display_name(), "Region");
-        assert_eq!(CaptureMode::HdrScreen.display_name(), "HDR Screen");
-    }
 
     #[test]
     fn test_screen_capture_with_monitor() {
