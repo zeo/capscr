@@ -1,0 +1,107 @@
+[package]
+name = "capscr"
+version = "0.1.0"
+edition = "2021"
+description = "A clean, modern screen capture tool"
+authors = ["capscr"]
+license = "MIT"
+repository = "https://github.com/lintowe/capscr"
+
+[dependencies]
+# GUI Framework
+iced = { version = "0.13", features = ["image", "tokio", "advanced"] }
+
+# Screen capture
+xcap = "0.0.14"
+
+# Image processing and formats
+image = { version = "0.25", features = ["png", "jpeg", "gif", "webp", "bmp"] }
+
+# GIF encoding
+gif = "0.13"
+imgref = "1.10"
+rgb = "0.8"
+
+# Global hotkeys
+global-hotkey = "0.6"
+
+# System tray
+tray-icon = "0.19"
+
+# Clipboard
+arboard = "3.4"
+
+# Configuration
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "0.8"
+directories = "5.0"
+
+# HTTP client for uploads
+reqwest = { version = "0.12", features = ["blocking", "multipart", "json"] }
+
+# URL parsing for security validation
+url = "2.5"
+
+# Async runtime
+tokio = { version = "1.0", features = ["full"] }
+
+# Error handling
+anyhow = "1.0"
+thiserror = "2.0"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Date/time for filenames
+chrono = "0.4"
+
+# File dialogs
+rfd = "0.15"
+
+# Notifications
+notify-rust = "4.11"
+
+# UUID for unique identifiers
+uuid = { version = "1.0", features = ["v4"] }
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_Graphics_Gdi",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Direct3D",
+    "Graphics_Capture",
+    "Graphics_DirectX",
+    "Graphics_DirectX_Direct3D11",
+    "Graphics_Imaging",
+    "Foundation",
+    "Foundation_Collections",
+] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+cocoa = "0.26"
+objc = "0.2"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+x11rb = "0.13"
+
+
+[build-dependencies]
+embed-resource = "2.4"
+
+[profile.release]
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+
+[package.metadata.wix]
+upgrade-guid = "A1B2C3D4-E5F6-7890-ABCD-EF1234567890"
+path-guid = "B2C3D4E5-F6A7-8901-BCDE-F12345678901"
+license = false
+eula = false
