@@ -2,7 +2,7 @@ pub mod components;
 pub mod style;
 pub mod views;
 
-use iced::{Element, Task, Theme};
+use iced::{Color, Element, Point, Task, Theme};
 use image::RgbaImage;
 
 use crate::capture::{CaptureMode, Rectangle, RegionCapture, WindowCapture};
@@ -32,6 +32,15 @@ pub enum Message {
     UploadComplete(Result<(String, Option<String>), String>),
     CopyToClipboard,
     DismissPostCapture,
+    OpenEditor,
+    EditorStartStroke(Point),
+    EditorAddPoint(Point),
+    EditorEndStroke,
+    EditorSetTool(views::DrawTool),
+    EditorSetColor(Color),
+    EditorClear,
+    EditorDone,
+    EditorCancel,
 }
 
 #[derive(Debug, Clone)]
@@ -43,6 +52,7 @@ pub struct CapturedImage {
 pub enum View {
     Main,
     PostCapture,
+    Editor,
 }
 
 pub struct App {
@@ -57,6 +67,7 @@ pub struct App {
     last_upload_url: Option<String>,
     last_delete_url: Option<String>,
     last_save_path: Option<std::path::PathBuf>,
+    editor_state: Option<views::EditorState>,
 }
 
 impl App {
@@ -89,6 +100,7 @@ impl App {
             last_upload_url: None,
             last_delete_url: None,
             last_save_path: None,
+            editor_state: None,
         };
 
         (app, Task::none())
@@ -309,6 +321,55 @@ impl App {
             Message::DismissPostCapture => {
                 self.view = View::Main;
                 self.pending_image = None;
+            }
+            Message::OpenEditor => {
+                if let Some(ref image) = self.pending_image {
+                    let (w, h) = (image.width(), image.height());
+                    self.editor_state = Some(views::EditorState::new(w, h));
+                    self.view = View::Editor;
+                }
+            }
+            Message::EditorStartStroke(pos) => {
+                if let Some(ref mut editor) = self.editor_state {
+                    editor.start_stroke(pos);
+                }
+            }
+            Message::EditorAddPoint(pos) => {
+                if let Some(ref mut editor) = self.editor_state {
+                    editor.add_point(pos);
+                }
+            }
+            Message::EditorEndStroke => {
+                if let Some(ref mut editor) = self.editor_state {
+                    editor.end_stroke();
+                }
+            }
+            Message::EditorSetTool(tool) => {
+                if let Some(ref mut editor) = self.editor_state {
+                    editor.set_tool(tool);
+                }
+            }
+            Message::EditorSetColor(color) => {
+                if let Some(ref mut editor) = self.editor_state {
+                    editor.set_color(color);
+                }
+            }
+            Message::EditorClear => {
+                if let Some(ref mut editor) = self.editor_state {
+                    editor.clear();
+                }
+            }
+            Message::EditorDone => {
+                if let (Some(editor), Some(image)) = (&self.editor_state, &self.pending_image) {
+                    let edited_image = editor.apply_to_image(image);
+                    self.pending_image = Some(std::sync::Arc::new(edited_image));
+                }
+                self.editor_state = None;
+                self.view = View::PostCapture;
+            }
+            Message::EditorCancel => {
+                self.editor_state = None;
+                self.view = View::PostCapture;
             }
         }
         Task::none()
@@ -566,6 +627,13 @@ impl App {
                 frame_count,
             ),
             View::PostCapture => views::PostCaptureView::view(&self.theme),
+            View::Editor => {
+                if let (Some(ref editor), Some(ref image)) = (&self.editor_state, &self.pending_image) {
+                    views::EditorView::view(&self.theme, editor, image)
+                } else {
+                    views::PostCaptureView::view(&self.theme)
+                }
+            }
         }
     }
 

@@ -9,7 +9,7 @@ repository = "https://github.com/lintowe/capscr"
 
 [dependencies]
 # GUI Framework
-iced = { version = "0.13", features = ["image", "tokio", "advanced"] }
+iced = { version = "0.13", features = ["image", "tokio", "advanced", "canvas"] }
 
 # Screen capture
 xcap = "0.0.14"

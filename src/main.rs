@@ -5,6 +5,7 @@ mod clipboard;
 mod config;
 mod hotkeys;
 mod overlay;
+mod plugin;
 mod recording;
 mod sound;
 mod ui;

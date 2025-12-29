@@ -25,6 +25,7 @@ impl PostCaptureView {
             Self::action_button(theme, "Upload", PostCaptureAction::Upload),
             Self::save_as_button(theme),
             Self::quick_copy_button(theme),
+            Self::edit_button(theme),
         ]
         .spacing(8);
 
@@ -116,6 +117,28 @@ impl PostCaptureView {
             }
         })
         .on_press(Message::CopyToClipboard)
+        .into()
+    }
+
+    fn edit_button(theme: &MonochromeTheme) -> Element<'static, Message> {
+        let normal_style = tile_button_style(theme);
+        let hover_style = tile_button_hovered_style(theme);
+
+        button(
+            container(text("Edit / Draw").size(14))
+                .width(Length::Fill)
+                .padding(12)
+                .center_x(Length::Fill),
+        )
+        .width(Length::Fill)
+        .style(move |_t, status| {
+            if matches!(status, button::Status::Hovered | button::Status::Pressed) {
+                hover_style
+            } else {
+                normal_style
+            }
+        })
+        .on_press(Message::OpenEditor)
         .into()
     }
 }

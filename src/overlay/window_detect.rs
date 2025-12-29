@@ -264,7 +264,7 @@ unsafe extern "system" fn enum_windows_callback(hwnd: HWND, lparam: LPARAM) -> B
     }
 
     let root = GetAncestor(hwnd, GA_ROOT);
-    let target = if root.0 != std::ptr::null_mut() && root != hwnd {
+    let target = if !root.0.is_null() && root != hwnd {
         return BOOL(1);
     } else {
         hwnd
