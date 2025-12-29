@@ -15,7 +15,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install Rust
-        uses: dtolnyi/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@stable
 
       - name: Install cargo-audit
         run: cargo install cargo-audit
@@ -37,7 +37,7 @@ jobs:
             libglib2.0-dev libgtk-3-dev libdbus-1-dev
 
       - name: Install Rust
-        uses: dtolnyi/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
 
