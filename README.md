@@ -10,6 +10,7 @@ A fast, cross-platform screen capture tool with HDR support, GIF recording, and 
 - **Cloud Upload** - Upload to Imgur or custom endpoints with HTTPS enforcement
 - **Global Hotkeys** - Trigger captures from anywhere without switching windows
 - **Clipboard Integration** - Copy screenshots directly to clipboard
+- **Plugin System** - Extend functionality with custom WASM plugins
 
 ## Installation
 
