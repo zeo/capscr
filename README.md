@@ -5,7 +5,7 @@ A fast, cross-platform screen capture tool with HDR support, GIF recording, and 
 ## Features
 
 - **Screen Capture** - Full screen, window, or region selection
-- **HDR Support** - Capture HDR content with automatic tone mapping (ACES Filmic, Reinhard, Hable)
+- **HDR Support** - Capture HDR content with automatic tone mapping
 - **GIF Recording** - Record screen activity as animated GIFs with configurable FPS and quality
 - **Cloud Upload** - Upload to Imgur or custom endpoints with HTTPS enforcement
 - **Global Hotkeys** - Trigger captures from anywhere without switching windows
@@ -96,9 +96,6 @@ show_cursor = true
 delay_ms = 0                # Capture delay
 gif_fps = 15                # GIF frame rate (1-60)
 gif_max_duration_secs = 60  # Max GIF recording time
-hdr_enabled = true
-hdr_tonemap = "AcesFilmic"  # Reinhard, ReinhardExtended, AcesFilmic, Hable, Exposure
-hdr_exposure = 1.0          # 0.1-10.0
 
 [hotkeys]
 capture_screen = "Ctrl+Shift+S"
@@ -114,6 +111,10 @@ copy_url_to_clipboard = true
 # custom_form_name = "file"
 # custom_response_path = "url"
 ```
+
+## Plugins
+
+Community plugins available at [capscr-plugins](https://github.com/lintowe/capscr-plugins).
 
 ## License
 
