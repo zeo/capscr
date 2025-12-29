@@ -1,0 +1,87 @@
+name: Feature Request
+description: Suggest a new feature or improvement for capscr
+labels: ["feature"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to suggest a feature. Please fill out the sections below.
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues and this feature hasn't been requested
+          required: true
+        - label: This isn't something better suited as a plugin
+          required: true
+
+  - type: dropdown
+    id: category
+    attributes:
+      label: Feature Category
+      description: What area of capscr does this relate to?
+      options:
+        - Capture (screen, window, region)
+        - Editor / Annotation
+        - Output (formats, quality, saving)
+        - Upload (Imgur, custom servers)
+        - GIF Recording
+        - Hotkeys
+        - User Interface
+        - Plugin System
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What would you like?
+      description: Describe the feature clearly and concisely
+      placeholder: I'd like capscr to...
+    validations:
+      required: true
+
+  - type: textarea
+    id: use-case
+    attributes:
+      label: Use Case
+      description: How would you use this feature? What problem does it solve?
+      placeholder: When I'm capturing screenshots for documentation, I often need to...
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives Considered
+      description: Have you tried any workarounds? Are there other tools that do this?
+      placeholder: Currently I work around this by...
+    validations:
+      required: false
+
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      description: Which platform would this feature be for?
+      options:
+        - Windows
+        - Linux
+        - All platforms
+    validations:
+      required: true
+
+  - type: dropdown
+    id: priority
+    attributes:
+      label: How important is this to you?
+      options:
+        - Nice to have
+        - Would improve my workflow
+        - Important for my use case
+        - Blocking my adoption of capscr
+    validations:
+      required: true

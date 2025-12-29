@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Discussions
+    url: https://github.com/lintowe/capscr/discussions
+    about: Ask questions or share ideas before opening an issue
+  - name: Plugin Development
+    url: https://github.com/lintowe/capscr/blob/master/README.md
+    about: Want to extend capscr? Consider building a plugin instead
