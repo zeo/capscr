@@ -1,0 +1,7 @@
+# Security audit configuration
+# https://rustsec.org/
+
+[advisories]
+# Ignore wasmtime RUSTSEC-2025-0118 (low severity 1.8)
+# Cannot upgrade past 35.0 due to Windows build issues with cranelift-assembler-x64
+ignore = ["RUSTSEC-2025-0118"]
