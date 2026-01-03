@@ -45,6 +45,9 @@ mod windows_impl {
     };
 
     const CLICK_THRESHOLD: i32 = 5;
+    const MIN_SELECTION_SIZE: i32 = 5;
+    const MAGNIFIER_SIZE: i32 = 120;
+    const MAGNIFIER_ZOOM: i32 = 2;
 
     static SELECTING: AtomicBool = AtomicBool::new(false);
     static START_X: AtomicI32 = AtomicI32::new(0);
@@ -65,6 +68,8 @@ mod windows_impl {
 
     static WINDOW_LIST: Mutex<Vec<CachedWindow>> = Mutex::new(Vec::new());
     static HOVERED_WINDOW: AtomicU32 = AtomicU32::new(0);
+    static CURSOR_X: AtomicI32 = AtomicI32::new(0);
+    static CURSOR_Y: AtomicI32 = AtomicI32::new(0);
 
     #[derive(Debug, Clone)]
     struct CachedWindow {
@@ -266,7 +271,10 @@ mod windows_impl {
             let ex = END_X.load(Ordering::SeqCst);
             let ey = END_Y.load(Ordering::SeqCst);
 
-            if sx == ex || sy == ey {
+            let width = (ex - sx).abs();
+            let height = (ey - sy).abs();
+
+            if width < MIN_SELECTION_SIZE || height < MIN_SELECTION_SIZE {
                 return SelectionResult::Cancelled;
             }
 
@@ -401,6 +409,71 @@ mod windows_impl {
                     }
                 }
 
+                let cursor_x = CURSOR_X.load(Ordering::SeqCst) - virt_x;
+                let cursor_y = CURSOR_Y.load(Ordering::SeqCst) - virt_y;
+
+                if cursor_x >= 0 && cursor_x < width && cursor_y >= 0 && cursor_y < height {
+                    let crosshair_pen = CreatePen(PS_SOLID, 1, windows::Win32::Foundation::COLORREF(0x00808080));
+                    let old_pen = SelectObject(hdc, crosshair_pen);
+                    SetBkMode(hdc, TRANSPARENT);
+
+                    let _ = windows::Win32::Graphics::Gdi::MoveToEx(hdc, 0, cursor_y, None);
+                    let _ = windows::Win32::Graphics::Gdi::LineTo(hdc, cursor_x - 20, cursor_y);
+                    let _ = windows::Win32::Graphics::Gdi::MoveToEx(hdc, cursor_x + 20, cursor_y, None);
+                    let _ = windows::Win32::Graphics::Gdi::LineTo(hdc, width, cursor_y);
+
+                    let _ = windows::Win32::Graphics::Gdi::MoveToEx(hdc, cursor_x, 0, None);
+                    let _ = windows::Win32::Graphics::Gdi::LineTo(hdc, cursor_x, cursor_y - 20);
+                    let _ = windows::Win32::Graphics::Gdi::MoveToEx(hdc, cursor_x, cursor_y + 20, None);
+                    let _ = windows::Win32::Graphics::Gdi::LineTo(hdc, cursor_x, height);
+
+                    SelectObject(hdc, old_pen);
+                    let _ = DeleteObject(crosshair_pen);
+
+                    if let Some(dc) = *SCREEN_DC.lock().unwrap() {
+                        if let Some(bmp) = *SCREEN_BITMAP.lock().unwrap() {
+                            let mem_dc = HDC(dc as *mut _);
+                            let old_bmp = SelectObject(mem_dc, HBITMAP(bmp as *mut _));
+
+                            let mag_x = cursor_x + 30;
+                            let mag_y = cursor_y + 30;
+                            let mag_x = if mag_x + MAGNIFIER_SIZE > width { cursor_x - MAGNIFIER_SIZE - 30 } else { mag_x };
+                            let mag_y = if mag_y + MAGNIFIER_SIZE > height { cursor_y - MAGNIFIER_SIZE - 30 } else { mag_y };
+
+                            let src_size = MAGNIFIER_SIZE / MAGNIFIER_ZOOM;
+                            let src_x = (cursor_x - src_size / 2).max(0).min(width - src_size);
+                            let src_y = (cursor_y - src_size / 2).max(0).min(height - src_size);
+
+                            let _ = StretchBlt(
+                                hdc, mag_x, mag_y, MAGNIFIER_SIZE, MAGNIFIER_SIZE,
+                                mem_dc, src_x, src_y, src_size, src_size, SRCCOPY
+                            );
+
+                            SelectObject(mem_dc, old_bmp);
+
+                            let border_pen = CreatePen(PS_SOLID, 2, windows::Win32::Foundation::COLORREF(0x00FFFFFF));
+                            let old_pen = SelectObject(hdc, border_pen);
+                            let hollow = GetStockObject(HOLLOW_BRUSH);
+                            let old_brush = SelectObject(hdc, hollow);
+                            let _ = GdiRectangle(hdc, mag_x, mag_y, mag_x + MAGNIFIER_SIZE, mag_y + MAGNIFIER_SIZE);
+
+                            let center_pen = CreatePen(PS_SOLID, 1, windows::Win32::Foundation::COLORREF(0x000000FF));
+                            SelectObject(hdc, center_pen);
+                            let cx = mag_x + MAGNIFIER_SIZE / 2;
+                            let cy = mag_y + MAGNIFIER_SIZE / 2;
+                            let _ = windows::Win32::Graphics::Gdi::MoveToEx(hdc, cx - 10, cy, None);
+                            let _ = windows::Win32::Graphics::Gdi::LineTo(hdc, cx + 10, cy);
+                            let _ = windows::Win32::Graphics::Gdi::MoveToEx(hdc, cx, cy - 10, None);
+                            let _ = windows::Win32::Graphics::Gdi::LineTo(hdc, cx, cy + 10);
+
+                            SelectObject(hdc, old_pen);
+                            SelectObject(hdc, old_brush);
+                            let _ = DeleteObject(border_pen);
+                            let _ = DeleteObject(center_pen);
+                        }
+                    }
+                }
+
                 let _ = EndPaint(hwnd, &ps);
                 LRESULT(0)
             }
@@ -409,21 +482,18 @@ mod windows_impl {
                 let mut pt = POINT::default();
                 let _ = GetCursorPos(&mut pt);
 
+                CURSOR_X.store(pt.x, Ordering::SeqCst);
+                CURSOR_Y.store(pt.y, Ordering::SeqCst);
+
                 if mouse_down {
                     END_X.store(pt.x, Ordering::SeqCst);
                     END_Y.store(pt.y, Ordering::SeqCst);
-                    let _ = InvalidateRect(hwnd, None, false);
                 } else if let Some(cached) = find_window_at_point(pt) {
-                    let prev = HOVERED_WINDOW.swap(cached.hwnd as u32, Ordering::SeqCst);
-                    if prev != cached.hwnd as u32 {
-                        let _ = InvalidateRect(hwnd, None, false);
-                    }
+                    HOVERED_WINDOW.store(cached.hwnd as u32, Ordering::SeqCst);
                 } else {
-                    let prev = HOVERED_WINDOW.swap(0, Ordering::SeqCst);
-                    if prev != 0 {
-                        let _ = InvalidateRect(hwnd, None, false);
-                    }
+                    HOVERED_WINDOW.store(0, Ordering::SeqCst);
                 }
+                let _ = InvalidateRect(hwnd, None, false);
                 LRESULT(0)
             }
             WM_LBUTTONDOWN => {

@@ -28,6 +28,46 @@ pub struct GifRecorder {
 
 struct CapturedFrame {
     image: RgbaImage,
+    #[allow(dead_code)]
+    fingerprint: u64,
+}
+
+fn compute_frame_fingerprint(image: &RgbaImage) -> u64 {
+    let w = image.width();
+    let h = image.height();
+    if w == 0 || h == 0 {
+        return 0;
+    }
+
+    let mut hash: u64 = 0;
+    let sample_points = [
+        (w / 4, h / 4),
+        (w / 2, h / 4),
+        (3 * w / 4, h / 4),
+        (w / 4, h / 2),
+        (w / 2, h / 2),
+        (3 * w / 4, h / 2),
+        (w / 4, 3 * h / 4),
+        (w / 2, 3 * h / 4),
+        (3 * w / 4, 3 * h / 4),
+        (w / 8, h / 8),
+        (7 * w / 8, h / 8),
+        (w / 8, 7 * h / 8),
+        (7 * w / 8, 7 * h / 8),
+        (w / 3, h / 3),
+        (2 * w / 3, h / 3),
+        (w / 3, 2 * h / 3),
+    ];
+
+    for (i, &(x, y)) in sample_points.iter().enumerate() {
+        let x = x.min(w - 1);
+        let y = y.min(h - 1);
+        let pixel = image.get_pixel(x, y);
+        let val = ((pixel[0] as u64) << 16) | ((pixel[1] as u64) << 8) | (pixel[2] as u64);
+        hash ^= val.wrapping_shl((i as u32 * 4) % 64);
+    }
+
+    hash
 }
 
 impl GifRecorder {
@@ -78,6 +118,8 @@ impl GifRecorder {
             let start_time = Instant::now();
             let mut total_memory: usize = 0;
             let max_memory = MAX_FRAME_MEMORY_MB * 1024 * 1024;
+            let mut last_fingerprint: u64 = 0;
+            let mut consecutive_dupes: u32 = 0;
 
             loop {
                 if rx.try_recv().is_ok() {
@@ -121,6 +163,21 @@ impl GifRecorder {
 
                 if let Ok(image) = capture_result {
                     if image.width() <= MAX_GIF_DIMENSION && image.height() <= MAX_GIF_DIMENSION {
+                        let fingerprint = compute_frame_fingerprint(&image);
+
+                        if fingerprint == last_fingerprint {
+                            consecutive_dupes += 1;
+                            if consecutive_dupes < 30 {
+                                let elapsed = frame_start.elapsed();
+                                if elapsed < frame_duration {
+                                    thread::sleep(frame_duration - elapsed);
+                                }
+                                continue;
+                            }
+                        }
+                        consecutive_dupes = 0;
+                        last_fingerprint = fingerprint;
+
                         let frame_size = (image.width() as usize)
                             .saturating_mul(image.height() as usize)
                             .saturating_mul(4);
@@ -133,7 +190,7 @@ impl GifRecorder {
                                 break;
                             }
                             total_memory = total_memory.saturating_add(frame_size);
-                            frames_lock.push(CapturedFrame { image });
+                            frames_lock.push(CapturedFrame { image, fingerprint });
                         }
                     }
                 }
