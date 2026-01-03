@@ -1,5 +1,7 @@
+mod recording;
 mod region;
+mod unified;
 mod window_detect;
 
-pub use region::RegionSelector;
-pub use window_detect::WindowDetector;
+pub use recording::RecordingOverlay;
+pub use unified::{SelectionResult, UnifiedSelector};

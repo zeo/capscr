@@ -8,10 +8,11 @@ mod overlay;
 mod plugin;
 mod recording;
 mod sound;
+mod tray;
 mod ui;
 mod upload;
 
-use iced::{window, Size, Point};
+use iced::{window, Size};
 use tracing_subscriber::EnvFilter;
 
 const ICON_DATA: &[u8] = include_bytes!("../icon.ico");
@@ -23,28 +24,6 @@ fn load_icon() -> Option<window::Icon> {
     window::icon::from_rgba(rgba.into_raw(), width, height).ok()
 }
 
-fn get_bottom_center_position() -> Point {
-    #[cfg(windows)]
-    {
-        use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN};
-        unsafe {
-            let screen_width = GetSystemMetrics(SM_CXSCREEN) as f32;
-            let screen_height = GetSystemMetrics(SM_CYSCREEN) as f32;
-            let toolbar_width = 340.0;
-            let toolbar_height = 50.0;
-            let margin = 40.0;
-            Point::new(
-                (screen_width - toolbar_width) / 2.0,
-                screen_height - toolbar_height - margin,
-            )
-        }
-    }
-    #[cfg(not(windows))]
-    {
-        Point::new(500.0, 800.0)
-    }
-}
-
 fn main() -> iced::Result {
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::from_default_env())
@@ -54,20 +33,20 @@ fn main() -> iced::Result {
     let _ = config.ensure_output_dir();
 
     let icon = load_icon();
-    let position = get_bottom_center_position();
 
     iced::application(ui::App::title, ui::App::update, ui::App::view)
         .subscription(ui::App::subscription)
         .theme(ui::App::theme)
         .window(window::Settings {
-            size: Size::new(340.0, 50.0),
-            min_size: Some(Size::new(300.0, 50.0)),
-            max_size: Some(Size::new(500.0, 80.0)),
-            position: window::Position::Specific(position),
-            resizable: false,
-            decorations: false,
-            transparent: true,
-            level: window::Level::AlwaysOnTop,
+            size: Size::new(1.0, 1.0),
+            min_size: Some(Size::new(1.0, 1.0)),
+            max_size: None,
+            position: window::Position::Default,
+            visible: false,
+            resizable: true,
+            decorations: true,
+            transparent: false,
+            level: window::Level::Normal,
             icon,
             ..Default::default()
         })

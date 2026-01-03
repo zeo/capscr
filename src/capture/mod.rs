@@ -24,7 +24,7 @@ pub enum CaptureMode {
     Region,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Rectangle {
     pub x: i32,
     pub y: i32,

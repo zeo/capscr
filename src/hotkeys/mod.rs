@@ -9,27 +9,21 @@ use std::collections::HashMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum HotkeyAction {
-    CaptureScreen,
-    CaptureWindow,
-    CaptureRegion,
+    Screenshot,
     RecordGif,
 }
 
 impl HotkeyAction {
     pub fn all() -> &'static [HotkeyAction] {
         &[
-            HotkeyAction::CaptureScreen,
-            HotkeyAction::CaptureWindow,
-            HotkeyAction::CaptureRegion,
+            HotkeyAction::Screenshot,
             HotkeyAction::RecordGif,
         ]
     }
 
     pub fn display_name(&self) -> &'static str {
         match self {
-            HotkeyAction::CaptureScreen => "Capture Screen",
-            HotkeyAction::CaptureWindow => "Capture Window",
-            HotkeyAction::CaptureRegion => "Capture Region",
+            HotkeyAction::Screenshot => "Screenshot",
             HotkeyAction::RecordGif => "Record GIF",
         }
     }

@@ -4,7 +4,8 @@ A fast, cross-platform screen capture tool with HDR support, GIF recording, and 
 
 ## Features
 
-- **Screen Capture** - Full screen, window, or region selection
+- **Screen Capture** - Unified selection overlay (drag for region, click for window, Enter for fullscreen)
+- **System Tray** - Runs in system tray with context menu access
 - **HDR Support** - Capture HDR content with automatic tone mapping
 - **GIF Recording** - Record screen activity as animated GIFs with configurable FPS and quality
 - **Cloud Upload** - Upload to Imgur or custom endpoints with HTTPS enforcement
@@ -68,10 +69,14 @@ Default keyboard shortcuts (configurable in Settings):
 
 | Shortcut | Action |
 |----------|--------|
-| `Ctrl+Shift+S` | Capture entire screen |
-| `Ctrl+Shift+W` | Capture active window |
-| `Ctrl+Shift+R` | Capture selected region |
+| `Ctrl+Shift+S` | Take screenshot (opens selection overlay) |
 | `Ctrl+Shift+G` | Start/stop GIF recording |
+
+In the selection overlay:
+- **Drag** to select a region
+- **Click** on a window to capture it
+- **Enter/Space** for fullscreen capture
+- **Escape** to cancel
 
 Hotkeys can be customized in the Settings panel. Supported modifiers: `Ctrl`, `Alt`, `Shift`, `Win`/`Super`/`Cmd`
 
@@ -99,9 +104,7 @@ gif_fps = 15                # GIF frame rate (1-60)
 gif_max_duration_secs = 60  # Max GIF recording time
 
 [hotkeys]
-capture_screen = "Ctrl+Shift+S"
-capture_window = "Ctrl+Shift+W"
-capture_region = "Ctrl+Shift+R"
+screenshot = "Ctrl+Shift+S"
 record_gif = "Ctrl+Shift+G"
 
 [upload]

@@ -48,6 +48,12 @@ pub enum ImageFormat {
     Bmp,
 }
 
+impl std::fmt::Display for ImageFormat {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.display_name())
+    }
+}
+
 impl ImageFormat {
     pub fn extension(&self) -> &'static str {
         match self {
@@ -92,9 +98,7 @@ pub struct CaptureConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HotkeyConfig {
-    pub capture_screen: String,
-    pub capture_window: String,
-    pub capture_region: String,
+    pub screenshot: String,
     pub record_gif: String,
 }
 
@@ -136,6 +140,12 @@ impl PostCaptureAction {
             PostCaptureAction::Upload => "Upload to web",
             PostCaptureAction::PromptUser => "Ask me each time",
         }
+    }
+}
+
+impl std::fmt::Display for PostCaptureAction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.display_name())
     }
 }
 
@@ -227,9 +237,7 @@ impl Config {
             return Err(anyhow!("filename_template contains invalid path characters"));
         }
         for hotkey in [
-            &self.hotkeys.capture_screen,
-            &self.hotkeys.capture_window,
-            &self.hotkeys.capture_region,
+            &self.hotkeys.screenshot,
             &self.hotkeys.record_gif,
         ] {
             if hotkey.len() > MAX_HOTKEY_LEN {
@@ -351,9 +359,7 @@ impl Default for Config {
                 gif_max_duration_secs: 30,
             },
             hotkeys: HotkeyConfig {
-                capture_screen: "Ctrl+Shift+S".to_string(),
-                capture_window: "Ctrl+Shift+W".to_string(),
-                capture_region: "Ctrl+Shift+R".to_string(),
+                screenshot: "Ctrl+Shift+S".to_string(),
                 record_gif: "Ctrl+Shift+G".to_string(),
             },
             ui: UiConfig {
