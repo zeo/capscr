@@ -112,8 +112,21 @@ impl App {
 
         let mut hotkey_manager = HotkeyManager::new().ok();
         if let Some(ref mut hm) = hotkey_manager {
-            let _ = hm.register(HotkeyAction::Screenshot, &config.hotkeys.screenshot);
-            let _ = hm.register(HotkeyAction::RecordGif, &config.hotkeys.record_gif);
+            hm.try_register(HotkeyAction::Screenshot, &config.hotkeys.screenshot);
+            hm.try_register(HotkeyAction::RecordGif, &config.hotkeys.record_gif);
+
+            for err in hm.take_errors() {
+                let msg = format!(
+                    "Failed to register {} hotkey ({}): {}",
+                    err.action.display_name(),
+                    err.hotkey,
+                    err.reason
+                );
+                tracing::warn!("{}", msg);
+                if config.ui.show_notifications {
+                    let _ = crate::clipboard::show_notification("Hotkey Error", &msg);
+                }
+            }
         }
 
         let tray_manager = TrayManager::new(ICON_DATA).ok();
@@ -277,7 +290,10 @@ impl App {
                         return Task::done(Message::HotkeyTriggered(action));
                     }
                 }
-                if let Some(ref tray) = self.tray_manager {
+                if let Some(ref mut tray) = self.tray_manager {
+                    if !tray.is_valid() {
+                        tray.try_recreate();
+                    }
                     if let Some(action) = tray.poll() {
                         return Task::done(Message::TrayAction(action));
                     }

@@ -24,7 +24,22 @@ fn load_icon() -> Option<window::Icon> {
     window::icon::from_rgba(rgba.into_raw(), width, height).ok()
 }
 
+#[cfg(windows)]
+fn set_dpi_awareness() {
+    use windows::Win32::UI::HiDpi::{
+        SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+    };
+    unsafe {
+        let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+    }
+}
+
+#[cfg(not(windows))]
+fn set_dpi_awareness() {}
+
 fn main() -> iced::Result {
+    set_dpi_awareness();
+
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::from_default_env())
         .init();

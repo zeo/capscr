@@ -32,6 +32,14 @@ impl HotkeyAction {
 pub struct HotkeyManager {
     manager: GlobalHotKeyManager,
     registered: HashMap<u32, HotkeyAction>,
+    registration_errors: Vec<HotkeyRegistrationError>,
+}
+
+#[derive(Debug, Clone)]
+pub struct HotkeyRegistrationError {
+    pub action: HotkeyAction,
+    pub hotkey: String,
+    pub reason: String,
 }
 
 impl HotkeyManager {
@@ -41,6 +49,7 @@ impl HotkeyManager {
         Ok(Self {
             manager,
             registered: HashMap::new(),
+            registration_errors: Vec::new(),
         })
     }
 
@@ -52,6 +61,27 @@ impl HotkeyManager {
 
         self.registered.insert(hotkey.id(), action);
         Ok(())
+    }
+
+    pub fn try_register(&mut self, action: HotkeyAction, hotkey_str: &str) {
+        match self.register(action, hotkey_str) {
+            Ok(()) => {}
+            Err(e) => {
+                self.registration_errors.push(HotkeyRegistrationError {
+                    action,
+                    hotkey: hotkey_str.to_string(),
+                    reason: e.to_string(),
+                });
+            }
+        }
+    }
+
+    pub fn take_errors(&mut self) -> Vec<HotkeyRegistrationError> {
+        std::mem::take(&mut self.registration_errors)
+    }
+
+    pub fn has_errors(&self) -> bool {
+        !self.registration_errors.is_empty()
     }
 
     pub fn unregister(&mut self, action: HotkeyAction) -> Result<()> {
