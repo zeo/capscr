@@ -50,8 +50,7 @@ See [Build](#build) section below.
 - [Rust](https://rustup.rs/) 1.75 or later
 - Platform-specific dependencies:
   - **Windows:** Visual Studio Build Tools with C++ workload
-  - **Linux:** `libxcb-dev`, `libxkbcommon-dev`, `libssl-dev`
-  - **macOS:** Xcode Command Line Tools
+  - **Linux:** `libxcb-dev`, `libxkbcommon-dev`, `libssl-dev`, `libasound2-dev`
 
 ### Quick Build
 

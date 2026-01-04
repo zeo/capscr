@@ -213,6 +213,25 @@ pub enum Theme {
     Dark,
 }
 
+impl Theme {
+    pub fn all() -> &'static [Theme] {
+        &[Theme::Dark, Theme::Light]
+    }
+
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            Theme::Light => "Light",
+            Theme::Dark => "Dark",
+        }
+    }
+}
+
+impl std::fmt::Display for Theme {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.display_name())
+    }
+}
+
 impl Config {
     pub fn validate(&self) -> Result<()> {
         if self.output.quality > MAX_QUALITY {

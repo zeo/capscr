@@ -64,6 +64,8 @@ pub enum SettingChange {
     GifMaxDuration(u32),
     ShowNotifications(bool),
     PostCaptureAction(PostCaptureAction),
+    Theme(crate::config::Theme),
+    PlaySound(bool),
 }
 
 #[derive(Debug, Clone)]
@@ -245,7 +247,7 @@ impl App {
             }
             Message::CaptureComplete(result) => match result {
                 Ok(path) => {
-                    Sound::Screenshot.play();
+                    Sound::Screenshot.play_if_enabled(self.config.post_capture.play_sound);
                     self.last_save_path = Some(std::path::PathBuf::from(&path));
                     if let Some(ref mut cb) = self.clipboard {
                         let _ = cb.copy_file_path(&path);
@@ -272,7 +274,7 @@ impl App {
                 }
                 match result {
                     Ok(path) => {
-                        Sound::Screenshot.play();
+                        Sound::Screenshot.play_if_enabled(self.config.post_capture.play_sound);
                         if self.config.ui.show_notifications {
                             let _ = show_notification("GIF Saved", &format!("Saved to {}", path));
                         }
@@ -405,7 +407,7 @@ impl App {
                 self.pending_image = None;
                 match result {
                     Ok((url, delete_url)) => {
-                        Sound::Upload.play();
+                        Sound::Upload.play_if_enabled(self.config.post_capture.play_sound);
                         self.last_upload_url = Some(url.clone());
                         self.last_delete_url = delete_url.clone();
                         if self.config.upload.copy_url_to_clipboard {
@@ -664,7 +666,7 @@ impl App {
             if let Some(ref mut clipboard) = self.clipboard {
                 match clipboard.copy_image(image) {
                     Ok(()) => {
-                        Sound::Screenshot.play();
+                        Sound::Screenshot.play_if_enabled(self.config.post_capture.play_sound);
                         if self.config.ui.show_notifications {
                             let _ = show_notification("Copied", "Image copied to clipboard");
                         }
@@ -797,6 +799,13 @@ impl App {
             }
             SettingChange::PostCaptureAction(action) => {
                 self.config.post_capture.action = action;
+            }
+            SettingChange::Theme(theme) => {
+                self.config.ui.theme = theme;
+                self.theme = style::MonochromeTheme::from_config_theme(theme);
+            }
+            SettingChange::PlaySound(play) => {
+                self.config.post_capture.play_sound = play;
             }
         }
         let _ = self.config.save();

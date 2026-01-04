@@ -4,7 +4,7 @@ use iced::{
 };
 use std::path::PathBuf;
 
-use crate::config::{Config, ImageFormat, PostCaptureAction};
+use crate::config::{Config, ImageFormat, PostCaptureAction, Theme};
 use crate::ui::style::MonochromeTheme;
 use crate::ui::{Message, SettingChange};
 
@@ -19,6 +19,8 @@ pub struct SettingsState {
     pub gif_max_duration: u32,
     pub show_notifications: bool,
     pub post_capture_action: PostCaptureAction,
+    pub theme: Theme,
+    pub play_sound: bool,
 }
 
 impl SettingsState {
@@ -33,6 +35,8 @@ impl SettingsState {
             gif_max_duration: config.capture.gif_max_duration_secs,
             show_notifications: config.ui.show_notifications,
             post_capture_action: config.post_capture.action,
+            theme: config.ui.theme,
+            play_sound: config.post_capture.play_sound,
         }
     }
 }
@@ -120,12 +124,34 @@ impl SettingsView {
         ]
         .spacing(10);
 
+        let appearance_section = column![
+            text("Appearance").size(18),
+            row![
+                text("Theme:").width(Length::Fixed(150.0)),
+                pick_list(
+                    Theme::all(),
+                    Some(state.theme),
+                    |t| Message::SettingChanged(SettingChange::Theme(t))
+                ),
+            ]
+            .spacing(10)
+            .align_y(Alignment::Center),
+        ]
+        .spacing(10);
+
         let behavior_section = column![
             text("Behavior").size(18),
             row![
                 text("Show Notifications:").width(Length::Fixed(150.0)),
                 toggler(state.show_notifications)
                     .on_toggle(|v| Message::SettingChanged(SettingChange::ShowNotifications(v))),
+            ]
+            .spacing(10)
+            .align_y(Alignment::Center),
+            row![
+                text("Play Sound:").width(Length::Fixed(150.0)),
+                toggler(state.play_sound)
+                    .on_toggle(|v| Message::SettingChanged(SettingChange::PlaySound(v))),
             ]
             .spacing(10)
             .align_y(Alignment::Center),
@@ -148,6 +174,7 @@ impl SettingsView {
 
         let content = column![
             title,
+            appearance_section,
             output_section,
             hotkey_section,
             gif_section,

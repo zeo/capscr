@@ -242,22 +242,11 @@ pub fn show_notification(title: &str, body: &str) -> Result<()> {
     let safe_title = sanitize_notification_text(title);
     let safe_body = sanitize_notification_text(body);
 
-    #[cfg(not(target_os = "macos"))]
-    {
-        notify_rust::Notification::new()
-            .summary(&safe_title)
-            .body(&safe_body)
-            .timeout(notify_rust::Timeout::Milliseconds(3000))
-            .show()?;
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        notify_rust::Notification::new()
-            .summary(&safe_title)
-            .body(&safe_body)
-            .show()?;
-    }
+    notify_rust::Notification::new()
+        .summary(&safe_title)
+        .body(&safe_body)
+        .timeout(notify_rust::Timeout::Milliseconds(3000))
+        .show()?;
 
     Ok(())
 }

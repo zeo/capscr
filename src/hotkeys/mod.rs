@@ -229,9 +229,6 @@ pub fn format_hotkey(modifiers: Modifiers, code: Code) -> String {
         parts.push("Shift");
     }
     if modifiers.contains(Modifiers::SUPER) {
-        #[cfg(target_os = "macos")]
-        parts.push("Cmd");
-        #[cfg(not(target_os = "macos"))]
         parts.push("Win");
     }
 

@@ -32,6 +32,13 @@ impl MonochromeTheme {
         Self { is_dark: false }
     }
 
+    pub fn from_config_theme(theme: crate::config::Theme) -> Self {
+        match theme {
+            crate::config::Theme::Dark => Self::dark(),
+            crate::config::Theme::Light => Self::light(),
+        }
+    }
+
     pub fn background(&self) -> Color {
         if self.is_dark {
             BACKGROUND_DARK

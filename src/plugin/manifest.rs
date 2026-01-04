@@ -43,8 +43,6 @@ pub struct PluginLibrary {
     pub windows: Option<String>,
     #[serde(default)]
     pub linux: Option<String>,
-    #[serde(default)]
-    pub macos: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -122,7 +120,7 @@ impl PluginManifest {
         }
 
         for platform in &self.compatibility.platforms {
-            if !["windows", "linux", "macos"].contains(&platform.as_str()) {
+            if !["windows", "linux"].contains(&platform.as_str()) {
                 return Err(format!("Invalid platform: {}", platform));
             }
         }
@@ -149,8 +147,6 @@ impl PluginManifest {
             "windows"
         } else if cfg!(target_os = "linux") {
             "linux"
-        } else if cfg!(target_os = "macos") {
-            "macos"
         } else {
             "unknown"
         };
@@ -185,8 +181,6 @@ impl PluginManifest {
             self.library.windows.as_deref()
         } else if cfg!(target_os = "linux") {
             self.library.linux.as_deref()
-        } else if cfg!(target_os = "macos") {
-            self.library.macos.as_deref()
         } else {
             None
         }

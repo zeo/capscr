@@ -63,6 +63,9 @@ rfd = "0.15"
 # Notifications
 notify-rust = "4.11"
 
+# Audio playback
+rodio = { version = "0.19", default-features = false, features = ["wav"] }
+
 # UUID for unique identifiers
 uuid = { version = "1.0", features = ["v4"] }
 
@@ -92,10 +95,6 @@ windows = { version = "0.58", features = [
     "Foundation",
     "Foundation_Collections",
 ] }
-
-[target.'cfg(target_os = "macos")'.dependencies]
-cocoa = "0.26"
-objc = "0.2"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 x11rb = "0.13"

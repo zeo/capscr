@@ -1,9 +1,6 @@
-#[cfg(windows)]
-use windows::Win32::Media::Audio::{PlaySoundW, SND_ASYNC, SND_MEMORY};
+use std::io::Cursor;
 
-#[cfg(windows)]
 const SCREENSHOT_WAV: &[u8] = include_bytes!("../assets/screenshot.wav");
-#[cfg(windows)]
 const UPLOAD_WAV: &[u8] = include_bytes!("../assets/upload.wav");
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -13,24 +10,37 @@ pub enum Sound {
 }
 
 impl Sound {
-    #[cfg(windows)]
-    pub fn play(self) {
-        let data = match self {
+    fn data(self) -> &'static [u8] {
+        match self {
             Sound::Screenshot => SCREENSHOT_WAV,
             Sound::Upload => UPLOAD_WAV,
-        };
-
-        std::thread::spawn(move || unsafe {
-            let _ = PlaySoundW(
-                windows::core::PCWSTR(data.as_ptr() as *const u16),
-                None,
-                SND_MEMORY | SND_ASYNC,
-            );
-        });
+        }
     }
 
-    #[cfg(not(windows))]
+    pub fn play_if_enabled(self, enabled: bool) {
+        if enabled {
+            self.play();
+        }
+    }
+
     pub fn play(self) {
-        // Sound not supported on non-Windows platforms
+        let data = self.data();
+        std::thread::spawn(move || {
+            let Ok((_stream, stream_handle)) = rodio::OutputStream::try_default() else {
+                return;
+            };
+
+            let cursor = Cursor::new(data);
+            let Ok(source) = rodio::Decoder::new(cursor) else {
+                return;
+            };
+
+            let Ok(sink) = rodio::Sink::try_new(&stream_handle) else {
+                return;
+            };
+
+            sink.append(source);
+            sink.sleep_until_end();
+        });
     }
 }
