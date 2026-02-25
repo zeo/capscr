@@ -23,7 +23,7 @@ jobs:
       - name: Run security audit
         run: cargo audit
 
-  clippy:
+  lint-and-test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -42,5 +42,30 @@ jobs:
         with:
           components: clippy
 
+      - name: Run tests
+        run: cargo test --all-targets
+
       - name: Run clippy
-        run: cargo clippy -- -D warnings
+        run: cargo clippy --all-targets -- -D warnings
+
+  verify-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: End-to-end verify
+        run: |
+          ./tools/verify_e2e.ps1 -IdleMemoryTargetMb 100 -StartupTargetSeconds 2.0 -SummaryPath verification-summary.json
+        shell: pwsh
+
+      - name: Upload verification summary
+        uses: actions/upload-artifact@v4
+        with:
+          name: verification-summary
+          path: verification-summary.json

@@ -1,9 +1,18 @@
+use image::RgbaImage;
 use std::path::Path;
 use std::sync::Arc;
 use wasmtime::*;
-use image::RgbaImage;
 
-use super::{Plugin, PluginEvent, PluginResponse, CaptureType};
+use super::{CaptureType, Plugin, PluginEvent, PluginResponse};
+
+const MAX_WASM_MODULE_BYTES: usize = 8 * 1024 * 1024;
+const MAX_PLUGIN_IMAGE_BYTES: usize = 64 * 1024 * 1024;
+const WASM_EVENT_FUEL: u64 = 15_000_000;
+const WASM_LIFECYCLE_FUEL: u64 = 2_000_000;
+const WASM_MAX_MEMORY_BYTES: usize = 64 * 1024 * 1024;
+const WASM_MAX_TABLE_ELEMENTS: usize = 10_000;
+const WASM_MAX_INSTANCES: usize = 1;
+const WASM_MAX_TABLES: usize = 4;
 
 pub struct WasmPlugin {
     name: String,
@@ -20,14 +29,24 @@ struct WasmState {
     image_width: u32,
     image_height: u32,
     modified: bool,
+    limits: StoreLimits,
 }
 
 impl WasmPlugin {
     pub fn load(path: &Path, name: String, version: String, description: String) -> Result<Self, String> {
-        let engine = Engine::default();
+        let mut config = Config::new();
+        config.consume_fuel(true);
+        let engine = Engine::new(&config).map_err(|e| format!("Failed to init engine: {}", e))?;
 
         let wasm_bytes = std::fs::read(path)
             .map_err(|e| format!("Failed to read WASM file: {}", e))?;
+        if wasm_bytes.len() > MAX_WASM_MODULE_BYTES {
+            return Err(format!(
+                "WASM module too large: {} bytes (max {})",
+                wasm_bytes.len(),
+                MAX_WASM_MODULE_BYTES
+            ));
+        }
 
         let module = Module::new(&engine, &wasm_bytes)
             .map_err(|e| format!("Failed to compile WASM module: {}", e))?;
@@ -37,7 +56,17 @@ impl WasmPlugin {
             image_width: 0,
             image_height: 0,
             modified: false,
+            limits: StoreLimitsBuilder::new()
+                .memory_size(WASM_MAX_MEMORY_BYTES)
+                .table_elements(WASM_MAX_TABLE_ELEMENTS)
+                .instances(WASM_MAX_INSTANCES)
+                .tables(WASM_MAX_TABLES)
+                .build(),
         });
+        store.limiter(|state| &mut state.limits);
+        store
+            .set_fuel(WASM_EVENT_FUEL)
+            .map_err(|e| format!("Failed to configure WASM fuel: {}", e))?;
 
         let mut linker = Linker::new(&engine);
 
@@ -97,6 +126,9 @@ impl WasmPlugin {
     }
 
     fn call_event(&mut self, event_type: i32) -> i32 {
+        if self.store.set_fuel(WASM_EVENT_FUEL).is_err() {
+            return 0;
+        }
         if let Some(func) = self.instance.get_func(&mut self.store, "on_event") {
             if let Ok(typed) = func.typed::<i32, i32>(&self.store) {
                 if let Ok(result) = typed.call(&mut self.store, event_type) {
@@ -108,8 +140,22 @@ impl WasmPlugin {
     }
 
     fn set_image(&mut self, image: &RgbaImage) {
+        let raw = image.as_raw();
+        let expected_len = (image.width() as usize)
+            .checked_mul(image.height() as usize)
+            .and_then(|pixels| pixels.checked_mul(4));
+
+        if expected_len != Some(raw.len()) || raw.len() > MAX_PLUGIN_IMAGE_BYTES {
+            let state = self.store.data_mut();
+            state.image_data = None;
+            state.image_width = 0;
+            state.image_height = 0;
+            state.modified = false;
+            return;
+        }
+
         let state = self.store.data_mut();
-        state.image_data = Some(image.as_raw().clone());
+        state.image_data = Some(raw.clone());
         state.image_width = image.width();
         state.image_height = image.height();
         state.modified = false;
@@ -174,6 +220,9 @@ impl Plugin for WasmPlugin {
     }
 
     fn on_load(&mut self) {
+        if self.store.set_fuel(WASM_LIFECYCLE_FUEL).is_err() {
+            return;
+        }
         if let Some(func) = self.instance.get_func(&mut self.store, "on_load") {
             if let Ok(typed) = func.typed::<(), ()>(&self.store) {
                 let _ = typed.call(&mut self.store, ());
@@ -182,6 +231,9 @@ impl Plugin for WasmPlugin {
     }
 
     fn on_unload(&mut self) {
+        if self.store.set_fuel(WASM_LIFECYCLE_FUEL).is_err() {
+            return;
+        }
         if let Some(func) = self.instance.get_func(&mut self.store, "on_unload") {
             if let Ok(typed) = func.typed::<(), ()>(&self.store) {
                 let _ = typed.call(&mut self.store, ());

@@ -1,10 +1,15 @@
 use iced::{
-    widget::{button, column, container, horizontal_space, pick_list, row, scrollable, slider, text, text_input, toggler},
+    widget::{
+        button, column, container, horizontal_space, pick_list, row, scrollable, slider, text,
+        text_input, toggler,
+    },
     Alignment, Element, Length,
 };
 use std::path::PathBuf;
 
-use crate::config::{Config, ImageFormat, PostCaptureAction, Theme, UploadDestination};
+use crate::config::{
+    Config, ImageFormat, PostCaptureAction, RendererBackend, Theme, UploadDestination,
+};
 use crate::ui::style::MonochromeTheme;
 use crate::ui::{HotkeyTarget, Message, SettingChange};
 
@@ -24,6 +29,10 @@ pub struct SettingsState {
     pub upload_destination: UploadDestination,
     pub custom_upload_url: String,
     pub copy_url_to_clipboard: bool,
+    pub tick_interval_ms: u32,
+    pub renderer: RendererBackend,
+    pub lazy_init_upload: bool,
+    pub lazy_init_plugins: bool,
 }
 
 impl SettingsState {
@@ -43,6 +52,10 @@ impl SettingsState {
             upload_destination: config.upload.destination,
             custom_upload_url: config.upload.custom_url.clone(),
             copy_url_to_clipboard: config.upload.copy_url_to_clipboard,
+            tick_interval_ms: config.performance.tick_interval_ms,
+            renderer: config.performance.renderer,
+            lazy_init_upload: config.performance.lazy_init_upload,
+            lazy_init_plugins: config.performance.lazy_init_plugins,
         }
     }
 }
@@ -77,18 +90,15 @@ impl SettingsView {
             text("Output").size(18),
             row![
                 text("Directory:").width(Length::Fixed(120.0)),
-                text(state.output_directory.to_string_lossy().to_string())
-                    .width(Length::Fill),
+                text(state.output_directory.to_string_lossy().to_string()).width(Length::Fill),
             ]
             .spacing(10)
             .align_y(Alignment::Center),
             row![
                 text("Format:").width(Length::Fixed(120.0)),
-                pick_list(
-                    ImageFormat::all(),
-                    Some(state.format),
-                    |f| Message::SettingChanged(SettingChange::Format(f))
-                ),
+                pick_list(ImageFormat::all(), Some(state.format), |f| {
+                    Message::SettingChanged(SettingChange::Format(f))
+                }),
             ]
             .spacing(10)
             .align_y(Alignment::Center),
@@ -182,7 +192,9 @@ impl SettingsView {
                 row![
                     text("Custom URL:").width(Length::Fixed(150.0)),
                     text_input("https://example.com/upload", &state.custom_upload_url)
-                        .on_input(|url| Message::SettingChanged(SettingChange::CustomUploadUrl(url)))
+                        .on_input(
+                            |url| Message::SettingChanged(SettingChange::CustomUploadUrl(url))
+                        )
                         .width(Length::Fixed(250.0)),
                 ]
                 .spacing(10)
@@ -229,6 +241,43 @@ impl SettingsView {
         ]
         .spacing(10);
 
+        let performance_section = column![
+            text("Performance").size(18),
+            row![
+                text(format!("Tick Interval: {}ms", state.tick_interval_ms))
+                    .width(Length::Fixed(180.0)),
+                slider(16..=500, state.tick_interval_ms as u16, |ms| {
+                    Message::SettingChanged(SettingChange::TickIntervalMs(ms as u32))
+                })
+                .width(Length::Fixed(200.0)),
+            ]
+            .spacing(10)
+            .align_y(Alignment::Center),
+            row![
+                text("Renderer (restart required):").width(Length::Fixed(180.0)),
+                pick_list(RendererBackend::all(), Some(state.renderer), |renderer| {
+                    Message::SettingChanged(SettingChange::RendererBackend(renderer))
+                }),
+            ]
+            .spacing(10)
+            .align_y(Alignment::Center),
+            row![
+                text("Lazy init upload:").width(Length::Fixed(180.0)),
+                toggler(state.lazy_init_upload)
+                    .on_toggle(|v| Message::SettingChanged(SettingChange::LazyInitUpload(v))),
+            ]
+            .spacing(10)
+            .align_y(Alignment::Center),
+            row![
+                text("Lazy init plugins:").width(Length::Fixed(180.0)),
+                toggler(state.lazy_init_plugins)
+                    .on_toggle(|v| Message::SettingChanged(SettingChange::LazyInitPlugins(v))),
+            ]
+            .spacing(10)
+            .align_y(Alignment::Center),
+        ]
+        .spacing(10);
+
         let close_button = button(text("Close"))
             .padding([8, 16])
             .on_press(Message::CloseSettings);
@@ -241,6 +290,7 @@ impl SettingsView {
             gif_section,
             upload_section,
             behavior_section,
+            performance_section,
             row![horizontal_space(), close_button],
         ]
         .spacing(20)
@@ -253,11 +303,9 @@ impl SettingsView {
             .height(Length::Fill)
             .center_x(Length::Fill)
             .center_y(Length::Fill)
-            .style(move |_t| {
-                container::Style {
-                    background: Some(iced::Background::Color(bg)),
-                    ..Default::default()
-                }
+            .style(move |_t| container::Style {
+                background: Some(iced::Background::Color(bg)),
+                ..Default::default()
             })
             .into()
     }

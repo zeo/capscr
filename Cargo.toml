@@ -7,6 +7,11 @@ authors = ["capscr"]
 license = "MIT"
 repository = "https://github.com/lintowe/capscr"
 
+[features]
+default = []
+linux-tray = ["dep:linux-tray-icon"]
+wasm-plugins = ["dep:wasmtime"]
+
 [dependencies]
 # GUI Framework
 iced = { version = "0.13", features = ["image", "tokio", "advanced", "canvas"] }
@@ -25,9 +30,6 @@ rgb = "0.8"
 # Global hotkeys
 global-hotkey = "0.6"
 
-# System tray
-tray-icon = "0.19"
-
 # Clipboard
 arboard = "3.4"
 
@@ -44,7 +46,7 @@ reqwest = { version = "0.12", features = ["blocking", "multipart", "json"] }
 url = "2.5"
 
 # Async runtime
-tokio = { version = "1.0", features = ["full"] }
+tokio = { version = "1.0", features = ["rt-multi-thread", "time", "sync"] }
 
 # Error handling
 anyhow = "1.0"
@@ -73,9 +75,10 @@ uuid = { version = "1.0", features = ["v4"] }
 libloading = "0.8"
 zip = "2.2"
 semver = "1.0"
-wasmtime = "35.0"  # Windows build issue in 36+, see: RUSTSEC-2025-0118 (low severity)
+wasmtime = { version = "41.0.4", optional = true }
 
 [target.'cfg(windows)'.dependencies]
+tray-icon = "0.19"
 windows = { version = "0.58", features = [
     "Win32_Foundation",
     "Win32_UI_WindowsAndMessaging",
@@ -97,6 +100,7 @@ windows = { version = "0.58", features = [
 ] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
+linux-tray-icon = { package = "tray-icon", version = "0.19", optional = true }
 x11rb = "0.13"
 
 

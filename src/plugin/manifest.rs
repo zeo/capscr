@@ -163,7 +163,7 @@ impl PluginManifest {
     }
 
     pub fn plugin_type(&self) -> PluginType {
-        if self.library.wasm.is_some() {
+        if cfg!(feature = "wasm-plugins") && self.library.wasm.is_some() {
             PluginType::Wasm
         } else {
             PluginType::Native
@@ -171,12 +171,13 @@ impl PluginManifest {
     }
 
     pub fn library_filename(&self) -> Option<&str> {
-        // Prefer WASM for universal compatibility
-        if let Some(ref wasm) = self.library.wasm {
-            return Some(wasm);
+        #[cfg(feature = "wasm-plugins")]
+        {
+            if let Some(ref wasm) = self.library.wasm {
+                return Some(wasm);
+            }
         }
 
-        // Fall back to native
         if cfg!(windows) {
             self.library.windows.as_deref()
         } else if cfg!(target_os = "linux") {

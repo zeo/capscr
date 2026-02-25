@@ -39,6 +39,8 @@ cd capscr
 
 **Requirements:** X11 display server, libxcb
 
+Linux tray integration is disabled by default in secure builds. To enable it when building from source, use `--features linux-tray`.
+
 ### Building from Source
 
 See [Build](#build) section below.
@@ -58,6 +60,12 @@ See [Build](#build) section below.
 git clone https://github.com/lintowe/capscr.git
 cd capscr
 cargo build --release
+```
+
+Enable Linux tray support explicitly:
+
+```bash
+cargo build --release --features linux-tray
 ```
 
 The binary will be at `target/release/capscr` (or `capscr.exe` on Windows).
@@ -113,11 +121,19 @@ copy_url_to_clipboard = true
 # custom_url = "https://your-server.com/upload"
 # custom_form_name = "file"
 # custom_response_path = "url"
+
+[performance]
+tick_interval_ms = 100      # Poll interval (16-500ms)
+renderer = "tiny-skia"      # tiny-skia or wgpu
+lazy_init_upload = true
+lazy_init_plugins = true
 ```
 
 ## Plugins
 
 Community plugins available at [capscr-plugins](https://github.com/lintowe/capscr-plugins).
+
+WASM plugin runtime is optional and disabled by default in hardened builds. Enable it with `--features wasm-plugins`.
 
 ## License
 

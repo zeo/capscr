@@ -2,6 +2,7 @@ use anyhow::{anyhow, Result};
 use image::RgbaImage;
 use std::io::Cursor;
 use std::net::{IpAddr, ToSocketAddrs};
+use std::sync::OnceLock;
 use std::time::Duration;
 
 const MAX_UPLOAD_SIZE: usize = 32 * 1024 * 1024;
@@ -48,6 +49,8 @@ pub struct ImageUploader {
     client: reqwest::blocking::Client,
 }
 
+static SHARED_UPLOADER: OnceLock<std::result::Result<ImageUploader, String>> = OnceLock::new();
+
 impl ImageUploader {
     pub fn new() -> Result<Self> {
         let client = reqwest::blocking::Client::builder()
@@ -70,9 +73,7 @@ impl ImageUploader {
                     || ipv4.octets()[0] == 100 && (ipv4.octets()[1] & 0xC0) == 64
                     || ipv4.octets() == [169, 254, 169, 254]
             }
-            IpAddr::V6(ipv6) => {
-                ipv6.is_loopback() || ipv6.is_unspecified()
-            }
+            IpAddr::V6(ipv6) => ipv6.is_loopback() || ipv6.is_unspecified(),
         }
     }
 
@@ -83,16 +84,26 @@ impl ImageUploader {
             return Err(anyhow!("Only HTTPS URLs are allowed"));
         }
 
-        let host = parsed.host_str().ok_or_else(|| anyhow!("URL has no host"))?;
+        let host = parsed
+            .host_str()
+            .ok_or_else(|| anyhow!("URL has no host"))?;
 
         if host.is_empty() || host.len() > 253 {
             return Err(anyhow!("Invalid hostname length"));
         }
 
         let blocked_hosts = [
-            "localhost", "127.0.0.1", "::1", "[::1]", "0.0.0.0",
-            "metadata.google.internal", "metadata.google.com", "metadata",
-            "instance-data", "burpcollaborator.net", "oastify.com",
+            "localhost",
+            "127.0.0.1",
+            "::1",
+            "[::1]",
+            "0.0.0.0",
+            "metadata.google.internal",
+            "metadata.google.com",
+            "metadata",
+            "instance-data",
+            "burpcollaborator.net",
+            "oastify.com",
         ];
         let host_lower = host.to_lowercase();
         for blocked in &blocked_hosts {
@@ -152,7 +163,8 @@ impl ImageUploader {
             return true;
         }
         if host.starts_with("172.") {
-            if let Some(second) = host.strip_prefix("172.")
+            if let Some(second) = host
+                .strip_prefix("172.")
                 .and_then(|s| s.split('.').next())
                 .and_then(|s| s.parse::<u8>().ok())
             {
@@ -174,7 +186,10 @@ impl ImageUploader {
         if name.len() > MAX_FORM_NAME_LEN {
             return Err(anyhow!("Form field name too long"));
         }
-        if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+        if !name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        {
             return Err(anyhow!("Form field name contains invalid characters"));
         }
         Ok(())
@@ -187,7 +202,10 @@ impl ImageUploader {
         if path.len() > MAX_RESPONSE_PATH_LEN {
             return Err(anyhow!("Response path too long"));
         }
-        if !path.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == '-') {
+        if !path
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == '-')
+        {
             return Err(anyhow!("Response path contains invalid characters"));
         }
         if path.starts_with('.') || path.ends_with('.') || path.contains("..") {
@@ -200,7 +218,10 @@ impl ImageUploader {
         let png_data = self.encode_png(image)?;
 
         if png_data.len() > MAX_UPLOAD_SIZE {
-            return Err(anyhow!("Image too large to upload ({} bytes)", png_data.len()));
+            return Err(anyhow!(
+                "Image too large to upload ({} bytes)",
+                png_data.len()
+            ));
         }
 
         match service {
@@ -218,13 +239,12 @@ impl ImageUploader {
     fn upload_imgur(&self, png_data: &[u8]) -> Result<UploadResult> {
         let client_id = "546c25a59c58ad7";
 
-        let form = reqwest::blocking::multipart::Form::new()
-            .part(
-                "image",
-                reqwest::blocking::multipart::Part::bytes(png_data.to_vec())
-                    .file_name("screenshot.png")
-                    .mime_str("image/png")?,
-            );
+        let form = reqwest::blocking::multipart::Form::new().part(
+            "image",
+            reqwest::blocking::multipart::Part::bytes(png_data.to_vec())
+                .file_name("screenshot.png")
+                .mime_str("image/png")?,
+        );
 
         let response = self
             .client
@@ -252,7 +272,10 @@ impl ImageUploader {
 
         let json: serde_json::Value = serde_json::from_str(&text)?;
 
-        let success = json.get("success").and_then(|v| v.as_bool()).unwrap_or(false);
+        let success = json
+            .get("success")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
         if !success {
             let error_msg = json
                 .get("data")
@@ -298,13 +321,12 @@ impl ImageUploader {
         Self::validate_form_name(&config.file_form_name)?;
         Self::validate_response_path(&config.response_url_path)?;
 
-        let form = reqwest::blocking::multipart::Form::new()
-            .part(
-                config.file_form_name.clone(),
-                reqwest::blocking::multipart::Part::bytes(png_data.to_vec())
-                    .file_name("screenshot.png")
-                    .mime_str("image/png")?,
-            );
+        let form = reqwest::blocking::multipart::Form::new().part(
+            config.file_form_name.clone(),
+            reqwest::blocking::multipart::Part::bytes(png_data.to_vec())
+                .file_name("screenshot.png")
+                .mime_str("image/png")?,
+        );
 
         let response = self
             .client
@@ -407,6 +429,14 @@ impl Default for ImageUploader {
     }
 }
 
+pub fn shared_uploader() -> Result<&'static ImageUploader> {
+    let cached = SHARED_UPLOADER.get_or_init(|| ImageUploader::new().map_err(|e| e.to_string()));
+    match cached {
+        Ok(uploader) => Ok(uploader),
+        Err(err) => Err(anyhow!(err.clone())),
+    }
+}
+
 pub fn copy_url_to_clipboard(url: &str) -> Result<()> {
     use arboard::Clipboard;
 
@@ -449,5 +479,12 @@ mod tests {
         };
         let result = uploader.upload_custom(&[0u8; 100], &config);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_shared_uploader_singleton() {
+        let first = shared_uploader().unwrap() as *const ImageUploader;
+        let second = shared_uploader().unwrap() as *const ImageUploader;
+        assert_eq!(first, second);
     }
 }

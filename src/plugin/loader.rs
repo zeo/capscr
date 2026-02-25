@@ -1,7 +1,9 @@
-use std::path::{Path, PathBuf};
 use std::io::Read;
+use std::path::{Path, PathBuf};
 
-use super::{PluginManifest, PluginType, LoadedPlugin, WasmPlugin};
+#[cfg(feature = "wasm-plugins")]
+use super::WasmPlugin;
+use super::{LoadedPlugin, PluginManifest, PluginType};
 
 pub struct PluginLoader {
     plugins_dir: PathBuf,
@@ -101,13 +103,21 @@ impl PluginLoader {
 
         let handle = match manifest.plugin_type() {
             PluginType::Wasm => {
+                #[cfg(not(feature = "wasm-plugins"))]
+                {
+                    return Err("WASM plugins are disabled in this build".to_string());
+                }
+                #[cfg(feature = "wasm-plugins")]
                 let plugin = WasmPlugin::load(
                     &library_path,
                     manifest.plugin.name.clone(),
                     manifest.plugin.version.clone(),
                     manifest.plugin.description.clone(),
                 )?;
-                super::PluginHandle::Wasm { plugin }
+                #[cfg(feature = "wasm-plugins")]
+                {
+                    super::PluginHandle::Wasm { plugin }
+                }
             }
             PluginType::Native => {
                 let library = unsafe {

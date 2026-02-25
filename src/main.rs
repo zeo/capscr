@@ -46,6 +46,10 @@ fn main() -> iced::Result {
 
     let config = config::Config::load().unwrap_or_default();
     let _ = config.ensure_output_dir();
+    std::env::set_var(
+        "ICED_BACKEND",
+        config.performance.renderer.iced_backend_value(),
+    );
 
     let icon = load_icon();
 

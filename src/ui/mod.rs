@@ -5,17 +5,18 @@ pub mod views;
 use iced::{Color, Element, Point, Task, Theme};
 use image::RgbaImage;
 use std::sync::Arc;
+use std::time::Duration;
 
 use crate::capture::{Capture, Rectangle, RegionCapture, ScreenCapture, WindowCapture};
 use crate::clipboard::{get_unique_filepath, save_image, show_notification, ClipboardManager};
-use crate::config::{Config, ImageFormat, PostCaptureAction, UploadDestination};
+use crate::config::{Config, ImageFormat, PostCaptureAction, RendererBackend, UploadDestination};
 use crate::hotkeys::{HotkeyAction, HotkeyManager};
 use crate::overlay::{RecordingOverlay, SelectionResult, UnifiedSelector};
 use crate::plugin::{CaptureType, PluginEvent, PluginManager, PluginResponse};
 use crate::recording::{GifRecorder, RecordingSettings, RecordingState};
 use crate::sound::Sound;
 use crate::tray::{TrayAction, TrayManager};
-use crate::upload::{CustomUploader, ImageUploader, UploadService};
+use crate::upload::{CustomUploader, UploadService};
 
 use self::style::MonochromeTheme;
 
@@ -80,6 +81,10 @@ pub enum SettingChange {
     UploadDestination(UploadDestination),
     CustomUploadUrl(String),
     CopyUrlToClipboard(bool),
+    TickIntervalMs(u32),
+    RendererBackend(RendererBackend),
+    LazyInitUpload(bool),
+    LazyInitPlugins(bool),
 }
 
 #[derive(Debug, Clone)]
@@ -149,9 +154,16 @@ impl App {
         let tray_manager = TrayManager::new(ICON_DATA).ok();
 
         let mut plugin_manager = PluginManager::new();
+        plugin_manager.set_lazy_loading(config.performance.lazy_init_plugins);
         let plugin_errors = plugin_manager.load_all();
         for err in plugin_errors {
             tracing::warn!("Plugin load error: {}", err);
+        }
+
+        if !config.performance.lazy_init_upload {
+            if let Err(e) = crate::upload::shared_uploader() {
+                tracing::warn!("Upload client init error: {}", e);
+            }
         }
 
         let settings_state = views::SettingsState::from_config(&config);
@@ -204,17 +216,21 @@ impl App {
             }
             Message::HotkeyTriggered(action) => match action {
                 HotkeyAction::Screenshot => {
+                    tracing::info!("flow=screenshot trigger=hotkey");
                     return Task::done(Message::TriggerScreenshot);
                 }
                 HotkeyAction::RecordGif => {
+                    tracing::info!("flow=gif trigger=hotkey");
                     return Task::done(Message::TriggerGifRecording);
                 }
             },
             Message::TrayAction(action) => match action {
                 TrayAction::Screenshot => {
+                    tracing::info!("flow=screenshot trigger=tray");
                     return Task::done(Message::TriggerScreenshot);
                 }
                 TrayAction::RecordGif => {
+                    tracing::info!("flow=gif trigger=tray");
                     return Task::done(Message::TriggerGifRecording);
                 }
                 TrayAction::Settings => {
@@ -225,6 +241,7 @@ impl App {
                 }
             },
             Message::TriggerScreenshot => {
+                tracing::info!("flow=screenshot trigger=app");
                 return Task::perform(
                     async move { UnifiedSelector::select() },
                     Message::SelectionComplete,
@@ -232,8 +249,10 @@ impl App {
             }
             Message::TriggerGifRecording => {
                 if self.recording_state == RecordingState::Recording {
+                    tracing::info!("flow=gif action=stop-requested");
                     return self.stop_gif_recording();
                 } else if self.recording_state == RecordingState::Idle {
+                    tracing::info!("flow=gif action=start-requested");
                     return Task::perform(
                         async move { UnifiedSelector::select() },
                         Message::GifSelectionComplete,
@@ -269,7 +288,8 @@ impl App {
                         let _ = cb.copy_file_path(&path);
                     }
                     if self.config.ui.show_notifications {
-                        let _ = show_notification("Capture Complete", &format!("Saved to {}", path));
+                        let _ =
+                            show_notification("Capture Complete", &format!("Saved to {}", path));
                     }
                 }
                 Err(e) => {
@@ -324,14 +344,19 @@ impl App {
                     image: image.clone(),
                     mode: CaptureType::FullScreen,
                 };
+                tracing::info!("flow=plugin stage=post-capture dispatch=true");
                 match self.plugin_manager.dispatch(&event) {
                     PluginResponse::Cancel => {
+                        tracing::info!("flow=plugin stage=post-capture result=cancel");
                         return Task::none();
                     }
                     PluginResponse::ModifiedImage(modified) => {
+                        tracing::info!("flow=plugin stage=post-capture result=modified");
                         image = modified;
                     }
-                    PluginResponse::Continue => {}
+                    PluginResponse::Continue => {
+                        tracing::info!("flow=plugin stage=post-capture result=continue");
+                    }
                 }
 
                 self.pending_image = Some(image);
@@ -423,6 +448,7 @@ impl App {
                 self.pending_image = None;
                 match result {
                     Ok((url, delete_url)) => {
+                        tracing::info!("flow=upload result=success");
                         Sound::Upload.play_if_enabled(self.config.post_capture.play_sound);
                         self.last_upload_url = Some(url.clone());
                         self.last_delete_url = delete_url.clone();
@@ -439,6 +465,7 @@ impl App {
                         }
                     }
                     Err(e) => {
+                        tracing::info!("flow=upload result=failure");
                         if self.config.ui.show_notifications {
                             let _ = show_notification("Upload Failed", &e);
                         }
@@ -607,8 +634,8 @@ impl App {
         #[cfg(windows)]
         {
             use windows::Win32::Foundation::HWND;
-            use windows::Win32::UI::WindowsAndMessaging::GetWindowRect;
             use windows::Win32::Foundation::RECT;
+            use windows::Win32::UI::WindowsAndMessaging::GetWindowRect;
 
             unsafe {
                 let mut rect = RECT::default();
@@ -643,6 +670,7 @@ impl App {
         let mut recorder = GifRecorder::new(settings).with_region(actual_region);
 
         if recorder.start().is_ok() {
+            tracing::info!("flow=gif state=recording-started");
             self.recording_state = RecordingState::Recording;
             self.recording_region = Some(actual_region);
             self.gif_recorder = Some(recorder);
@@ -662,6 +690,7 @@ impl App {
         if let Some(ref mut recorder) = self.gif_recorder {
             recorder.stop();
             self.recording_state = RecordingState::Processing;
+            tracing::info!("flow=gif state=processing");
 
             let output_dir = self.config.output.directory.clone();
             let filename = format!(
@@ -778,6 +807,7 @@ impl App {
 
     fn upload_pending_image(&mut self) -> Task<Message> {
         if let Some(ref image) = self.pending_image {
+            tracing::info!("flow=upload action=start");
             let image = image.clone();
             let destination = self.config.upload.destination;
             let custom_url = self.config.upload.custom_url.clone();
@@ -787,7 +817,7 @@ impl App {
 
             return Task::perform(
                 async move {
-                    let uploader = match ImageUploader::new() {
+                    let uploader = match crate::upload::shared_uploader() {
                         Ok(u) => u,
                         Err(e) => return Err(e.to_string()),
                     };
@@ -866,12 +896,39 @@ impl App {
             SettingChange::CopyUrlToClipboard(copy) => {
                 self.config.upload.copy_url_to_clipboard = copy;
             }
+            SettingChange::TickIntervalMs(ms) => {
+                self.config.performance.tick_interval_ms = ms;
+            }
+            SettingChange::RendererBackend(renderer) => {
+                self.config.performance.renderer = renderer;
+            }
+            SettingChange::LazyInitUpload(lazy) => {
+                self.config.performance.lazy_init_upload = lazy;
+                if !lazy {
+                    if let Err(e) = crate::upload::shared_uploader() {
+                        tracing::warn!("Upload client init error: {}", e);
+                    }
+                }
+            }
+            SettingChange::LazyInitPlugins(lazy) => {
+                self.config.performance.lazy_init_plugins = lazy;
+                self.plugin_manager.set_lazy_loading(lazy);
+                if !lazy {
+                    for err in self.plugin_manager.load_pending() {
+                        tracing::warn!("Plugin load error: {}", err);
+                    }
+                }
+            }
         }
         let _ = self.config.save();
         self.settings_state = views::SettingsState::from_config(&self.config);
     }
 
-    fn build_hotkey_string(&self, key: &iced::keyboard::Key, modifiers: &iced::keyboard::Modifiers) -> Option<String> {
+    fn build_hotkey_string(
+        &self,
+        key: &iced::keyboard::Key,
+        modifiers: &iced::keyboard::Modifiers,
+    ) -> Option<String> {
         let mut parts = Vec::new();
 
         if modifiers.control() {
@@ -940,28 +997,43 @@ impl App {
         }
     }
 
+    fn tick_interval(&self) -> Duration {
+        let base = self.config.performance.tick_interval_ms;
+        let interval_ms = if self.view == View::Hidden
+            && self.recording_state == RecordingState::Idle
+            && self.recording_hotkey.is_none()
+        {
+            (base.saturating_mul(3)).div_ceil(2)
+        } else {
+            base
+        };
+        Duration::from_millis(interval_ms as u64)
+    }
+
     pub fn view(&self) -> Element<'_, Message> {
         match self.view {
-            View::Hidden => {
-                views::HiddenView::view(&self.theme, self.recording_state)
-            }
+            View::Hidden => views::HiddenView::view(&self.theme, self.recording_state),
             View::PostCapture => views::PostCaptureView::view(&self.theme),
             View::Editor => {
-                if let (Some(ref editor), Some(ref image)) = (&self.editor_state, &self.pending_image)
+                if let (Some(ref editor), Some(ref image)) =
+                    (&self.editor_state, &self.pending_image)
                 {
                     views::EditorView::view(&self.theme, editor, image)
                 } else {
                     views::PostCaptureView::view(&self.theme)
                 }
             }
-            View::Settings => {
-                views::SettingsView::view(&self.theme, &self.settings_state, &self.config, self.recording_hotkey)
-            }
+            View::Settings => views::SettingsView::view(
+                &self.theme,
+                &self.settings_state,
+                &self.config,
+                self.recording_hotkey,
+            ),
         }
     }
 
     pub fn subscription(&self) -> iced::Subscription<Message> {
-        let tick = iced::time::every(std::time::Duration::from_millis(100)).map(|_| Message::Tick);
+        let tick = iced::time::every(self.tick_interval()).map(|_| Message::Tick);
 
         if self.recording_hotkey.is_some() {
             let keyboard = iced::keyboard::on_key_press(|key, modifiers| {

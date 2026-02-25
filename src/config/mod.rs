@@ -16,6 +16,8 @@ const MAX_HOTKEY_LEN: usize = 64;
 const MAX_CUSTOM_URL_LEN: usize = 512;
 const MAX_FORM_NAME_LEN: usize = 64;
 const MAX_RESPONSE_PATH_LEN: usize = 128;
+const MIN_TICK_INTERVAL_MS: u32 = 16;
+const MAX_TICK_INTERVAL_MS: u32 = 500;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -28,6 +30,8 @@ pub struct Config {
     pub post_capture: PostCaptureConfig,
     #[serde(default)]
     pub upload: UploadConfig,
+    #[serde(default)]
+    pub performance: PerformanceConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -238,16 +242,77 @@ impl std::fmt::Display for Theme {
     }
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum RendererBackend {
+    #[default]
+    Wgpu,
+    TinySkia,
+}
+
+impl RendererBackend {
+    pub fn all() -> &'static [RendererBackend] {
+        &[RendererBackend::Wgpu, RendererBackend::TinySkia]
+    }
+
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            RendererBackend::Wgpu => "WGPU",
+            RendererBackend::TinySkia => "Tiny Skia",
+        }
+    }
+
+    pub fn iced_backend_value(&self) -> &'static str {
+        match self {
+            RendererBackend::Wgpu => "wgpu",
+            RendererBackend::TinySkia => "tiny-skia",
+        }
+    }
+}
+
+impl std::fmt::Display for RendererBackend {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.display_name())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PerformanceConfig {
+    pub tick_interval_ms: u32,
+    pub renderer: RendererBackend,
+    pub lazy_init_upload: bool,
+    pub lazy_init_plugins: bool,
+}
+
+impl Default for PerformanceConfig {
+    fn default() -> Self {
+        Self {
+            tick_interval_ms: 100,
+            renderer: RendererBackend::TinySkia,
+            lazy_init_upload: true,
+            lazy_init_plugins: true,
+        }
+    }
+}
+
 impl Config {
     pub fn validate(&self) -> Result<()> {
         if self.output.quality > MAX_QUALITY {
             return Err(anyhow!("quality must be <= {}", MAX_QUALITY));
         }
         if self.capture.gif_fps < MIN_GIF_FPS || self.capture.gif_fps > MAX_GIF_FPS {
-            return Err(anyhow!("gif_fps must be between {} and {}", MIN_GIF_FPS, MAX_GIF_FPS));
+            return Err(anyhow!(
+                "gif_fps must be between {} and {}",
+                MIN_GIF_FPS,
+                MAX_GIF_FPS
+            ));
         }
         if self.capture.gif_max_duration_secs > MAX_GIF_DURATION_SECS {
-            return Err(anyhow!("gif_max_duration_secs must be <= {}", MAX_GIF_DURATION_SECS));
+            return Err(anyhow!(
+                "gif_max_duration_secs must be <= {}",
+                MAX_GIF_DURATION_SECS
+            ));
         }
         if self.capture.delay_ms > MAX_DELAY_MS {
             return Err(anyhow!("delay_ms must be <= {}", MAX_DELAY_MS));
@@ -259,16 +324,18 @@ impl Config {
             || self.output.filename_template.contains('\\')
             || self.output.filename_template.contains("..")
         {
-            return Err(anyhow!("filename_template contains invalid path characters"));
+            return Err(anyhow!(
+                "filename_template contains invalid path characters"
+            ));
         }
-        for hotkey in [
-            &self.hotkeys.screenshot,
-            &self.hotkeys.record_gif,
-        ] {
+        for hotkey in [&self.hotkeys.screenshot, &self.hotkeys.record_gif] {
             if hotkey.len() > MAX_HOTKEY_LEN {
                 return Err(anyhow!("hotkey string too long"));
             }
-            if !hotkey.chars().all(|c| c.is_alphanumeric() || c == '+' || c == ' ') {
+            if !hotkey
+                .chars()
+                .all(|c| c.is_alphanumeric() || c == '+' || c == ' ')
+            {
                 return Err(anyhow!("hotkey contains invalid characters"));
             }
         }
@@ -309,13 +376,25 @@ impl Config {
                 return Err(anyhow!("custom response path has invalid format"));
             }
         }
+        if self.performance.tick_interval_ms < MIN_TICK_INTERVAL_MS
+            || self.performance.tick_interval_ms > MAX_TICK_INTERVAL_MS
+        {
+            return Err(anyhow!(
+                "tick_interval_ms must be between {} and {}",
+                MIN_TICK_INTERVAL_MS,
+                MAX_TICK_INTERVAL_MS
+            ));
+        }
         Ok(())
     }
 
     fn sanitize(&mut self) {
         self.output.quality = self.output.quality.min(MAX_QUALITY);
         self.capture.gif_fps = self.capture.gif_fps.clamp(MIN_GIF_FPS, MAX_GIF_FPS);
-        self.capture.gif_max_duration_secs = self.capture.gif_max_duration_secs.min(MAX_GIF_DURATION_SECS);
+        self.capture.gif_max_duration_secs = self
+            .capture
+            .gif_max_duration_secs
+            .min(MAX_GIF_DURATION_SECS);
         self.capture.delay_ms = self.capture.delay_ms.min(MAX_DELAY_MS);
 
         if self.output.filename_template.len() > MAX_FILENAME_TEMPLATE_LEN
@@ -355,6 +434,11 @@ impl Config {
         {
             self.upload.custom_url = String::new();
         }
+
+        self.performance.tick_interval_ms = self
+            .performance
+            .tick_interval_ms
+            .clamp(MIN_TICK_INTERVAL_MS, MAX_TICK_INTERVAL_MS);
     }
 }
 
@@ -395,6 +479,7 @@ impl Default for Config {
             },
             post_capture: PostCaptureConfig::default(),
             upload: UploadConfig::default(),
+            performance: PerformanceConfig::default(),
         }
     }
 }
@@ -455,8 +540,8 @@ impl Config {
         let canonical = fs::canonicalize(dir)?;
 
         let home = directories::BaseDirs::new().map(|b| b.home_dir().to_path_buf());
-        let pictures = directories::UserDirs::new()
-            .and_then(|d| d.picture_dir().map(|p| p.to_path_buf()));
+        let pictures =
+            directories::UserDirs::new().and_then(|d| d.picture_dir().map(|p| p.to_path_buf()));
 
         let mut allowed = false;
 
@@ -519,5 +604,28 @@ impl Config {
 
     pub fn output_path(&self) -> PathBuf {
         self.output.directory.join(self.generate_filename())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_default_performance_config() {
+        let config = Config::default();
+        assert_eq!(config.performance.tick_interval_ms, 100);
+        assert_eq!(config.performance.renderer, RendererBackend::TinySkia);
+        assert!(config.performance.lazy_init_upload);
+        assert!(config.performance.lazy_init_plugins);
+    }
+
+    #[test]
+    fn test_validate_rejects_invalid_tick_interval() {
+        let mut config = Config::default();
+        config.performance.tick_interval_ms = 10;
+        assert!(config.validate().is_err());
+        config.performance.tick_interval_ms = 700;
+        assert!(config.validate().is_err());
     }
 }
