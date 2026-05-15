@@ -132,12 +132,27 @@ pub fn run_capture_pipeline(
         }
     }
 
+    if matches!(post, PostActionArg::OpenEditor) {
+        let config = state.config.lock().unwrap().clone();
+        let base = config.output_path();
+        let path = get_unique_filepath(&base);
+        std::fs::create_dir_all(&config.output.directory).ok();
+        crate::clipboard::save_image(&image, &path, config.output.format, config.output.quality)?;
+        *state.last_save.lock().unwrap() = Some(path.clone());
+        open_in_default_image_editor(&path)?;
+        Sound::Screenshot.play_if_enabled(config.post_capture.play_sound);
+        if config.ui.show_notifications {
+            let _ = show_notification("Capture opened", &path.to_string_lossy());
+        }
+        return Ok(());
+    }
+
     let post_action = match post {
         PostActionArg::Clipboard => PostCaptureAction::CopyToClipboard,
         PostActionArg::SaveFile => PostCaptureAction::SaveToFile,
         PostActionArg::Upload => PostCaptureAction::Upload,
         PostActionArg::SaveAndClipboard => PostCaptureAction::SaveAndCopy,
-        PostActionArg::OpenEditor => PostCaptureAction::PromptUser,
+        PostActionArg::OpenEditor => unreachable!(),
         PostActionArg::Prompt => PostCaptureAction::PromptUser,
     };
 
@@ -248,6 +263,21 @@ fn run_post_action(
                 );
             }
         }
+    }
+    Ok(())
+}
+
+pub fn open_in_default_image_editor(path: &std::path::Path) -> anyhow::Result<()> {
+    #[cfg(windows)]
+    {
+        std::process::Command::new("cmd")
+            .args(["/C", "start", "\"\"", "/B"])
+            .arg(path)
+            .spawn()?;
+    }
+    #[cfg(not(windows))]
+    {
+        std::process::Command::new("xdg-open").arg(path).spawn()?;
     }
     Ok(())
 }
