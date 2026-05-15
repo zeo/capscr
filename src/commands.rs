@@ -97,6 +97,17 @@ pub fn run_capture_pipeline(
         SelectionResult::Region(rect) => RegionCapture::new(rect).capture()?,
         SelectionResult::Window(hwnd) => WindowCapture::new(hwnd).capture()?,
         SelectionResult::FullScreen => capture_active_monitor()?,
+        SelectionResult::PickedColor(r, g, b) => {
+            let hex = format!("#{:02X}{:02X}{:02X}", r, g, b);
+            let mut cb = ClipboardManager::new()?;
+            cb.copy_text(&hex)?;
+            let state = app.state::<AppState>();
+            let show = state.config.lock().unwrap().ui.show_notifications;
+            if show {
+                let _ = show_notification("Color picked", &hex);
+            }
+            return Ok(());
+        }
     };
 
     let state = app.state::<AppState>();

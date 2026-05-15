@@ -86,6 +86,14 @@ impl ClipboardManager {
 
         self.retry_with_backoff(|clipboard| clipboard.set_text(path_str.clone()))
     }
+
+    pub fn copy_text(&mut self, text: &str) -> Result<()> {
+        if text.len() > 4096 {
+            return Err(anyhow!("Text too long for clipboard"));
+        }
+        let owned = text.to_string();
+        self.retry_with_backoff(|clipboard| clipboard.set_text(owned.clone()))
+    }
 }
 
 const WINDOWS_INVALID_CHARS: &[char] = &['<', '>', ':', '"', '/', '\\', '|', '?', '*'];

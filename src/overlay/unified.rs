@@ -8,6 +8,7 @@ pub enum SelectionResult {
     Window(u32),
     FullScreen,
     Cancelled,
+    PickedColor(u8, u8, u8),
 }
 
 #[cfg(windows)]
@@ -58,6 +59,19 @@ mod windows_impl {
     static CANCELLED: AtomicBool = AtomicBool::new(false);
     static FULLSCREEN: AtomicBool = AtomicBool::new(false);
     static WINDOW_SELECTED: AtomicU32 = AtomicU32::new(0);
+    static PICKED_COLOR_SET: AtomicBool = AtomicBool::new(false);
+    static PICKED_R: AtomicU32 = AtomicU32::new(0);
+    static PICKED_G: AtomicU32 = AtomicU32::new(0);
+    static PICKED_B: AtomicU32 = AtomicU32::new(0);
+
+    fn alt_held() -> bool {
+        unsafe {
+            let state = windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState(
+                windows::Win32::UI::Input::KeyboardAndMouse::VK_MENU.0 as i32,
+            );
+            state < 0
+        }
+    }
 
     static SCREEN_BITMAP: Mutex<Option<isize>> = Mutex::new(None);
     static SCREEN_DC: Mutex<Option<isize>> = Mutex::new(None);
@@ -159,6 +173,7 @@ mod windows_impl {
         FULLSCREEN.store(false, Ordering::SeqCst);
         WINDOW_SELECTED.store(0, Ordering::SeqCst);
         HOVERED_WINDOW.store(0, Ordering::SeqCst);
+        PICKED_COLOR_SET.store(false, Ordering::SeqCst);
 
         let windows = enumerate_windows();
         *WINDOW_LIST.lock().unwrap() = windows;
@@ -255,6 +270,13 @@ mod windows_impl {
 
             if CANCELLED.load(Ordering::SeqCst) {
                 return SelectionResult::Cancelled;
+            }
+
+            if PICKED_COLOR_SET.load(Ordering::SeqCst) {
+                let r = PICKED_R.load(Ordering::SeqCst) as u8;
+                let g = PICKED_G.load(Ordering::SeqCst) as u8;
+                let b = PICKED_B.load(Ordering::SeqCst) as u8;
+                return SelectionResult::PickedColor(r, g, b);
             }
 
             if FULLSCREEN.load(Ordering::SeqCst) {
@@ -499,6 +521,32 @@ mod windows_impl {
             WM_LBUTTONDOWN => {
                 let mut pt = POINT::default();
                 GetCursorPos(&mut pt).ok();
+                if alt_held() {
+                    if let Some(dc) = *SCREEN_DC.lock().unwrap() {
+                        let virt_x = VIRTUAL_X.load(Ordering::SeqCst);
+                        let virt_y = VIRTUAL_Y.load(Ordering::SeqCst);
+                        let mem_dc = HDC(dc as *mut _);
+                        if let Some(bmp) = *SCREEN_BITMAP.lock().unwrap() {
+                            let old_bmp = SelectObject(mem_dc, HBITMAP(bmp as *mut _));
+                            let color = windows::Win32::Graphics::Gdi::GetPixel(
+                                mem_dc,
+                                pt.x - virt_x,
+                                pt.y - virt_y,
+                            );
+                            SelectObject(mem_dc, old_bmp);
+                            let r = (color.0 & 0xFF) as u32;
+                            let g = ((color.0 >> 8) & 0xFF) as u32;
+                            let b = ((color.0 >> 16) & 0xFF) as u32;
+                            PICKED_R.store(r, Ordering::SeqCst);
+                            PICKED_G.store(g, Ordering::SeqCst);
+                            PICKED_B.store(b, Ordering::SeqCst);
+                            PICKED_COLOR_SET.store(true, Ordering::SeqCst);
+                        }
+                    }
+                    SELECTING.store(false, Ordering::SeqCst);
+                    PostQuitMessage(0);
+                    return LRESULT(0);
+                }
                 START_X.store(pt.x, Ordering::SeqCst);
                 START_Y.store(pt.y, Ordering::SeqCst);
                 END_X.store(pt.x, Ordering::SeqCst);
