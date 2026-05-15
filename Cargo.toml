@@ -1,20 +1,29 @@
 [package]
 name = "capscr"
-version = "0.2.2"
+version = "0.3.0"
 edition = "2021"
-description = "A clean, modern screen capture tool"
+description = "A clean, modern screen capture tool with HDR support"
 authors = ["capscr"]
 license = "MIT"
 repository = "https://github.com/lintowe/capscr"
 
 [features]
 default = []
-linux-tray = ["dep:linux-tray-icon"]
 wasm-plugins = ["dep:wasmtime"]
 
 [dependencies]
-# GUI Framework
-iced = { version = "0.13", features = ["image", "tokio", "advanced", "canvas"] }
+# GUI shell. tauri-runtime-wry 2.9.x has a Send+Sync mismatch with current wry
+# release. Forcing the wry source to a known-good tag via [patch.crates-io] below.
+tauri = { version = "2", features = ["tray-icon", "image-png", "image-ico", "protocol-asset"] }
+tauri-plugin-clipboard-manager = "2"
+tauri-plugin-notification = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-fs = "2"
+tauri-plugin-opener = "2"
+tauri-plugin-updater = "2"
+
+# Global hotkeys (native, polled from a tokio task)
+global-hotkey = "0.6"
 
 # Screen capture
 xcap = "0.0.14"
@@ -27,10 +36,7 @@ gif = "0.13"
 imgref = "1.10"
 rgb = "0.8"
 
-# Global hotkeys
-global-hotkey = "0.6"
-
-# Clipboard
+# Clipboard (native fallback)
 arboard = "3.4"
 
 # Configuration
@@ -46,7 +52,7 @@ reqwest = { version = "0.12", features = ["blocking", "multipart", "json"] }
 url = "2.5"
 
 # Async runtime
-tokio = { version = "1.0", features = ["rt-multi-thread", "time", "sync"] }
+tokio = { version = "1.0", features = ["rt-multi-thread", "time", "sync", "macros"] }
 
 # Error handling
 anyhow = "1.0"
@@ -59,26 +65,27 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # Date/time for filenames
 chrono = "0.4"
 
-# File dialogs
-rfd = "0.15"
-
-# Notifications
-notify-rust = "4.11"
-
 # Audio playback
 rodio = { version = "0.19", default-features = false, features = ["wav"] }
+
+# Native notifications (the tauri plugin doesn't expose a Rust-side API yet)
+notify-rust = "4.11"
 
 # UUID for unique identifiers
 uuid = { version = "1.0", features = ["v4"] }
 
 # Plugin system
-libloading = "0.8"
 zip = "2.2"
 semver = "1.0"
 wasmtime = { version = "41.0.4", optional = true }
 
+# Upload destinations
+suppaftp = { version = "6.0", features = ["native-tls"] }
+
+# HDR-preserved output (Phase 10 will add JXL/AVIF; pure-rust PNG cICP is fine here)
+png = "0.17"
+
 [target.'cfg(windows)'.dependencies]
-tray-icon = "0.19"
 windows = { version = "0.58", features = [
     "Win32_Foundation",
     "Win32_UI_WindowsAndMessaging",
@@ -100,21 +107,20 @@ windows = { version = "0.58", features = [
 ] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-linux-tray-icon = { package = "tray-icon", version = "0.19", optional = true }
 x11rb = "0.13"
 
 
 [build-dependencies]
-embed-resource = "2.4"
+tauri-build = { version = "2", features = [] }
+
+[patch.crates-io]
+# Force wry to the last release before the Send+Sync breaking change in
+# new_window_req_handler. tauri-runtime-wry 2.9.x calls it with a Send-only
+# closure and won't compile against wry 0.53+.
+wry = { git = "https://github.com/tauri-apps/wry", tag = "wry-v0.52.1" }
 
 [profile.release]
 lto = true
 codegen-units = 1
 panic = "abort"
 strip = true
-
-[package.metadata.wix]
-upgrade-guid = "A1B2C3D4-E5F6-7890-ABCD-EF1234567890"
-path-guid = "B2C3D4E5-F6A7-8901-BCDE-F12345678901"
-license = false
-eula = false

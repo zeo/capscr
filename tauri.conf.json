@@ -1,0 +1,33 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "capscr",
+  "version": "0.3.0",
+  "identifier": "io.rot.capscr",
+  "build": {
+    "frontendDist": "./frontend/dist",
+    "devUrl": "http://localhost:1420",
+    "beforeDevCommand": "npm --prefix frontend run dev",
+    "beforeBuildCommand": "npm --prefix frontend run build"
+  },
+  "app": {
+    "windows": [],
+    "security": {
+      "csp": null,
+      "assetProtocol": {
+        "enable": true,
+        "scope": ["$PICTURE/capscr/**", "$HOME/Pictures/capscr/**"]
+      }
+    },
+    "withGlobalTauri": false
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["msi", "nsis"],
+    "icon": [
+      "icon.ico"
+    ],
+    "category": "Utility",
+    "shortDescription": "Modern HDR-aware screen capture",
+    "longDescription": "capscr is a screen capture tool with HDR support, plugin marketplace, and per-hotkey task chains."
+  }
+}

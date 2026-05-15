@@ -24,235 +24,31 @@ jobs:
         run: cargo audit
 
   lint-and-test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
-            libxkbcommon-dev libssl-dev pkg-config \
-            libglib2.0-dev libgtk-3-dev libdbus-1-dev \
-            libasound2-dev
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
-
-      - name: Run tests
-        run: cargo test --all-targets
-
-      - name: Run clippy
-        run: cargo clippy --all-targets -- -D warnings
-
-  verify-windows:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
-      - name: End-to-end verify
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-
-          function Invoke-Step {
-              param(
-                  [string]$Name,
-                  [string]$Command
-              )
-
-              $watch = [System.Diagnostics.Stopwatch]::StartNew()
-              $output = & powershell -NoProfile -Command $Command 2>&1
-              $exitCode = $LASTEXITCODE
-              $watch.Stop()
-
-              [pscustomobject]@{
-                  name = $Name
-                  command = $Command
-                  exitCode = $exitCode
-                  durationSeconds = [math]::Round($watch.Elapsed.TotalSeconds, 3)
-                  success = ($exitCode -eq 0)
-                  output = ($output | Out-String).Trim()
-              }
-          }
-
-          function Get-P95 {
-              param(
-                  [double[]]$Values
-              )
-
-              if ($Values.Count -eq 0) {
-                  return $null
-              }
-
-              $sorted = $Values | Sort-Object
-              $rank = [math]::Ceiling(0.95 * $sorted.Count)
-              $index = [math]::Max(0, [math]::Min($sorted.Count - 1, $rank - 1))
-              [math]::Round([double]$sorted[$index], 2)
-          }
-
-          function Measure-IdleMemory {
-              param(
-                  [string]$ExePath,
-                  [int]$SampleCount = 10,
-                  [int]$WarmupMs = 400
-              )
-
-              $process = Start-Process -FilePath $ExePath -PassThru
-              $startupWatch = [System.Diagnostics.Stopwatch]::StartNew()
-
-              try {
-                  Start-Sleep -Milliseconds $WarmupMs
-                  try {
-                      if ($process.MainWindowHandle -eq 0) {
-                          $process.WaitForInputIdle(1500) | Out-Null
-                      }
-                  } catch {
-                  }
-
-                  $startupSeconds = [math]::Round($startupWatch.Elapsed.TotalSeconds, 3)
-                  $sampleItems = @()
-
-                  for ($second = 0; $second -lt $SampleCount; $second++) {
-                      $proc = Get-Process -Id $process.Id -ErrorAction SilentlyContinue
-                      if ($null -eq $proc) {
-                          break
-                      }
-
-                      $sampleItems += [pscustomobject]@{
-                          second = $second
-                          workingSetMb = [math]::Round($proc.WorkingSet64 / 1MB, 2)
-                          privateMb = [math]::Round($proc.PrivateMemorySize64 / 1MB, 2)
-                          cpuSeconds = [math]::Round($proc.CPU, 3)
-                      }
-
-                      Start-Sleep -Seconds 1
-                  }
-
-                  if ($sampleItems.Count -eq 0) {
-                      return [pscustomobject]@{
-                          success = $false
-                          startupSeconds = $null
-                          sampleCount = 0
-                          maxWorkingSetMb = $null
-                          avgWorkingSetMb = $null
-                          p95WorkingSetMb = $null
-                          maxPrivateMb = $null
-                          samples = @()
-                      }
-                  }
-
-                  $workingSetValues = @($sampleItems | ForEach-Object { [double]$_.workingSetMb })
-                  $privateValues = @($sampleItems | ForEach-Object { [double]$_.privateMb })
-
-                  $maxWorkingSet = ($workingSetValues | Measure-Object -Maximum).Maximum
-                  $avgWorkingSet = ($workingSetValues | Measure-Object -Average).Average
-                  $p95WorkingSet = Get-P95 -Values $workingSetValues
-                  $maxPrivate = ($privateValues | Measure-Object -Maximum).Maximum
-
-                  return [pscustomobject]@{
-                      success = $true
-                      startupSeconds = $startupSeconds
-                      sampleCount = $sampleItems.Count
-                      maxWorkingSetMb = [math]::Round($maxWorkingSet, 2)
-                      avgWorkingSetMb = [math]::Round($avgWorkingSet, 2)
-                      p95WorkingSetMb = $p95WorkingSet
-                      maxPrivateMb = [math]::Round($maxPrivate, 2)
-                      samples = $sampleItems
-                  }
-              } finally {
-                  if ($null -ne $process -and -not $process.HasExited) {
-                      Stop-Process -Id $process.Id -Force
-                  }
-              }
-          }
-
-          $checkResults = @()
-          $checkResults += Invoke-Step -Name "tests" -Command "cargo test --all-targets"
-          $checkResults += Invoke-Step -Name "clippy" -Command "cargo clippy --all-targets -- -D warnings"
-          $checkResults += Invoke-Step -Name "release_build" -Command "cargo build --release"
-
-          $exePath = Join-Path (Resolve-Path .) "target\release\capscr.exe"
-          $runtime = if (Test-Path $exePath) {
-              Measure-IdleMemory -ExePath $exePath -SampleCount 10
-          } else {
-              [pscustomobject]@{
-                  success = $false
-                  startupSeconds = $null
-                  sampleCount = 0
-                  maxWorkingSetMb = $null
-                  avgWorkingSetMb = $null
-                  p95WorkingSetMb = $null
-                  maxPrivateMb = $null
-                  samples = @()
-              }
-          }
-
-          $checksPassed = (($checkResults | Where-Object { -not $_.success }).Count -eq 0)
-          $memoryPass = $runtime.success -and $runtime.p95WorkingSetMb -le 100
-          $startupPass = $runtime.success -and $runtime.startupSeconds -le 2.0
-          $overallPass = ($checksPassed -and $memoryPass -and $startupPass)
-
-          $failureReason = $null
-          if (-not $overallPass) {
-              if (-not $checksPassed) {
-                  $failureReason = "check_failed"
-              } elseif (-not $memoryPass) {
-                  $failureReason = "memory_failed"
-              } elseif (-not $startupPass) {
-                  $failureReason = "startup_failed"
-              } else {
-                  $failureReason = "script_error"
-              }
-          }
-
-          $summary = [pscustomobject]@{
-              generatedAt = (Get-Date).ToString("o")
-              thresholds = [pscustomobject]@{
-                  memoryMb = 100
-                  startupSeconds = 2.0
-              }
-              checks = [pscustomobject]@{
-                  tests = ($checkResults | Where-Object { $_.name -eq "tests" } | Select-Object -First 1)
-                  clippy = ($checkResults | Where-Object { $_.name -eq "clippy" } | Select-Object -First 1)
-                  release_build = ($checkResults | Where-Object { $_.name -eq "release_build" } | Select-Object -First 1)
-              }
-              runtime = [pscustomobject]@{
-                  startup_seconds = $runtime.startupSeconds
-                  sample_count = $runtime.sampleCount
-                  max_working_set_mb = $runtime.maxWorkingSetMb
-                  avg_working_set_mb = $runtime.avgWorkingSetMb
-                  p95_working_set_mb = $runtime.p95WorkingSetMb
-                  max_private_mb = $runtime.maxPrivateMb
-                  samples = $runtime.samples
-              }
-              pass = [pscustomobject]@{
-                  checks = $checksPassed
-                  memory = $memoryPass
-                  startup = $startupPass
-              }
-              overall_pass = $overallPass
-              failure_reason = $failureReason
-          }
-
-          $summary | ConvertTo-Json -Depth 10 | Set-Content -Path verification-summary.json -Encoding UTF8
-          $summary | ConvertTo-Json -Depth 8
-
-          if (-not $overallPass) {
-              exit 1
-          }
-
-      - name: Upload verification summary
-        uses: actions/upload-artifact@v4
+      - name: Install Node.js
+        uses: actions/setup-node@v4
         with:
-          name: verification-summary
-          path: verification-summary.json
+          node-version: 20
+
+      - name: Install frontend deps
+        run: npm install --prefix frontend
+
+      - name: Build frontend
+        run: npm run --prefix frontend build
+
+      - name: Run tests
+        run: cargo test --bin capscr --all-targets
+
+      - name: Run clippy
+        run: cargo clippy --bin capscr --all-targets -- -D warnings

@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use anyhow::{anyhow, Result};
 use arboard::Clipboard;
 use image::RgbaImage;

@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 mod gif_encoder;
 
 pub use gif_encoder::GifRecorder;

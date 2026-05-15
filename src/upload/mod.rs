@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use anyhow::{anyhow, Result};
 use image::RgbaImage;
 use std::io::Cursor;

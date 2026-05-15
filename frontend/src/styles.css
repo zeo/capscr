@@ -1,0 +1,192 @@
+:root {
+  --bg: #0f1115;
+  --bg-2: #161922;
+  --bg-3: #1e222d;
+  --fg: #d8dde7;
+  --fg-dim: #8a93a3;
+  --accent: #8ab4ff;
+  --accent-dim: #5d7bbf;
+  --border: #2a2f3b;
+  --danger: #e57373;
+  --ok: #81c784;
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    Helvetica, Arial, sans-serif;
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--fg);
+  font-size: 13px;
+}
+
+.app {
+  display: grid;
+  grid-template-columns: 180px 1fr;
+  height: 100vh;
+}
+
+.sidebar {
+  background: var(--bg-2);
+  border-right: 1px solid var(--border);
+  padding: 16px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.sidebar header {
+  padding: 0 16px 12px;
+  font-weight: 600;
+  letter-spacing: 0.4px;
+  color: var(--fg-dim);
+  text-transform: uppercase;
+  font-size: 11px;
+}
+
+.tab {
+  padding: 8px 16px;
+  cursor: pointer;
+  border-left: 2px solid transparent;
+  color: var(--fg-dim);
+}
+
+.tab:hover {
+  background: var(--bg-3);
+  color: var(--fg);
+}
+
+.tab.active {
+  background: var(--bg-3);
+  color: var(--fg);
+  border-left-color: var(--accent);
+}
+
+.content {
+  padding: 24px 32px;
+  overflow: auto;
+}
+
+h1 {
+  font-size: 18px;
+  font-weight: 600;
+  margin: 0 0 16px;
+}
+
+h2 {
+  font-size: 14px;
+  font-weight: 600;
+  margin: 24px 0 8px;
+  color: var(--fg-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+
+.field {
+  display: grid;
+  grid-template-columns: 200px 1fr;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 0;
+}
+
+.field label {
+  color: var(--fg-dim);
+}
+
+input[type="text"],
+input[type="number"],
+select {
+  background: var(--bg-3);
+  border: 1px solid var(--border);
+  color: var(--fg);
+  padding: 6px 10px;
+  border-radius: 4px;
+  font-size: 13px;
+  width: 280px;
+}
+
+input[type="text"]:focus,
+input[type="number"]:focus,
+select:focus {
+  outline: none;
+  border-color: var(--accent-dim);
+}
+
+button {
+  background: var(--accent-dim);
+  color: white;
+  border: none;
+  padding: 6px 14px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+button:hover {
+  background: var(--accent);
+}
+
+button.ghost {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--fg);
+}
+
+button.ghost:hover {
+  border-color: var(--accent-dim);
+}
+
+.row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 12px;
+}
+
+.card {
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px;
+}
+
+.card img {
+  width: 100%;
+  height: 120px;
+  object-fit: cover;
+  border-radius: 4px;
+  background: var(--bg-3);
+}
+
+.card .meta {
+  font-size: 11px;
+  color: var(--fg-dim);
+  margin-top: 6px;
+}
+
+.status {
+  position: fixed;
+  bottom: 12px;
+  right: 16px;
+  padding: 6px 12px;
+  background: var(--bg-3);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--fg-dim);
+  font-size: 11px;
+}
