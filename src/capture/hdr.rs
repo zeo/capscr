@@ -1,7 +1,8 @@
 use anyhow::{anyhow, Result};
 use image::RgbaImage;
 
-use super::tonemapping;
+use super::tonemapping::{hdr10_to_sdr_skiv, hlg_to_sdr_skiv, scrgb_to_sdr_skiv, SkivParams};
+use super::current_skiv_params;
 
 const MAX_HDR_DIMENSION: u32 = 16384;
 const MAX_HDR_PIXELS: usize = 256 * 1024 * 1024;
@@ -115,6 +116,8 @@ impl HdrCapture {
             _ => return RgbaImage::new(1, 1),
         };
 
+        let params = effective_params(current_skiv_params(), sdr_white);
+
         match format {
             HdrFormat::ScRgb => {
                 let expected_bytes = pixel_count.saturating_mul(16);
@@ -129,7 +132,7 @@ impl HdrCapture {
                         if val.is_finite() { val } else { 0.0 }
                     })
                     .collect();
-                tonemapping::scrgb_to_sdr(&float_data, width, height, sdr_white)
+                scrgb_to_sdr_skiv(&float_data, width, height, params)
             }
             HdrFormat::Hdr10 => {
                 let expected_bytes = pixel_count.saturating_mul(8);
@@ -140,14 +143,14 @@ impl HdrCapture {
                     .chunks_exact(2)
                     .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
                     .collect();
-                tonemapping::hdr10_to_sdr(&u16_data, width, height, sdr_white)
+                hdr10_to_sdr_skiv(&u16_data, width, height, params)
             }
             HdrFormat::Hlg => {
                 let expected_bytes = pixel_count.saturating_mul(4);
                 if raw_data.len() < expected_bytes {
                     return RgbaImage::new(width, height);
                 }
-                tonemapping::hlg_to_sdr(raw_data, width, height, sdr_white)
+                hlg_to_sdr_skiv(raw_data, width, height, params)
             }
             HdrFormat::Sdr => {
                 // Already SDR, just copy
@@ -174,6 +177,13 @@ impl Default for HdrCapture {
     fn default() -> Self {
         Self::new()
     }
+}
+
+fn effective_params(mut params: SkivParams, display_sdr_white_nits: f32) -> SkivParams {
+    if params.sdr_brightness_nits <= 0.0 {
+        params.sdr_brightness_nits = display_sdr_white_nits.max(80.0);
+    }
+    params
 }
 
 #[cfg(target_os = "windows")]

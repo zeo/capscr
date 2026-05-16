@@ -37,6 +37,23 @@ fn set_dpi_awareness() {
 #[cfg(not(windows))]
 fn set_dpi_awareness() {}
 
+fn install_hdr_runtime_from_config(config: &config::Config) {
+    use capture::{SkivMode, SkivParams};
+    use config::HdrCompressionMode;
+
+    let mode = match config.capture.hdr.mode {
+        HdrCompressionMode::MapCllToDisplay => SkivMode::MapCllToDisplay,
+        HdrCompressionMode::NormalizeToCll => SkivMode::NormalizeToCll,
+    };
+    let params = SkivParams {
+        mode,
+        sdr_brightness_nits: config.capture.hdr.brightness_nits,
+        user_brightness_scale: config.capture.hdr.user_brightness_scale,
+        use_p99_max_cll: config.capture.hdr.use_p99_max_cll,
+    };
+    capture::install_skiv_params(params);
+}
+
 fn main() -> iced::Result {
     set_dpi_awareness();
 
@@ -46,6 +63,7 @@ fn main() -> iced::Result {
 
     let config = config::Config::load().unwrap_or_default();
     let _ = config.ensure_output_dir();
+    install_hdr_runtime_from_config(&config);
     std::env::set_var(
         "ICED_BACKEND",
         config.performance.renderer.iced_backend_value(),

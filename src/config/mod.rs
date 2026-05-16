@@ -97,6 +97,57 @@ pub struct CaptureConfig {
     pub delay_ms: u32,
     pub gif_fps: u32,
     pub gif_max_duration_secs: u32,
+    #[serde(default)]
+    pub hdr: HdrConfig,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum HdrCompressionMode {
+    MapCllToDisplay,
+    NormalizeToCll,
+}
+
+impl HdrCompressionMode {
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            HdrCompressionMode::MapCllToDisplay => "Map peak to display (SDR-friendly)",
+            HdrCompressionMode::NormalizeToCll => "Normalize to peak (HDR-friendly)",
+        }
+    }
+
+    pub fn all() -> &'static [HdrCompressionMode] {
+        &[
+            HdrCompressionMode::MapCllToDisplay,
+            HdrCompressionMode::NormalizeToCll,
+        ]
+    }
+}
+
+impl std::fmt::Display for HdrCompressionMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.display_name())
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HdrConfig {
+    pub mode: HdrCompressionMode,
+    pub brightness_nits: f32,
+    pub user_brightness_scale: f32,
+    pub use_p99_max_cll: bool,
+}
+
+impl Default for HdrConfig {
+    fn default() -> Self {
+        Self {
+            mode: HdrCompressionMode::MapCllToDisplay,
+            brightness_nits: 80.0,
+            user_brightness_scale: 1.0,
+            use_p99_max_cll: true,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -385,6 +436,20 @@ impl Config {
                 MAX_TICK_INTERVAL_MS
             ));
         }
+        if !self.capture.hdr.brightness_nits.is_finite()
+            || self.capture.hdr.brightness_nits < 1.0
+            || self.capture.hdr.brightness_nits > 10000.0
+        {
+            return Err(anyhow!("hdr.brightness_nits must be between 1 and 10000"));
+        }
+        if !self.capture.hdr.user_brightness_scale.is_finite()
+            || self.capture.hdr.user_brightness_scale <= 0.0
+            || self.capture.hdr.user_brightness_scale > 100.0
+        {
+            return Err(anyhow!(
+                "hdr.user_brightness_scale must be between 0 (exclusive) and 100"
+            ));
+        }
         Ok(())
     }
 
@@ -466,6 +531,7 @@ impl Default for Config {
                 delay_ms: 0,
                 gif_fps: 15,
                 gif_max_duration_secs: 30,
+                hdr: HdrConfig::default(),
             },
             hotkeys: HotkeyConfig {
                 screenshot: "Ctrl+Shift+S".to_string(),

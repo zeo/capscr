@@ -9,6 +9,19 @@ mod tonemapping;
 pub use screen::ScreenCapture;
 pub use window::WindowCapture;
 pub use region::RegionCapture;
+pub use tonemapping::{SkivMode, SkivParams};
+
+use std::sync::OnceLock;
+
+static SKIV_OVERRIDE: OnceLock<SkivParams> = OnceLock::new();
+
+pub fn install_skiv_params(params: SkivParams) {
+    let _ = SKIV_OVERRIDE.set(params);
+}
+
+pub fn current_skiv_params() -> SkivParams {
+    SKIV_OVERRIDE.get().copied().unwrap_or_default()
+}
 
 use anyhow::Result;
 use image::RgbaImage;
