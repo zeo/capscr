@@ -20,6 +20,18 @@ pub enum UploadService {
     #[default]
     Imgur,
     Custom(CustomUploader),
+    Ftp(FtpTarget),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct FtpTarget {
+    pub host: String,
+    pub port: u16,
+    pub username: String,
+    pub password: String,
+    pub remote_dir: String,
+    pub use_tls: bool,
+    pub public_url_template: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -229,6 +241,7 @@ impl ImageUploader {
         match service {
             UploadService::Imgur => self.upload_imgur(&png_data),
             UploadService::Custom(config) => self.upload_custom(&png_data, config),
+            UploadService::Ftp(target) => upload_ftp(&png_data, target),
         }
     }
 
@@ -449,6 +462,90 @@ pub fn copy_url_to_clipboard(url: &str) -> Result<()> {
     let mut clipboard = Clipboard::new()?;
     clipboard.set_text(url.to_string())?;
     Ok(())
+}
+
+fn generate_remote_filename() -> String {
+    let now = chrono::Local::now();
+    let ts = now.format("%Y%m%d_%H%M%S").to_string();
+    let uuid = uuid::Uuid::new_v4();
+    format!("capscr_{}_{}.png", ts, &uuid.as_simple().to_string()[..8])
+}
+
+fn build_url(template: &str, filename: &str) -> Result<String> {
+    if template.is_empty() {
+        return Err(anyhow!(
+            "public_url_template is empty; set it to something like https://files.example.com/{{filename}}"
+        ));
+    }
+    if !template.starts_with("https://") && !template.starts_with("http://") {
+        return Err(anyhow!("public_url_template must start with https:// or http://"));
+    }
+    let url = template.replace("{filename}", filename);
+    if url.len() > MAX_URL_LEN {
+        return Err(anyhow!("Constructed URL too long"));
+    }
+    Ok(url)
+}
+
+fn validate_remote_dir(dir: &str) -> Result<()> {
+    if dir.contains("..") {
+        return Err(anyhow!("remote_dir cannot contain '..'"));
+    }
+    if dir.len() > 256 {
+        return Err(anyhow!("remote_dir too long"));
+    }
+    Ok(())
+}
+
+fn validate_host(host: &str) -> Result<()> {
+    if host.is_empty() {
+        return Err(anyhow!("host is empty"));
+    }
+    if host.len() > 253 {
+        return Err(anyhow!("host too long"));
+    }
+    if !host.chars().all(|c| c.is_alphanumeric() || c == '.' || c == '-' || c == ':') {
+        return Err(anyhow!("host contains invalid characters"));
+    }
+    Ok(())
+}
+
+pub fn upload_ftp(png_data: &[u8], target: &FtpTarget) -> Result<UploadResult> {
+    use std::io::Cursor;
+    use suppaftp::FtpStream;
+
+    validate_host(&target.host)?;
+    validate_remote_dir(&target.remote_dir)?;
+    if target.use_tls {
+        return Err(anyhow!("FTPS not yet implemented; disable use_tls or use SFTP"));
+    }
+
+    let filename = generate_remote_filename();
+    let address = format!("{}:{}", target.host, target.port.max(1));
+
+    let mut stream = FtpStream::connect(&address)
+        .map_err(|e| anyhow!("FTP connect to {} failed: {}", address, e))?;
+    stream
+        .login(&target.username, &target.password)
+        .map_err(|e| anyhow!("FTP login failed: {}", e))?;
+
+    if !target.remote_dir.is_empty() {
+        stream
+            .cwd(&target.remote_dir)
+            .map_err(|e| anyhow!("FTP cwd to '{}' failed: {}", target.remote_dir, e))?;
+    }
+
+    let mut reader = Cursor::new(png_data.to_vec());
+    stream
+        .put_file(&filename, &mut reader)
+        .map_err(|e| anyhow!("FTP put_file failed: {}", e))?;
+    let _ = stream.quit();
+
+    let url = build_url(&target.public_url_template, &filename)?;
+    Ok(UploadResult {
+        url,
+        delete_url: None,
+    })
 }
 
 #[cfg(test)]

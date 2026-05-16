@@ -9,7 +9,7 @@ use crate::overlay::{SelectionResult, UnifiedSelector};
 use crate::plugin::{CaptureType, PluginEvent, PluginResponse};
 use crate::sound::Sound;
 use crate::state::{AppState, UploadRecord};
-use crate::upload::{CustomUploader, ImageUploader, UploadService};
+use crate::upload::{CustomUploader, FtpTarget, ImageUploader, UploadService};
 use image::RgbaImage;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -159,6 +159,27 @@ pub fn run_capture_pipeline(
     run_post_action(&state, &image, post_action)
 }
 
+fn build_upload_service(config: &Config) -> UploadService {
+    match config.upload.destination {
+        UploadDestination::Imgur => UploadService::Imgur,
+        UploadDestination::Custom => UploadService::Custom(CustomUploader {
+            name: "Custom".to_string(),
+            request_url: config.upload.custom_url.clone(),
+            file_form_name: config.upload.custom_form_name.clone(),
+            response_url_path: config.upload.custom_response_path.clone(),
+        }),
+        UploadDestination::Ftp => UploadService::Ftp(FtpTarget {
+            host: config.upload.ftp.host.clone(),
+            port: config.upload.ftp.port,
+            username: config.upload.ftp.username.clone(),
+            password: config.upload.ftp.password.clone(),
+            remote_dir: config.upload.ftp.remote_dir.clone(),
+            use_tls: config.upload.ftp.use_tls,
+            public_url_template: config.upload.ftp.public_url_template.clone(),
+        }),
+    }
+}
+
 fn capture_active_monitor() -> anyhow::Result<RgbaImage> {
     use crate::capture::list_monitors;
     let monitors = list_monitors().unwrap_or_default();
@@ -194,15 +215,7 @@ fn run_post_action(
 
     let do_upload = || -> anyhow::Result<UploadRecord> {
         let uploader = ImageUploader::new()?;
-        let service = match config.upload.destination {
-            UploadDestination::Imgur => UploadService::Imgur,
-            UploadDestination::Custom => UploadService::Custom(CustomUploader {
-                name: "Custom".to_string(),
-                request_url: config.upload.custom_url.clone(),
-                file_form_name: config.upload.custom_form_name.clone(),
-                response_url_path: config.upload.custom_response_path.clone(),
-            }),
-        };
+        let service = build_upload_service(&config);
         let result = uploader.upload(image, &service)?;
         let record = UploadRecord {
             url: result.url.clone(),
@@ -377,15 +390,7 @@ pub fn reupload_capture(
     let img = image::open(&canonical).map_err(|e| e.to_string())?;
     let rgba = img.to_rgba8();
     let uploader = ImageUploader::new().map_err(|e| e.to_string())?;
-    let service = match config.upload.destination {
-        UploadDestination::Imgur => UploadService::Imgur,
-        UploadDestination::Custom => UploadService::Custom(CustomUploader {
-            name: "Custom".to_string(),
-            request_url: config.upload.custom_url.clone(),
-            file_form_name: config.upload.custom_form_name.clone(),
-            response_url_path: config.upload.custom_response_path.clone(),
-        }),
-    };
+    let service = build_upload_service(&config);
     let result = uploader.upload(&rgba, &service).map_err(|e| e.to_string())?;
     *state.last_upload.lock().unwrap() = Some(UploadRecord {
         url: result.url.clone(),

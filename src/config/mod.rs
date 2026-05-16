@@ -101,7 +101,6 @@ pub enum TaskUploadTarget {
     Imgur,
     Custom,
     Ftp,
-    Sftp,
 }
 
 fn default_capture_tasks() -> Vec<CaptureTask> {
@@ -319,17 +318,23 @@ pub enum UploadDestination {
     #[default]
     Imgur,
     Custom,
+    Ftp,
 }
 
 impl UploadDestination {
     pub fn all() -> &'static [UploadDestination] {
-        &[UploadDestination::Imgur, UploadDestination::Custom]
+        &[
+            UploadDestination::Imgur,
+            UploadDestination::Custom,
+            UploadDestination::Ftp,
+        ]
     }
 
     pub fn display_name(&self) -> &'static str {
         match self {
             UploadDestination::Imgur => "Imgur",
-            UploadDestination::Custom => "Custom server",
+            UploadDestination::Custom => "Custom HTTP",
+            UploadDestination::Ftp => "FTP",
         }
     }
 }
@@ -347,6 +352,8 @@ pub struct UploadConfig {
     pub custom_url: String,
     pub custom_form_name: String,
     pub custom_response_path: String,
+    #[serde(default)]
+    pub ftp: FtpUploadConfig,
 }
 
 impl Default for UploadConfig {
@@ -357,8 +364,31 @@ impl Default for UploadConfig {
             custom_url: String::new(),
             custom_form_name: String::from("file"),
             custom_response_path: String::from("url"),
+            ftp: FtpUploadConfig::default(),
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct FtpUploadConfig {
+    #[serde(default)]
+    pub host: String,
+    #[serde(default = "default_ftp_port")]
+    pub port: u16,
+    #[serde(default)]
+    pub username: String,
+    #[serde(default)]
+    pub password: String,
+    #[serde(default)]
+    pub remote_dir: String,
+    #[serde(default)]
+    pub use_tls: bool,
+    #[serde(default)]
+    pub public_url_template: String,
+}
+
+fn default_ftp_port() -> u16 {
+    21
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
