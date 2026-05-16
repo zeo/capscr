@@ -42,10 +42,12 @@ jobs:
           node-version: 20
 
       - name: Install frontend deps
-        run: npm install --prefix frontend
+        working-directory: frontend
+        run: npm install
 
       - name: Build frontend
-        run: npm run --prefix frontend build
+        working-directory: frontend
+        run: npm run build
 
       - name: Run tests
         run: cargo test --bin capscr --all-targets

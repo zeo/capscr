@@ -345,6 +345,9 @@ impl std::fmt::Display for UploadDestination {
     }
 }
 
+// note: deny_unknown_fields is intentionally *not* set on UploadConfig so that
+// stale `[upload.sftp]` blocks from 0.3.0 configs deserialize without error
+// and get pruned the next time the user saves their settings.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UploadConfig {
     pub destination: UploadDestination,

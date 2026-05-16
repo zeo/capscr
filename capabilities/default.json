@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "identifier": "default",
-  "description": "permissions for the hub and editor webviews",
-  "windows": ["hub", "editor", "post-capture", "marketplace"],
+  "description": "permissions for the hub window. editor / post-capture / marketplace land in their own capability files when those windows exist.",
+  "windows": ["hub"],
   "permissions": [
     "core:default",
     "core:window:allow-close",
@@ -16,7 +16,6 @@
     "clipboard-manager:allow-read-text",
     "notification:default",
     "dialog:default",
-    "opener:default",
-    "fs:default"
+    "opener:default"
   ]
 }

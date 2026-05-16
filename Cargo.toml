@@ -1,6 +1,6 @@
 [package]
 name = "capscr"
-version = "0.3.0"
+version = "0.3.1"
 edition = "2021"
 description = "A clean, modern screen capture tool with HDR support"
 authors = ["capscr"]
@@ -9,7 +9,6 @@ repository = "https://github.com/lintowe/capscr"
 
 [features]
 default = []
-wasm-plugins = ["dep:wasmtime"]
 
 [dependencies]
 # GUI shell. tauri-runtime-wry 2.9.x has a Send+Sync mismatch with current wry
@@ -65,21 +64,18 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # Date/time for filenames
 chrono = "0.4"
 
-# Audio playback
-rodio = { version = "0.19", default-features = false, features = ["wav"] }
-
 # Native notifications (the tauri plugin doesn't expose a Rust-side API yet)
 notify-rust = "4.11"
 
 # UUID for unique identifiers
 uuid = { version = "1.0", features = ["v4"] }
 
-# Plugin system
+# Plugin system (manifest + zip extraction). wasmtime returns when the WASM
+# host re-lands; until then it's a security-advisory liability with no consumer.
 zip = "2.2"
 semver = "1.0"
-wasmtime = { version = "41.0.4", optional = true }
 
-# Upload destinations
+# Upload destinations: FTP (SFTP planned, currently out of tree)
 suppaftp = { version = "6.0", features = ["native-tls"] }
 
 # HDR-preserved output (Phase 10 will add JXL/AVIF; pure-rust PNG cICP is fine here)

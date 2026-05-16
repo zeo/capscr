@@ -58,7 +58,7 @@ export interface CaptureTask {
     | "save-and-clipboard"
     | "open-editor"
     | "prompt";
-  target_destination?: "imgur" | "custom" | "ftp" | "sftp" | null;
+  target_destination?: "imgur" | "custom" | "ftp" | null;
 }
 
 export interface AppConfig {

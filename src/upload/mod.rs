@@ -75,7 +75,7 @@ impl ImageUploader {
         Ok(Self { client })
     }
 
-    fn is_private_ip(ip: IpAddr) -> bool {
+    pub(crate) fn is_private_ip(ip: IpAddr) -> bool {
         match ip {
             IpAddr::V4(ipv4) => {
                 ipv4.is_loopback()
@@ -172,7 +172,7 @@ impl ImageUploader {
         Ok(())
     }
 
-    fn is_private_ip_string(host: &str) -> bool {
+    pub(crate) fn is_private_ip_string(host: &str) -> bool {
         if host.starts_with("10.") || host.starts_with("192.168.") {
             return true;
         }
@@ -510,12 +510,73 @@ fn validate_host(host: &str) -> Result<()> {
     Ok(())
 }
 
+const BLOCKED_HOSTS: &[&str] = &[
+    "localhost",
+    "127.0.0.1",
+    "::1",
+    "0.0.0.0",
+    "metadata.google.internal",
+    "metadata.google.com",
+    "metadata",
+    "instance-data",
+    "burpcollaborator.net",
+    "oastify.com",
+];
+
+/// Reject hosts that resolve to private / loopback / cloud-metadata IP ranges.
+/// Resolves DNS twice (with a small sleep between) so a malicious resolver
+/// can't pass the check and then return a private IP on the real connect call.
+pub(crate) fn validate_resolved_host(host: &str, port: u16) -> Result<()> {
+    let host_lower = host.to_lowercase();
+    for blocked in BLOCKED_HOSTS {
+        if host_lower == *blocked || host_lower.ends_with(&format!(".{}", blocked)) {
+            return Err(anyhow!("Host not allowed: {}", blocked));
+        }
+    }
+    if host_lower.starts_with("169.254.") || host_lower.contains("169.254.169.254") {
+        return Err(anyhow!("Cloud metadata endpoints are blocked"));
+    }
+    if ImageUploader::is_private_ip_string(&host_lower) {
+        return Err(anyhow!("Private IP ranges are blocked"));
+    }
+
+    let host_with_port = format!("{}:{}", host, port);
+    let resolved: Vec<IpAddr> = host_with_port
+        .to_socket_addrs()
+        .map_err(|e| anyhow!("Could not resolve hostname: {}", e))?
+        .map(|a| a.ip())
+        .collect();
+    if resolved.is_empty() {
+        return Err(anyhow!("Could not resolve hostname"));
+    }
+    for ip in &resolved {
+        if ImageUploader::is_private_ip(*ip) {
+            return Err(anyhow!("Host resolves to private/internal IP"));
+        }
+    }
+
+    std::thread::sleep(Duration::from_millis(100));
+
+    let resolved_second: Vec<IpAddr> = host_with_port
+        .to_socket_addrs()
+        .map(|addrs| addrs.map(|a| a.ip()).collect())
+        .unwrap_or_default();
+    for ip in &resolved_second {
+        if ImageUploader::is_private_ip(*ip) {
+            return Err(anyhow!("DNS rebinding detected"));
+        }
+    }
+
+    Ok(())
+}
+
 pub fn upload_ftp(png_data: &[u8], target: &FtpTarget) -> Result<UploadResult> {
     use std::io::Cursor;
     use suppaftp::FtpStream;
 
     validate_host(&target.host)?;
     validate_remote_dir(&target.remote_dir)?;
+    validate_resolved_host(&target.host, target.port.max(1))?;
     if target.use_tls {
         return Err(anyhow!("FTPS not yet implemented; disable use_tls or use SFTP"));
     }
@@ -585,5 +646,35 @@ mod tests {
         let first = shared_uploader().unwrap() as *const ImageUploader;
         let second = shared_uploader().unwrap() as *const ImageUploader;
         assert_eq!(first, second);
+    }
+
+    #[test]
+    fn ftp_rejects_loopback() {
+        let err = validate_resolved_host("127.0.0.1", 21).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("Private")
+                || msg.contains("Host not allowed")
+                || msg.contains("private"),
+            "expected loopback rejection, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn ftp_rejects_rfc1918_literal() {
+        let err = validate_resolved_host("10.0.0.5", 21).unwrap_err();
+        assert!(err.to_string().contains("Private"));
+    }
+
+    #[test]
+    fn ftp_rejects_aws_metadata() {
+        let err = validate_resolved_host("169.254.169.254", 21).unwrap_err();
+        assert!(err.to_string().contains("metadata"));
+    }
+
+    #[test]
+    fn ftp_rejects_localhost_label() {
+        let err = validate_resolved_host("localhost", 21).unwrap_err();
+        assert!(err.to_string().contains("not allowed"));
     }
 }
