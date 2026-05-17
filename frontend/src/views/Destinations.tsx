@@ -35,7 +35,16 @@ export function Destinations() {
         <span class="lede">where uploads go. https only.</span>
       </div>
 
-      <Show when={config()}>
+      <Show
+        when={config()}
+        fallback={
+          <div class="skeleton">
+            <div class="skeleton-line" style="width: 40%;" />
+            <div class="skeleton-line" style="width: 70%;" />
+            <div class="skeleton-line" style="width: 55%;" />
+          </div>
+        }
+      >
         {(c) => (
           <>
             <Section num="i" title="active target">

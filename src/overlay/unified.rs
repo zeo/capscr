@@ -25,7 +25,7 @@ mod windows_impl {
                 CreatePen, CreateSolidBrush, DeleteDC, DeleteObject, EndPaint, FillRect, GetDC,
                 GetStockObject, InvalidateRect, ReleaseDC, SelectObject, SetBkColor, SetBkMode,
                 SetTextColor, StretchBlt, TextOutW, AC_SRC_OVER, BLENDFUNCTION, HBITMAP, HDC,
-                HOLLOW_BRUSH, OPAQUE, PAINTSTRUCT, PS_DASH, PS_SOLID, SRCCOPY, TRANSPARENT,
+                HOLLOW_BRUSH, OPAQUE, PAINTSTRUCT, PS_SOLID, SRCCOPY, TRANSPARENT,
                 Rectangle as GdiRectangle,
             },
             System::LibraryLoader::GetModuleHandleW,
@@ -320,11 +320,18 @@ mod windows_impl {
                 let width = SCREEN_WIDTH.load(Ordering::SeqCst);
                 let height = SCREEN_HEIGHT.load(Ordering::SeqCst);
 
+                // Compose the whole frame into a back buffer, then BitBlt once
+                // to the window. Eliminates the intermediate-state flicker the
+                // user saw while WM_PAINT walked through screen → dim → border.
+                let back_dc = CreateCompatibleDC(hdc);
+                let back_bmp = CreateCompatibleBitmap(hdc, width, height);
+                let old_back = SelectObject(back_dc, back_bmp);
+
                 if let Some(dc) = *SCREEN_DC.lock().unwrap() {
                     if let Some(bmp) = *SCREEN_BITMAP.lock().unwrap() {
                         let mem_dc = HDC(dc as *mut _);
                         let old_bmp = SelectObject(mem_dc, HBITMAP(bmp as *mut _));
-                        let _ = StretchBlt(hdc, 0, 0, width, height, mem_dc, 0, 0, width, height, SRCCOPY);
+                        let _ = StretchBlt(back_dc, 0, 0, width, height, mem_dc, 0, 0, width, height, SRCCOPY);
                         SelectObject(mem_dc, old_bmp);
                     }
                 }
@@ -350,11 +357,11 @@ mod windows_impl {
                     let left_rect = RECT { left: 0, top, right: left, bottom };
                     let right_rect = RECT { left: right, top, right: width, bottom };
 
-                    let alpha_dc = CreateCompatibleDC(hdc);
-                    let alpha_bmp = CreateCompatibleBitmap(hdc, width, height);
+                    let alpha_dc = CreateCompatibleDC(back_dc);
+                    let alpha_bmp = CreateCompatibleBitmap(back_dc, width, height);
                     let old_alpha_bmp = SelectObject(alpha_dc, alpha_bmp);
 
-                    BitBlt(alpha_dc, 0, 0, width, height, hdc, 0, 0, SRCCOPY).ok();
+                    BitBlt(alpha_dc, 0, 0, width, height, back_dc, 0, 0, SRCCOPY).ok();
 
                     FillRect(alpha_dc, &top_rect, dim_brush);
                     FillRect(alpha_dc, &bottom_rect, dim_brush);
@@ -364,34 +371,30 @@ mod windows_impl {
                     let blend = BLENDFUNCTION {
                         BlendOp: AC_SRC_OVER as u8,
                         BlendFlags: 0,
-                        SourceConstantAlpha: 128,
+                        SourceConstantAlpha: 160,
                         AlphaFormat: 0,
                     };
 
-                    let _ = AlphaBlend(hdc, 0, 0, width, height, alpha_dc, 0, 0, width, height, blend);
+                    let _ = AlphaBlend(back_dc, 0, 0, width, height, alpha_dc, 0, 0, width, height, blend);
 
                     SelectObject(alpha_dc, old_alpha_bmp);
                     let _ = DeleteObject(alpha_bmp);
                     let _ = DeleteDC(alpha_dc);
                     let _ = DeleteObject(dim_brush);
 
-                    let border_pen = CreatePen(PS_SOLID, 2, windows::Win32::Foundation::COLORREF(0x00FF0000));
-                    let dash_pen = CreatePen(PS_DASH, 1, windows::Win32::Foundation::COLORREF(0x00FFFFFF));
+                    // 1px solid white selection border — greyscale, no chroma.
+                    let border_pen = CreatePen(PS_SOLID, 1, windows::Win32::Foundation::COLORREF(0x00FFFFFF));
 
-                    let old_pen = SelectObject(hdc, border_pen);
+                    let old_pen = SelectObject(back_dc, border_pen);
                     let hollow = GetStockObject(HOLLOW_BRUSH);
-                    let old_brush = SelectObject(hdc, hollow);
-                    SetBkMode(hdc, TRANSPARENT);
+                    let old_brush = SelectObject(back_dc, hollow);
+                    SetBkMode(back_dc, TRANSPARENT);
 
-                    let _ = GdiRectangle(hdc, left, top, right, bottom);
+                    let _ = GdiRectangle(back_dc, left, top, right, bottom);
 
-                    SelectObject(hdc, dash_pen);
-                    let _ = GdiRectangle(hdc, left + 1, top + 1, right - 1, bottom - 1);
-
-                    SelectObject(hdc, old_pen);
-                    SelectObject(hdc, old_brush);
+                    SelectObject(back_dc, old_pen);
+                    SelectObject(back_dc, old_brush);
                     let _ = DeleteObject(border_pen);
-                    let _ = DeleteObject(dash_pen);
 
                     let sel_width = (right - left).abs();
                     let sel_height = (bottom - top).abs();
@@ -400,12 +403,12 @@ mod windows_impl {
                     let text_x = left + 5;
                     let text_y = if top > 20 { top - 18 } else { bottom + 5 };
 
-                    SetTextColor(hdc, windows::Win32::Foundation::COLORREF(0x00FFFFFF));
-                    SetBkColor(hdc, windows::Win32::Foundation::COLORREF(0x00000000));
-                    SetBkMode(hdc, OPAQUE);
+                    SetTextColor(back_dc, windows::Win32::Foundation::COLORREF(0x00FFFFFF));
+                    SetBkColor(back_dc, windows::Win32::Foundation::COLORREF(0x00000000));
+                    SetBkMode(back_dc, OPAQUE);
 
                     let text_wide: Vec<u16> = size_text.encode_utf16().collect();
-                    let _ = TextOutW(hdc, text_x, text_y, &text_wide);
+                    let _ = TextOutW(back_dc, text_x, text_y, &text_wide);
                 } else if !mouse_down {
                     let hovered = HOVERED_WINDOW.load(Ordering::SeqCst);
                     if hovered != 0 {
@@ -416,16 +419,46 @@ mod windows_impl {
                             let right = cached.right - virt_x;
                             let bottom = cached.bottom - virt_y;
 
-                            let pen = CreatePen(PS_SOLID, 3, windows::Win32::Foundation::COLORREF(0x0000FF00));
-                            let old_pen = SelectObject(hdc, pen);
+                            // Subtle dimming inside the hovered window's bounds + 1px white outline.
+                            // Replaces the previous 3px lime-green rectangle that looked like a debug overlay.
+                            let dim_brush = CreateSolidBrush(windows::Win32::Foundation::COLORREF(0x00FFFFFF));
+                            let rect = RECT { left, top, right, bottom };
+
+                            let alpha_dc = CreateCompatibleDC(back_dc);
+                            let alpha_bmp = CreateCompatibleBitmap(back_dc, width, height);
+                            let old_alpha_bmp = SelectObject(alpha_dc, alpha_bmp);
+                            BitBlt(alpha_dc, 0, 0, width, height, back_dc, 0, 0, SRCCOPY).ok();
+                            FillRect(alpha_dc, &rect, dim_brush);
+
+                            let blend = BLENDFUNCTION {
+                                BlendOp: AC_SRC_OVER as u8,
+                                BlendFlags: 0,
+                                SourceConstantAlpha: 32,
+                                AlphaFormat: 0,
+                            };
+                            let _ = AlphaBlend(
+                                back_dc, left, top,
+                                (right - left).max(1), (bottom - top).max(1),
+                                alpha_dc, left, top,
+                                (right - left).max(1), (bottom - top).max(1),
+                                blend,
+                            );
+
+                            SelectObject(alpha_dc, old_alpha_bmp);
+                            let _ = DeleteObject(alpha_bmp);
+                            let _ = DeleteDC(alpha_dc);
+                            let _ = DeleteObject(dim_brush);
+
+                            let pen = CreatePen(PS_SOLID, 1, windows::Win32::Foundation::COLORREF(0x00FFFFFF));
+                            let old_pen = SelectObject(back_dc, pen);
                             let hollow = GetStockObject(HOLLOW_BRUSH);
-                            let old_brush = SelectObject(hdc, hollow);
-                            SetBkMode(hdc, TRANSPARENT);
+                            let old_brush = SelectObject(back_dc, hollow);
+                            SetBkMode(back_dc, TRANSPARENT);
 
-                            let _ = GdiRectangle(hdc, left, top, right, bottom);
+                            let _ = GdiRectangle(back_dc, left, top, right, bottom);
 
-                            SelectObject(hdc, old_pen);
-                            SelectObject(hdc, old_brush);
+                            SelectObject(back_dc, old_pen);
+                            SelectObject(back_dc, old_brush);
                             let _ = DeleteObject(pen);
                         }
                     }
@@ -436,20 +469,20 @@ mod windows_impl {
 
                 if cursor_x >= 0 && cursor_x < width && cursor_y >= 0 && cursor_y < height {
                     let crosshair_pen = CreatePen(PS_SOLID, 1, windows::Win32::Foundation::COLORREF(0x00808080));
-                    let old_pen = SelectObject(hdc, crosshair_pen);
-                    SetBkMode(hdc, TRANSPARENT);
+                    let old_pen = SelectObject(back_dc, crosshair_pen);
+                    SetBkMode(back_dc, TRANSPARENT);
 
-                    let _ = windows::Win32::Graphics::Gdi::MoveToEx(hdc, 0, cursor_y, None);
-                    let _ = windows::Win32::Graphics::Gdi::LineTo(hdc, cursor_x - 20, cursor_y);
-                    let _ = windows::Win32::Graphics::Gdi::MoveToEx(hdc, cursor_x + 20, cursor_y, None);
-                    let _ = windows::Win32::Graphics::Gdi::LineTo(hdc, width, cursor_y);
+                    let _ = windows::Win32::Graphics::Gdi::MoveToEx(back_dc, 0, cursor_y, None);
+                    let _ = windows::Win32::Graphics::Gdi::LineTo(back_dc, cursor_x - 20, cursor_y);
+                    let _ = windows::Win32::Graphics::Gdi::MoveToEx(back_dc, cursor_x + 20, cursor_y, None);
+                    let _ = windows::Win32::Graphics::Gdi::LineTo(back_dc, width, cursor_y);
 
-                    let _ = windows::Win32::Graphics::Gdi::MoveToEx(hdc, cursor_x, 0, None);
-                    let _ = windows::Win32::Graphics::Gdi::LineTo(hdc, cursor_x, cursor_y - 20);
-                    let _ = windows::Win32::Graphics::Gdi::MoveToEx(hdc, cursor_x, cursor_y + 20, None);
-                    let _ = windows::Win32::Graphics::Gdi::LineTo(hdc, cursor_x, height);
+                    let _ = windows::Win32::Graphics::Gdi::MoveToEx(back_dc, cursor_x, 0, None);
+                    let _ = windows::Win32::Graphics::Gdi::LineTo(back_dc, cursor_x, cursor_y - 20);
+                    let _ = windows::Win32::Graphics::Gdi::MoveToEx(back_dc, cursor_x, cursor_y + 20, None);
+                    let _ = windows::Win32::Graphics::Gdi::LineTo(back_dc, cursor_x, height);
 
-                    SelectObject(hdc, old_pen);
+                    SelectObject(back_dc, old_pen);
                     let _ = DeleteObject(crosshair_pen);
 
                     if let Some(dc) = *SCREEN_DC.lock().unwrap() {
@@ -467,34 +500,41 @@ mod windows_impl {
                             let src_y = (cursor_y - src_size / 2).max(0).min(height - src_size);
 
                             let _ = StretchBlt(
-                                hdc, mag_x, mag_y, MAGNIFIER_SIZE, MAGNIFIER_SIZE,
+                                back_dc, mag_x, mag_y, MAGNIFIER_SIZE, MAGNIFIER_SIZE,
                                 mem_dc, src_x, src_y, src_size, src_size, SRCCOPY
                             );
 
                             SelectObject(mem_dc, old_bmp);
 
-                            let border_pen = CreatePen(PS_SOLID, 2, windows::Win32::Foundation::COLORREF(0x00FFFFFF));
-                            let old_pen = SelectObject(hdc, border_pen);
+                            let border_pen = CreatePen(PS_SOLID, 1, windows::Win32::Foundation::COLORREF(0x00FFFFFF));
+                            let old_pen = SelectObject(back_dc, border_pen);
                             let hollow = GetStockObject(HOLLOW_BRUSH);
-                            let old_brush = SelectObject(hdc, hollow);
-                            let _ = GdiRectangle(hdc, mag_x, mag_y, mag_x + MAGNIFIER_SIZE, mag_y + MAGNIFIER_SIZE);
+                            let old_brush = SelectObject(back_dc, hollow);
+                            let _ = GdiRectangle(back_dc, mag_x, mag_y, mag_x + MAGNIFIER_SIZE, mag_y + MAGNIFIER_SIZE);
 
-                            let center_pen = CreatePen(PS_SOLID, 1, windows::Win32::Foundation::COLORREF(0x000000FF));
-                            SelectObject(hdc, center_pen);
+                            let center_pen = CreatePen(PS_SOLID, 1, windows::Win32::Foundation::COLORREF(0x00808080));
+                            SelectObject(back_dc, center_pen);
                             let cx = mag_x + MAGNIFIER_SIZE / 2;
                             let cy = mag_y + MAGNIFIER_SIZE / 2;
-                            let _ = windows::Win32::Graphics::Gdi::MoveToEx(hdc, cx - 10, cy, None);
-                            let _ = windows::Win32::Graphics::Gdi::LineTo(hdc, cx + 10, cy);
-                            let _ = windows::Win32::Graphics::Gdi::MoveToEx(hdc, cx, cy - 10, None);
-                            let _ = windows::Win32::Graphics::Gdi::LineTo(hdc, cx, cy + 10);
+                            let _ = windows::Win32::Graphics::Gdi::MoveToEx(back_dc, cx - 10, cy, None);
+                            let _ = windows::Win32::Graphics::Gdi::LineTo(back_dc, cx + 10, cy);
+                            let _ = windows::Win32::Graphics::Gdi::MoveToEx(back_dc, cx, cy - 10, None);
+                            let _ = windows::Win32::Graphics::Gdi::LineTo(back_dc, cx, cy + 10);
 
-                            SelectObject(hdc, old_pen);
-                            SelectObject(hdc, old_brush);
+                            SelectObject(back_dc, old_pen);
+                            SelectObject(back_dc, old_brush);
                             let _ = DeleteObject(border_pen);
                             let _ = DeleteObject(center_pen);
                         }
                     }
                 }
+
+                // Single blit of the composited frame.
+                let _ = BitBlt(hdc, 0, 0, width, height, back_dc, 0, 0, SRCCOPY);
+
+                SelectObject(back_dc, old_back);
+                let _ = DeleteObject(back_bmp);
+                let _ = DeleteDC(back_dc);
 
                 let _ = EndPaint(hwnd, &ps);
                 LRESULT(0)

@@ -310,7 +310,7 @@ impl Default for PostCaptureConfig {
         Self {
             action: PostCaptureAction::SaveAndCopy,
             open_file_after_save: false,
-            play_sound: false,
+            play_sound: true,
         }
     }
 }

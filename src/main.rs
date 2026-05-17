@@ -280,6 +280,11 @@ fn spawn_hotkey_thread(
                         err.task_id,
                         err.reason
                     );
+                    commands::emit_error(
+                        &app,
+                        "hotkey",
+                        &format!("'{}' ({}) — {}", err.hotkey, err.task_id, err.reason),
+                    );
                 }
             }
             if let Some(task_id) = hm.poll() {

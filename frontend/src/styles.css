@@ -1317,3 +1317,29 @@ kbd {
   from { opacity: 0; }
   to { opacity: 1; }
 }
+
+/* ---------------- skeleton (loading placeholder) ---------------- */
+
+.skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 20px 0;
+}
+
+.skeleton-line {
+  height: 12px;
+  background: linear-gradient(
+    90deg,
+    var(--ink-3) 0%,
+    var(--ink-4) 50%,
+    var(--ink-3) 100%
+  );
+  background-size: 200% 100%;
+  animation: skeleton-shimmer 1.4s linear infinite;
+}
+
+@keyframes skeleton-shimmer {
+  from { background-position: 100% 0; }
+  to { background-position: -100% 0; }
+}

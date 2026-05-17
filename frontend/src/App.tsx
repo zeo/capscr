@@ -49,7 +49,10 @@ export function App() {
 }
 
 function Hub() {
-  const [tab, setTab] = createSignal<Tab>(TABS[0]);
+  // Open to history by default — that's the ShareX-style "what just happened"
+  // view; settings is buried behind a tab click.
+  const historyTab = TABS.find((t) => t.id === "history") ?? TABS[0];
+  const [tab, setTab] = createSignal<Tab>(historyTab);
   const [captures] = createResource(api.listCaptures);
   const [toasts, setToasts] = createSignal<Toast[]>([]);
   const [uploads, setUploads] = createSignal<UploadCard[]>([]);
@@ -144,7 +147,7 @@ function Hub() {
         </nav>
         <div class="sidebar-foot">
           <span class="path">~/.capscr</span>
-          <span>v0.3.8 / master</span>
+          <span>v0.3.9 / master</span>
         </div>
       </aside>
 
@@ -178,7 +181,7 @@ function Hub() {
             : `${captures()?.length ?? 0} captures on disk`}
         </span>
         <span class="grow" />
-        <span class="tail">capscr v0.3.8</span>
+        <span class="tail">capscr v0.3.9</span>
       </footer>
 
       <Show when={dragOver()}>

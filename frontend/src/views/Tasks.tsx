@@ -87,7 +87,17 @@ export function Tasks() {
         </span>
       </div>
 
-      <Show when={config()}>
+      <Show
+        when={config()}
+        fallback={
+          <div class="skeleton">
+            <div class="skeleton-line" style="width: 35%;" />
+            <div class="skeleton-line" style="width: 60%;" />
+            <div class="skeleton-line" style="width: 45%;" />
+            <div class="skeleton-line" style="width: 70%;" />
+          </div>
+        }
+      >
         {(c) => (
           <>
             <div class="row between" style="margin-bottom: 18px;">

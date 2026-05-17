@@ -53,25 +53,38 @@ export function Settings() {
         </span>
       </div>
 
-      <Show when={config()}>
+      <nav class="subnav" role="tablist">
+        <For each={PANES}>
+          {(p) => (
+            <button
+              type="button"
+              role="tab"
+              class="subnav-item"
+              classList={{ "is-active": pane() === p.id }}
+              onClick={() => setPane(p.id)}
+              disabled={!config()}
+            >
+              <span style="opacity: .55; margin-right: 8px;">{p.num}</span>
+              {p.label}
+            </button>
+          )}
+        </For>
+      </nav>
+
+      <Show
+        when={config()}
+        fallback={
+          <div class="skeleton">
+            <div class="skeleton-line" style="width: 30%;" />
+            <div class="skeleton-line" style="width: 70%;" />
+            <div class="skeleton-line" style="width: 45%;" />
+            <div class="skeleton-line" style="width: 60%;" />
+            <div class="skeleton-line" style="width: 35%;" />
+          </div>
+        }
+      >
         {(c) => (
           <>
-            <nav class="subnav" role="tablist">
-              <For each={PANES}>
-                {(p) => (
-                  <button
-                    type="button"
-                    role="tab"
-                    class="subnav-item"
-                    classList={{ "is-active": pane() === p.id }}
-                    onClick={() => setPane(p.id)}
-                  >
-                    <span style="opacity: .55; margin-right: 8px;">{p.num}</span>
-                    {p.label}
-                  </button>
-                )}
-              </For>
-            </nav>
 
             <Switch>
               <Match when={pane() === "general"}>
