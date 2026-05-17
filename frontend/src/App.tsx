@@ -1,5 +1,6 @@
 import { createResource, createSignal, For, Match, onCleanup, onMount, Show, Switch } from "solid-js";
 import { listen, UnlistenFn } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Titlebar } from "./components/Titlebar";
 import { api } from "./api";
 import { Settings } from "./views/Settings";
@@ -7,6 +8,7 @@ import { History } from "./views/History";
 import { Destinations } from "./views/Destinations";
 import { Marketplace } from "./views/Marketplace";
 import { Tasks } from "./views/Tasks";
+import { Editor } from "./views/Editor";
 
 interface Toast {
   id: number;
@@ -30,6 +32,14 @@ const TABS: Tab[] = [
 ];
 
 export function App() {
+  const label = getCurrentWindow().label;
+  if (label === "editor") {
+    return <Editor />;
+  }
+  return <Hub />;
+}
+
+function Hub() {
   const [tab, setTab] = createSignal<Tab>(TABS[0]);
   const [captures] = createResource(api.listCaptures);
   const [toasts, setToasts] = createSignal<Toast[]>([]);
@@ -84,7 +94,7 @@ export function App() {
         </nav>
         <div class="sidebar-foot">
           <span class="path">~/.capscr</span>
-          <span>v0.3.4 / master</span>
+          <span>v0.3.5 / master</span>
         </div>
       </aside>
 
@@ -118,7 +128,7 @@ export function App() {
             : `${captures()?.length ?? 0} captures on disk`}
         </span>
         <span class="grow" />
-        <span class="tail">capscr v0.3.4</span>
+        <span class="tail">capscr v0.3.5</span>
       </footer>
 
       <Show when={toasts().length > 0}>

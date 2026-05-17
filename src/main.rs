@@ -102,6 +102,10 @@ fn main() {
             commands::get_autostart,
             commands::list_installed_plugins,
             commands::open_plugins_folder,
+            commands::get_editor_image_path,
+            commands::save_edited_image,
+            commands::copy_edited_image_to_clipboard,
+            commands::upload_edited_image,
         ])
         .build(tauri::generate_context!())
         .expect("error while building capscr")

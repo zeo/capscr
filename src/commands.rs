@@ -157,7 +157,8 @@ pub fn run_capture_pipeline(
         std::fs::create_dir_all(&config.output.directory).ok();
         crate::clipboard::save_image(&image, &path, config.output.format, config.output.quality)?;
         *state.last_save.lock().unwrap() = Some(path.clone());
-        open_in_default_image_editor(&path)?;
+        open_editor_window(app, &path.to_string_lossy())
+            .map_err(|e| anyhow::anyhow!(e))?;
         Sound::Screenshot.play_if_enabled(config.post_capture.play_sound);
         if config.ui.show_notifications {
             let _ = show_notification("Capture opened", &path.to_string_lossy());
@@ -480,6 +481,90 @@ pub fn open_hub_window(app: &AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
+const EDITOR_LABEL: &str = "editor";
+
+pub fn open_editor_window(app: &AppHandle, image_path: &str) -> tauri::Result<()> {
+    let state = app.state::<AppState>();
+    *state.editor_image_path.lock().unwrap() = Some(image_path.to_string());
+
+    if let Some(window) = app.get_webview_window(EDITOR_LABEL) {
+        let _ = window.show();
+        let _ = window.set_focus();
+        let _ = window.emit("capscr://editor-load", image_path.to_string());
+        return Ok(());
+    }
+    let url = tauri::WebviewUrl::App("index.html".into());
+    tauri::WebviewWindowBuilder::new(app, EDITOR_LABEL, url)
+        .title("capscr — edit")
+        .inner_size(1200.0, 800.0)
+        .min_inner_size(800.0, 600.0)
+        .resizable(true)
+        .decorations(false)
+        .visible(true)
+        .build()?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn get_editor_image_path(state: State<AppState>) -> Option<String> {
+    state.editor_image_path.lock().unwrap().clone()
+}
+
+#[tauri::command]
+pub fn save_edited_image(
+    bytes: Vec<u8>,
+    target_path: String,
+    state: State<AppState>,
+) -> Result<(), String> {
+    let buf = PathBuf::from(&target_path);
+    let parent = buf
+        .parent()
+        .ok_or_else(|| "target_path has no parent".to_string())?;
+    let config = state.config.lock().unwrap().clone();
+    let canonical_parent = std::fs::canonicalize(parent).map_err(|e| e.to_string())?;
+    let dir_canonical =
+        std::fs::canonicalize(&config.output.directory).map_err(|e| e.to_string())?;
+    if !canonical_parent.starts_with(&dir_canonical) {
+        return Err("Path is outside the configured output directory".into());
+    }
+    if bytes.len() > 100 * 1024 * 1024 {
+        return Err("Image too large to save".into());
+    }
+    std::fs::write(&buf, &bytes).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn copy_edited_image_to_clipboard(bytes: Vec<u8>) -> Result<(), String> {
+    let img = image::load_from_memory(&bytes).map_err(|e| e.to_string())?;
+    let rgba = img.to_rgba8();
+    let mut cb = ClipboardManager::new().map_err(|e| e.to_string())?;
+    cb.copy_image(&rgba).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn upload_edited_image(
+    bytes: Vec<u8>,
+    state: State<AppState>,
+) -> Result<UploadResponse, String> {
+    let img = image::load_from_memory(&bytes).map_err(|e| e.to_string())?;
+    let rgba = img.to_rgba8();
+    let config = state.config.lock().unwrap().clone();
+    let uploader = ImageUploader::new().map_err(|e| e.to_string())?;
+    let service = build_upload_service(&config);
+    let result = uploader.upload(&rgba, &service).map_err(|e| e.to_string())?;
+    *state.last_upload.lock().unwrap() = Some(UploadRecord {
+        url: result.url.clone(),
+        delete_url: result.delete_url.clone(),
+    });
+    if config.upload.copy_url_to_clipboard {
+        let _ = crate::upload::copy_url_to_clipboard(&result.url);
+    }
+    Ok(UploadResponse {
+        url: result.url,
+        delete_url: result.delete_url,
+    })
+}
+
 pub fn trigger_task(app: &AppHandle, task_id: &str) {
     let task = {
         let state = app.state::<AppState>();
@@ -675,7 +760,7 @@ fn apply_gif_post_action(task: &CaptureTask, app: &AppHandle, path: &std::path::
             }
         }
         TaskPostAction::OpenEditor => {
-            let _ = open_in_default_image_editor(path);
+            let _ = open_editor_window(app, &path.to_string_lossy());
         }
         TaskPostAction::Upload => {
             // GIF upload bypasses the still-image path (which re-encodes to PNG).

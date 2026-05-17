@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "identifier": "default",
-  "description": "permissions for the hub window. editor / post-capture / marketplace land in their own capability files when those windows exist.",
-  "windows": ["hub"],
+  "description": "permissions for the hub + editor windows. post-capture / marketplace land in their own capability files when those windows exist.",
+  "windows": ["hub", "editor"],
   "permissions": [
     "core:default",
     "core:window:allow-close",

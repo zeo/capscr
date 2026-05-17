@@ -308,11 +308,11 @@ textarea,
 }
 
 .statusbar .seg.is-rec {
-  color: var(--text-1);
+  color: var(--paper);
 }
 
 .statusbar .seg.is-rec::before {
-  background: var(--text-1);
+  background: var(--paper);
   animation: rec-pulse 1s steps(2, end) infinite;
 }
 
@@ -1027,7 +1027,7 @@ kbd {
   gap: 8px;
   background: var(--ink-3);
   border: 1px solid var(--rule-2);
-  border-left: 2px solid var(--text-1);
+  border-left: 2px solid var(--paper);
   padding: 8px 10px 8px 12px;
   font-size: 12px;
   line-height: 1.4;
@@ -1037,28 +1037,28 @@ kbd {
 
 .toast[data-kind="capture"],
 .toast[data-kind="task"] {
-  border-left-color: var(--text-1);
+  border-left-color: var(--paper);
 }
 
 .toast-kind {
   text-transform: uppercase;
   letter-spacing: 0.14em;
   font-size: 10px;
-  color: var(--text-3);
+  color: var(--mute);
   flex-shrink: 0;
   padding-top: 1px;
 }
 
 .toast-msg {
   flex: 1;
-  color: var(--text-1);
+  color: var(--paper);
   word-break: break-word;
 }
 
 .toast-close {
   background: none;
   border: none;
-  color: var(--text-3);
+  color: var(--mute);
   cursor: pointer;
   padding: 0;
   font-size: 18px;
@@ -1067,10 +1067,173 @@ kbd {
 }
 
 .toast-close:hover {
-  color: var(--text-1);
+  color: var(--paper);
 }
 
 @keyframes toast-in {
   from { opacity: 0; transform: translateY(4px); }
   to { opacity: 1; transform: translateY(0); }
+}
+
+/* ---------------- editor ---------------- */
+
+.editor {
+  display: grid;
+  grid-template-rows: var(--titlebar-h, 28px) auto 1fr auto;
+  height: 100vh;
+  background: var(--bg-window);
+  color: var(--paper);
+  font-family: var(--font);
+}
+
+.editor-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 6px 12px;
+  background: var(--ink-1);
+  border-bottom: 1px solid var(--rule);
+  font-size: 11px;
+  flex-wrap: wrap;
+}
+
+.editor-tools,
+.editor-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.editor-tools .tool {
+  background: transparent;
+  border: 1px solid var(--rule);
+  color: var(--text-2);
+  padding: 5px 8px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font);
+}
+
+.editor-tools .tool:hover {
+  border-color: var(--rule-2);
+  color: var(--paper);
+}
+
+.editor-tools .tool.is-active {
+  background: var(--ink-4);
+  border-color: var(--text-2);
+  color: var(--paper);
+}
+
+.editor-colors {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.editor-colors .swatch {
+  width: 18px;
+  height: 18px;
+  border: 1px solid var(--rule-2);
+  cursor: pointer;
+  padding: 0;
+}
+
+.editor-colors .swatch.is-active {
+  outline: 1px solid var(--paper);
+  outline-offset: 2px;
+}
+
+.editor-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.editor-controls .ctrl {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-2);
+  font-size: 11px;
+}
+
+.editor-controls .ctrl input[type="range"] {
+  width: 100px;
+}
+
+.editor-controls .ctrl-val {
+  width: 24px;
+  text-align: right;
+  color: var(--paper);
+}
+
+.editor-actions {
+  margin-left: auto;
+}
+
+.editor-canvas-wrap {
+  position: relative;
+  overflow: auto;
+  background: var(--ink-0);
+  padding: 12px;
+}
+
+.editor-canvas-scroll {
+  position: relative;
+  display: inline-block;
+}
+
+.editor-canvas {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  background: var(--ink-1);
+  box-shadow: 0 0 0 1px var(--rule);
+  cursor: crosshair;
+}
+
+.editor-canvas[data-tool="text"] {
+  cursor: text;
+}
+
+.editor-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--mute);
+}
+
+.editor-text-input-wrap {
+  position: absolute;
+  transform: translate(-2px, -2px);
+  z-index: 10;
+}
+
+.editor-text-input {
+  background: var(--ink-1);
+  border: 1px solid var(--paper);
+  color: var(--paper);
+  padding: 2px 4px;
+  font-family: var(--font);
+  font-size: 13px;
+  min-width: 140px;
+}
+
+.editor-foot {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 4px 12px;
+  background: var(--ink-0);
+  border-top: 1px solid var(--rule);
+  font-size: 11px;
+  color: var(--text-2);
+}
+
+.editor-foot .grow {
+  flex: 1;
 }

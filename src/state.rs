@@ -20,6 +20,7 @@ pub struct AppState {
     pub recording_task_id: Mutex<Option<String>>,
     pub last_save: Mutex<Option<PathBuf>>,
     pub last_upload: Mutex<Option<UploadRecord>>,
+    pub editor_image_path: Mutex<Option<String>>,
 }
 
 #[derive(Clone, Debug)]
@@ -45,6 +46,7 @@ impl AppState {
             recording_task_id: Mutex::new(None),
             last_save: Mutex::new(None),
             last_upload: Mutex::new(None),
+            editor_image_path: Mutex::new(None),
         }
     }
 
