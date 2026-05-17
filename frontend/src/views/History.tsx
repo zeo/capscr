@@ -1,4 +1,5 @@
 import { createResource, For, Show } from "solid-js";
+import { Copy, RefreshCw, ExternalLink, Trash2 } from "lucide-solid";
 import { api } from "../api";
 
 function formatBytes(b: number): string {
@@ -8,7 +9,13 @@ function formatBytes(b: number): string {
 }
 
 function formatDate(unix: number): string {
-  return new Date(unix * 1000).toLocaleString();
+  return new Date(unix * 1000).toLocaleString(undefined, {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 }
 
 export function History() {
@@ -16,21 +23,39 @@ export function History() {
 
   return (
     <>
-      <h1>History</h1>
-      <div class="row" style="margin-bottom: 12px;">
-        <button class="ghost" onClick={() => refetch()}>
-          Refresh
+      <div class="view-head">
+        <span class="num">iii</span>
+        <h1>history</h1>
+        <span class="lede">
+          {entries.loading
+            ? "reading dir..."
+            : `${entries()?.length ?? 0} files in output dir`}
+        </span>
+      </div>
+
+      <div class="row between" style="margin-bottom: 18px;">
+        <button class="btn" data-variant="ghost" onClick={() => refetch()}>
+          <RefreshCw size={12} stroke-width={1.5} />
+          reload
         </button>
       </div>
+
       <Show
         when={entries() && entries()!.length > 0}
-        fallback={<p style="color: var(--fg-dim)">No captures yet.</p>}
+        fallback={
+          <div class="empty">
+            <span class="stick" />
+            no captures
+            <p>take a screenshot or fire a task.</p>
+          </div>
+        }
       >
-        <div class="grid">
+        <div class="tiles">
           <For each={entries()}>
             {(e) => (
-              <div class="card">
+              <div class="tile">
                 <img
+                  class="tile-img"
                   src={`asset://localhost/${encodeURIComponent(e.path)}`}
                   alt={e.filename}
                   onError={(ev) => {
@@ -38,31 +63,37 @@ export function History() {
                       "0.3";
                   }}
                 />
-                <div class="meta">
-                  <div title={e.path}>{e.filename}</div>
-                  <div>
-                    {formatBytes(e.size_bytes)} ·{" "}
-                    {formatDate(e.modified_unix)}
+                <div class="tile-actions">
+                  <button
+                    class="icon-btn"
+                    title="open in os viewer"
+                    onClick={() => api.openInExplorer(e.path)}
+                  >
+                    <ExternalLink size={12} stroke-width={1.5} />
+                  </button>
+                  <button
+                    class="icon-btn"
+                    title="copy to clipboard"
+                    onClick={() => api.copyCaptureToClipboard(e.path)}
+                  >
+                    <Copy size={12} stroke-width={1.5} />
+                  </button>
+                  <button
+                    class="icon-btn"
+                    title="delete"
+                    onClick={() => api.deleteCapture(e.path).then(refetch)}
+                  >
+                    <Trash2 size={12} stroke-width={1.5} />
+                  </button>
+                </div>
+                <div class="tile-meta">
+                  <div class="name" title={e.path}>
+                    {e.filename}
                   </div>
-                  <div class="row" style="margin-top: 6px; gap: 4px;">
-                    <button
-                      class="ghost"
-                      onClick={() => api.openInExplorer(e.path)}
-                    >
-                      Open
-                    </button>
-                    <button
-                      class="ghost"
-                      onClick={() => api.copyCaptureToClipboard(e.path)}
-                    >
-                      Copy
-                    </button>
-                    <button
-                      class="ghost"
-                      onClick={() => api.deleteCapture(e.path).then(refetch)}
-                    >
-                      Delete
-                    </button>
+                  <div class="stats">
+                    <span>{formatBytes(e.size_bytes)}</span>
+                    <span>·</span>
+                    <span>{formatDate(e.modified_unix)}</span>
                   </div>
                 </div>
               </div>

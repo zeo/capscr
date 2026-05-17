@@ -44,6 +44,7 @@ export interface UiConfig {
   show_notifications: boolean;
   copy_to_clipboard: boolean;
   minimize_to_tray: boolean;
+  auto_start: boolean;
 }
 
 export interface CaptureTask {
@@ -83,6 +84,13 @@ export interface HistoryEntry {
   is_gif: boolean;
 }
 
+export interface InstalledPlugin {
+  name: string;
+  version: string;
+  description: string;
+  enabled: boolean;
+}
+
 export const api = {
   getConfig: () => invoke<AppConfig>("get_config"),
   setConfig: (config: AppConfig) => invoke<void>("set_config", { config }),
@@ -96,4 +104,9 @@ export const api = {
     invoke<{ url: string; delete_url: string | null }>("reupload_capture", { path }),
   openInExplorer: (path: string) => invoke<void>("open_in_explorer", { path }),
   exitApp: () => invoke<void>("exit_app"),
+
+  listInstalledPlugins: () => invoke<InstalledPlugin[]>("list_installed_plugins"),
+  openPluginsFolder: () => invoke<void>("open_plugins_folder"),
+  setAutostart: (enabled: boolean) => invoke<void>("set_autostart", { enabled }),
+  getAutostart: () => invoke<boolean>("get_autostart"),
 };

@@ -1,30 +1,43 @@
-import { createResource, createSignal, Show } from "solid-js";
+import { createResource, createSignal, For, Match, Show, Switch } from "solid-js";
+import { Section } from "../components/Section";
+import { HotkeyInput } from "../components/HotkeyInput";
 import { api, AppConfig } from "../api";
+import { Save } from "lucide-solid";
+
+type Pane = "general" | "capture" | "hdr" | "hotkeys" | "notify";
+
+const PANES: { id: Pane; num: string; label: string }[] = [
+  { id: "general", num: "i", label: "general" },
+  { id: "capture", num: "ii", label: "capture" },
+  { id: "hdr", num: "iii", label: "hdr" },
+  { id: "hotkeys", num: "iv", label: "hotkeys" },
+  { id: "notify", num: "v", label: "notify" },
+];
 
 export function Settings() {
   const [config, { mutate }] = createResource<AppConfig>(api.getConfig);
+  const [pane, setPane] = createSignal<Pane>("general");
   const [saving, setSaving] = createSignal(false);
-  const [status, setStatus] = createSignal<string>("");
+  const [status, setStatus] = createSignal<{ tone: string; msg: string } | null>(
+    null,
+  );
 
-  const updateAnd = <K extends keyof AppConfig>(
-    key: K,
-    value: AppConfig[K],
-  ) => {
-    const current = config();
-    if (!current) return;
-    mutate({ ...current, [key]: value });
+  const patch = <K extends keyof AppConfig>(key: K, value: AppConfig[K]) => {
+    const c = config();
+    if (!c) return;
+    mutate({ ...c, [key]: value });
   };
 
   const save = async () => {
-    const current = config();
-    if (!current) return;
+    const c = config();
+    if (!c) return;
     setSaving(true);
-    setStatus("Saving...");
+    setStatus({ tone: "", msg: "writing..." });
     try {
-      await api.setConfig(current);
-      setStatus("Saved");
+      await api.setConfig(c);
+      setStatus({ tone: "ok", msg: "saved." });
     } catch (e) {
-      setStatus(`Error: ${e}`);
+      setStatus({ tone: "err", msg: `err: ${e}` });
     } finally {
       setSaving(false);
     }
@@ -32,251 +45,440 @@ export function Settings() {
 
   return (
     <>
-      <h1>Settings</h1>
+      <div class="view-head">
+        <span class="num">i</span>
+        <h1>settings</h1>
+        <span class="lede">
+          <code>%appdata%\capscr\config.toml</code>
+        </span>
+      </div>
+
       <Show when={config()}>
         {(c) => (
           <>
-            <h2>Output</h2>
-            <div class="field">
-              <label>Directory</label>
-              <input
-                type="text"
-                value={c().output.directory}
-                onInput={(e) =>
-                  updateAnd("output", {
-                    ...c().output,
-                    directory: e.currentTarget.value,
-                  })
-                }
-              />
-            </div>
-            <div class="field">
-              <label>Format</label>
-              <select
-                value={c().output.format}
-                onChange={(e) =>
-                  updateAnd("output", {
-                    ...c().output,
-                    format: e.currentTarget.value as never,
-                  })
-                }
-              >
-                <option value="Png">PNG</option>
-                <option value="Jpeg">JPEG</option>
-                <option value="Webp">WebP</option>
-                <option value="Bmp">BMP</option>
-              </select>
-            </div>
-            <div class="field">
-              <label>Quality (1-100)</label>
-              <input
-                type="number"
-                min={1}
-                max={100}
-                value={c().output.quality}
-                onInput={(e) =>
-                  updateAnd("output", {
-                    ...c().output,
-                    quality: parseInt(e.currentTarget.value || "0"),
-                  })
-                }
-              />
-            </div>
+            <nav class="subnav" role="tablist">
+              <For each={PANES}>
+                {(p) => (
+                  <button
+                    type="button"
+                    role="tab"
+                    class="subnav-item"
+                    classList={{ "is-active": pane() === p.id }}
+                    onClick={() => setPane(p.id)}
+                  >
+                    <span style="opacity: .55; margin-right: 8px;">{p.num}</span>
+                    {p.label}
+                  </button>
+                )}
+              </For>
+            </nav>
 
-            <h2>HDR</h2>
-            <div class="field">
-              <label>Compression mode</label>
-              <select
-                value={c().capture.hdr.mode}
-                onChange={(e) =>
-                  updateAnd("capture", {
-                    ...c().capture,
-                    hdr: {
-                      ...c().capture.hdr,
-                      mode: e.currentTarget.value as never,
-                    },
-                  })
-                }
-              >
-                <option value="map-cll-to-display">
-                  Map peak to display (SDR-friendly)
-                </option>
-                <option value="normalize-to-cll">
-                  Normalize to peak (HDR-friendly)
-                </option>
-              </select>
-            </div>
-            <div class="field">
-              <label>SDR brightness target (nits)</label>
-              <input
-                type="number"
-                min={1}
-                max={10000}
-                step={1}
-                value={c().capture.hdr.brightness_nits}
-                onInput={(e) =>
-                  updateAnd("capture", {
-                    ...c().capture,
-                    hdr: {
-                      ...c().capture.hdr,
-                      brightness_nits: parseFloat(
-                        e.currentTarget.value || "80",
-                      ),
-                    },
-                  })
-                }
-              />
-            </div>
-            <div class="field">
-              <label>Pre-tonemap brightness scale</label>
-              <input
-                type="number"
-                min={0.01}
-                max={100}
-                step={0.05}
-                value={c().capture.hdr.user_brightness_scale}
-                onInput={(e) =>
-                  updateAnd("capture", {
-                    ...c().capture,
-                    hdr: {
-                      ...c().capture.hdr,
-                      user_brightness_scale: parseFloat(
-                        e.currentTarget.value || "1",
-                      ),
-                    },
-                  })
-                }
-              />
-            </div>
-            <div class="field">
-              <label>Use P99 MaxCLL (smooths spikes)</label>
-              <input
-                type="checkbox"
-                checked={c().capture.hdr.use_p99_max_cll}
-                onChange={(e) =>
-                  updateAnd("capture", {
-                    ...c().capture,
-                    hdr: {
-                      ...c().capture.hdr,
-                      use_p99_max_cll: e.currentTarget.checked,
-                    },
-                  })
-                }
-              />
-            </div>
+            <Switch>
+              <Match when={pane() === "general"}>
+                <GeneralPane c={c()} patch={patch} />
+              </Match>
+              <Match when={pane() === "capture"}>
+                <CapturePane c={c()} patch={patch} />
+              </Match>
+              <Match when={pane() === "hdr"}>
+                <HdrPane c={c()} patch={patch} />
+              </Match>
+              <Match when={pane() === "hotkeys"}>
+                <HotkeysPane c={c()} patch={patch} />
+              </Match>
+              <Match when={pane() === "notify"}>
+                <NotifyPane c={c()} patch={patch} />
+              </Match>
+            </Switch>
 
-            <h2>Hotkeys</h2>
-            <div class="field">
-              <label>Screenshot</label>
-              <input
-                type="text"
-                value={c().hotkeys.screenshot}
-                onInput={(e) =>
-                  updateAnd("hotkeys", {
-                    ...c().hotkeys,
-                    screenshot: e.currentTarget.value,
-                  })
-                }
-              />
+            <hr class="rule" />
+            <div class="btn-row right">
+              <Show when={status()}>
+                <span class="flash" data-tone={status()!.tone}>
+                  {status()!.msg}
+                </span>
+              </Show>
+              <button class="btn" onClick={save} disabled={saving()}>
+                <Save size={12} stroke-width={1.5} />
+                {saving() ? "saving..." : "save"}
+              </button>
             </div>
-            <div class="field">
-              <label>Record GIF</label>
-              <input
-                type="text"
-                value={c().hotkeys.record_gif}
-                onInput={(e) =>
-                  updateAnd("hotkeys", {
-                    ...c().hotkeys,
-                    record_gif: e.currentTarget.value,
-                  })
-                }
-              />
-            </div>
+          </>
+        )}
+      </Show>
+    </>
+  );
+}
 
-            <h2>Capture</h2>
-            <div class="field">
-              <label>Show cursor</label>
+type Patch = <K extends keyof AppConfig>(key: K, value: AppConfig[K]) => void;
+
+function GeneralPane(props: { c: AppConfig; patch: Patch }) {
+  const c = () => props.c;
+  return (
+    <Section num="i" title="output">
+      <div class="field">
+        <label class="field-label">directory</label>
+        <div class="field-control">
+          <input
+            type="text"
+            value={c().output.directory}
+            onInput={(e) =>
+              props.patch("output", { ...c().output, directory: e.currentTarget.value })
+            }
+          />
+          <span class="field-hint">absolute path or %env% template</span>
+        </div>
+      </div>
+      <div class="field">
+        <label class="field-label">filename template</label>
+        <div class="field-control">
+          <input
+            type="text"
+            value={c().output.filename_template}
+            onInput={(e) =>
+              props.patch("output", {
+                ...c().output,
+                filename_template: e.currentTarget.value,
+              })
+            }
+          />
+          <span class="field-hint">{`tokens: {date} {time} {seq} {ext}`}</span>
+        </div>
+      </div>
+      <div class="field">
+        <label class="field-label">format</label>
+        <div class="field-control">
+          <select
+            value={c().output.format}
+            onChange={(e) =>
+              props.patch("output", {
+                ...c().output,
+                format: e.currentTarget.value as never,
+              })
+            }
+          >
+            <option value="Png">png</option>
+            <option value="Jpeg">jpeg</option>
+            <option value="Webp">webp</option>
+            <option value="Bmp">bmp</option>
+          </select>
+        </div>
+      </div>
+      <div class="field">
+        <label class="field-label">quality</label>
+        <div class="field-control">
+          <input
+            type="number"
+            min={1}
+            max={100}
+            value={c().output.quality}
+            onInput={(e) =>
+              props.patch("output", {
+                ...c().output,
+                quality: parseInt(e.currentTarget.value || "0"),
+              })
+            }
+          />
+          <span class="field-hint">1-100, ignored for png/bmp</span>
+        </div>
+      </div>
+    </Section>
+  );
+}
+
+function CapturePane(props: { c: AppConfig; patch: Patch }) {
+  const c = () => props.c;
+  return (
+    <>
+      <Section num="i" title="cursor">
+        <div class="field">
+          <label class="field-label">show cursor</label>
+          <div class="field-control">
+            <label class="check">
               <input
                 type="checkbox"
                 checked={c().capture.show_cursor}
                 onChange={(e) =>
-                  updateAnd("capture", {
+                  props.patch("capture", {
                     ...c().capture,
                     show_cursor: e.currentTarget.checked,
                   })
                 }
               />
-            </div>
-            <div class="field">
-              <label>GIF FPS (1-60)</label>
-              <input
-                type="number"
-                min={1}
-                max={60}
-                value={c().capture.gif_fps}
-                onInput={(e) =>
-                  updateAnd("capture", {
-                    ...c().capture,
-                    gif_fps: parseInt(e.currentTarget.value || "15"),
-                  })
-                }
-              />
-            </div>
-            <div class="field">
-              <label>GIF max duration (s)</label>
-              <input
-                type="number"
-                min={1}
-                max={300}
-                value={c().capture.gif_max_duration_secs}
-                onInput={(e) =>
-                  updateAnd("capture", {
-                    ...c().capture,
-                    gif_max_duration_secs: parseInt(
-                      e.currentTarget.value || "30",
-                    ),
-                  })
-                }
-              />
-            </div>
+              <span class="check-label">
+                {c().capture.show_cursor ? "captured" : "hidden"}
+              </span>
+            </label>
+          </div>
+        </div>
+      </Section>
 
-            <h2>UI</h2>
-            <div class="field">
-              <label>Show OS notifications</label>
+      <Section num="ii" title="gif recording">
+        <div class="field">
+          <label class="field-label">frame rate</label>
+          <div class="field-control">
+            <input
+              type="number"
+              min={1}
+              max={60}
+              value={c().capture.gif_fps}
+              onInput={(e) =>
+                props.patch("capture", {
+                  ...c().capture,
+                  gif_fps: parseInt(e.currentTarget.value || "15"),
+                })
+              }
+            />
+            <span class="field-hint">fps, 1-60</span>
+          </div>
+        </div>
+        <div class="field">
+          <label class="field-label">max duration</label>
+          <div class="field-control">
+            <input
+              type="number"
+              min={1}
+              max={300}
+              value={c().capture.gif_max_duration_secs}
+              onInput={(e) =>
+                props.patch("capture", {
+                  ...c().capture,
+                  gif_max_duration_secs: parseInt(
+                    e.currentTarget.value || "30",
+                  ),
+                })
+              }
+            />
+            <span class="field-hint">seconds, auto-stops</span>
+          </div>
+        </div>
+      </Section>
+    </>
+  );
+}
+
+function HdrPane(props: { c: AppConfig; patch: Patch }) {
+  const c = () => props.c;
+  return (
+    <Section num="i" title="skiv tonemap">
+      <div class="field">
+        <label class="field-label">mode</label>
+        <div class="field-control">
+          <select
+            value={c().capture.hdr.mode}
+            onChange={(e) =>
+              props.patch("capture", {
+                ...c().capture,
+                hdr: { ...c().capture.hdr, mode: e.currentTarget.value as never },
+              })
+            }
+          >
+            <option value="map-cll-to-display">map peak to display</option>
+            <option value="normalize-to-cll">normalize to peak</option>
+          </select>
+          <span class="field-hint">
+            map = sdr-friendly compress, normalize = preserve relative luminance
+          </span>
+        </div>
+      </div>
+      <div class="field">
+        <label class="field-label">sdr target</label>
+        <div class="field-control">
+          <input
+            type="number"
+            min={1}
+            max={10000}
+            value={c().capture.hdr.brightness_nits}
+            onInput={(e) =>
+              props.patch("capture", {
+                ...c().capture,
+                hdr: {
+                  ...c().capture.hdr,
+                  brightness_nits: parseFloat(e.currentTarget.value || "80"),
+                },
+              })
+            }
+          />
+          <span class="field-hint">paper-white target, nits</span>
+        </div>
+      </div>
+      <div class="field">
+        <label class="field-label">pre-tonemap scale</label>
+        <div class="field-control">
+          <input
+            type="number"
+            min={0.01}
+            max={100}
+            step={0.05}
+            value={c().capture.hdr.user_brightness_scale}
+            onInput={(e) =>
+              props.patch("capture", {
+                ...c().capture,
+                hdr: {
+                  ...c().capture.hdr,
+                  user_brightness_scale: parseFloat(
+                    e.currentTarget.value || "1",
+                  ),
+                },
+              })
+            }
+          />
+          <span class="field-hint">multiply luminance before mapping (1.0 = identity)</span>
+        </div>
+      </div>
+      <div class="field">
+        <label class="field-label">p99 maxcll</label>
+        <div class="field-control">
+          <label class="check">
+            <input
+              type="checkbox"
+              checked={c().capture.hdr.use_p99_max_cll}
+              onChange={(e) =>
+                props.patch("capture", {
+                  ...c().capture,
+                  hdr: {
+                    ...c().capture.hdr,
+                    use_p99_max_cll: e.currentTarget.checked,
+                  },
+                })
+              }
+            />
+            <span class="check-label">
+              {c().capture.hdr.use_p99_max_cll
+                ? "p99 (sky / lights ignored)"
+                : "pure max, every spike counted"}
+            </span>
+          </label>
+        </div>
+      </div>
+    </Section>
+  );
+}
+
+function HotkeysPane(props: { c: AppConfig; patch: Patch }) {
+  const c = () => props.c;
+  return (
+    <Section num="i" title="quick hotkeys">
+      <div class="field">
+        <label class="field-label">screenshot</label>
+        <div class="field-control">
+          <HotkeyInput
+            value={c().hotkeys.screenshot}
+            onChange={(v) =>
+              props.patch("hotkeys", { ...c().hotkeys, screenshot: v })
+            }
+          />
+          <span class="field-hint">click, press combo. esc cancels.</span>
+        </div>
+      </div>
+      <div class="field">
+        <label class="field-label">record gif</label>
+        <div class="field-control">
+          <HotkeyInput
+            value={c().hotkeys.record_gif}
+            onChange={(v) =>
+              props.patch("hotkeys", { ...c().hotkeys, record_gif: v })
+            }
+          />
+          <span class="field-hint">for per-task hotkeys, see tasks tab</span>
+        </div>
+      </div>
+    </Section>
+  );
+}
+
+function NotifyPane(props: { c: AppConfig; patch: Patch }) {
+  const c = () => props.c;
+  return (
+    <>
+      <Section num="i" title="feedback">
+        <div class="field">
+          <label class="field-label">os notifications</label>
+          <div class="field-control">
+            <label class="check">
               <input
                 type="checkbox"
                 checked={c().ui.show_notifications}
                 onChange={(e) =>
-                  updateAnd("ui", {
+                  props.patch("ui", {
                     ...c().ui,
                     show_notifications: e.currentTarget.checked,
                   })
                 }
               />
-            </div>
-            <div class="field">
-              <label>Play sound after capture</label>
+              <span class="check-label">
+                {c().ui.show_notifications ? "on" : "silent"}
+              </span>
+            </label>
+          </div>
+        </div>
+        <div class="field">
+          <label class="field-label">sound cue</label>
+          <div class="field-control">
+            <label class="check">
               <input
                 type="checkbox"
                 checked={c().post_capture.play_sound}
                 onChange={(e) =>
-                  updateAnd("post_capture", {
+                  props.patch("post_capture", {
                     ...c().post_capture,
                     play_sound: e.currentTarget.checked,
                   })
                 }
               />
-            </div>
+              <span class="check-label">
+                {c().post_capture.play_sound
+                  ? "win32 playsound on capture / upload"
+                  : "silent"}
+              </span>
+            </label>
+          </div>
+        </div>
+      </Section>
 
-            <div class="row" style="margin-top: 24px;">
-              <button onClick={save} disabled={saving()}>
-                {saving() ? "Saving..." : "Save settings"}
-              </button>
-              <span class="status">{status()}</span>
-            </div>
-          </>
-        )}
-      </Show>
+      <Section num="ii" title="system">
+        <div class="field">
+          <label class="field-label">launch on boot</label>
+          <div class="field-control">
+            <label class="check">
+              <input
+                type="checkbox"
+                checked={c().ui.auto_start}
+                onChange={(e) =>
+                  props.patch("ui", {
+                    ...c().ui,
+                    auto_start: e.currentTarget.checked,
+                  })
+                }
+              />
+              <span class="check-label">
+                {c().ui.auto_start
+                  ? "registered in windows run keys"
+                  : "manual launch only"}
+              </span>
+            </label>
+            <span class="field-hint">applied on next save</span>
+          </div>
+        </div>
+        <div class="field">
+          <label class="field-label">minimize to tray</label>
+          <div class="field-control">
+            <label class="check">
+              <input
+                type="checkbox"
+                checked={c().ui.minimize_to_tray}
+                onChange={(e) =>
+                  props.patch("ui", {
+                    ...c().ui,
+                    minimize_to_tray: e.currentTarget.checked,
+                  })
+                }
+              />
+              <span class="check-label">close button hides window, doesn't exit</span>
+            </label>
+          </div>
+        </div>
+      </Section>
     </>
   );
 }

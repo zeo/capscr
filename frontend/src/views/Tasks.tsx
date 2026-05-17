@@ -1,21 +1,23 @@
 import { createResource, createSignal, For, Show } from "solid-js";
+import { Plus, Save, Trash2 } from "lucide-solid";
 import { api, AppConfig, CaptureTask } from "../api";
+import { HotkeyInput } from "../components/HotkeyInput";
 
-const CAPTURE_MODES: CaptureTask["capture_mode"][] = [
-  "region",
-  "window",
-  "fullscreen",
-  "active-monitor",
-  "region-gif",
+const CAPTURE_MODES: { id: CaptureTask["capture_mode"]; label: string }[] = [
+  { id: "region", label: "region (drag a rect)" },
+  { id: "window", label: "window (pick one)" },
+  { id: "fullscreen", label: "fullscreen (primary)" },
+  { id: "active-monitor", label: "active monitor" },
+  { id: "region-gif", label: "region gif" },
 ];
 
-const POST_ACTIONS: CaptureTask["post_action"][] = [
-  "clipboard",
-  "save-file",
-  "upload",
-  "save-and-clipboard",
-  "open-editor",
-  "prompt",
+const POST_ACTIONS: { id: CaptureTask["post_action"]; label: string }[] = [
+  { id: "clipboard", label: "clipboard only" },
+  { id: "save-file", label: "save to output dir" },
+  { id: "save-and-clipboard", label: "save + clipboard" },
+  { id: "upload", label: "upload" },
+  { id: "open-editor", label: "open in editor" },
+  { id: "prompt", label: "prompt" },
 ];
 
 const UPLOAD_TARGETS: NonNullable<CaptureTask["target_destination"]>[] = [
@@ -26,7 +28,9 @@ const UPLOAD_TARGETS: NonNullable<CaptureTask["target_destination"]>[] = [
 
 export function Tasks() {
   const [config, { mutate }] = createResource<AppConfig>(api.getConfig);
-  const [status, setStatus] = createSignal("");
+  const [status, setStatus] = createSignal<{ tone: string; msg: string } | null>(
+    null,
+  );
 
   const updateTask = (index: number, partial: Partial<CaptureTask>) => {
     const c = config();
@@ -49,7 +53,7 @@ export function Tasks() {
     const id = `task-${Date.now().toString(36)}`;
     const newTask: CaptureTask = {
       id,
-      name: "New task",
+      name: "new task",
       hotkey: "",
       capture_mode: "region",
       post_action: "clipboard",
@@ -61,116 +65,196 @@ export function Tasks() {
   const save = async () => {
     const c = config();
     if (!c) return;
-    setStatus("Saving...");
+    setStatus({ tone: "", msg: "re-registering hotkeys..." });
     try {
       await api.setConfig(c);
-      setStatus("Saved. Hotkeys re-registered.");
+      setStatus({
+        tone: "ok",
+        msg: `${c.capture_tasks.length} task${c.capture_tasks.length === 1 ? "" : "s"} live.`,
+      });
     } catch (e) {
-      setStatus(`Error: ${e}`);
+      setStatus({ tone: "err", msg: `err: ${e}` });
     }
   };
 
   return (
     <>
-      <h1>Capture tasks</h1>
-      <p style="color: var(--fg-dim); max-width: 600px;">
-        Each task binds a global hotkey to a capture mode plus a post-action
-        (clipboard, save, upload, etc). Press the hotkey from anywhere to fire
-        the task.
-      </p>
+      <div class="view-head">
+        <span class="num">ii</span>
+        <h1>tasks</h1>
+        <span class="lede">
+          one hotkey, one capture, one post-action.
+        </span>
+      </div>
+
       <Show when={config()}>
         {(c) => (
           <>
-            <div class="row" style="margin-bottom: 12px;">
-              <button onClick={addTask}>Add task</button>
-              <button onClick={save}>Save tasks</button>
-              <span class="status">{status()}</span>
+            <div class="row between" style="margin-bottom: 18px;">
+              <div class="btn-row">
+                <button class="btn" onClick={addTask}>
+                  <Plus size={12} stroke-width={1.5} />
+                  new
+                </button>
+                <button class="btn" data-variant="ghost" onClick={save}>
+                  <Save size={12} stroke-width={1.5} />
+                  save
+                </button>
+              </div>
+              <Show when={status()}>
+                <span class="flash" data-tone={status()!.tone}>
+                  {status()!.msg}
+                </span>
+              </Show>
             </div>
-            <div style="display: flex; flex-direction: column; gap: 12px;">
-              <For each={c().capture_tasks}>
-                {(task, i) => (
-                  <div class="card" style="padding: 12px;">
-                    <div class="field">
-                      <label>Name</label>
-                      <input
-                        type="text"
-                        value={task.name}
-                        onInput={(e) =>
-                          updateTask(i(), { name: e.currentTarget.value })
-                        }
-                      />
-                    </div>
-                    <div class="field">
-                      <label>Hotkey</label>
-                      <input
-                        type="text"
-                        placeholder="e.g. Numpad5, Ctrl+Shift+S"
-                        value={task.hotkey}
-                        onInput={(e) =>
-                          updateTask(i(), { hotkey: e.currentTarget.value })
-                        }
-                      />
-                    </div>
-                    <div class="field">
-                      <label>Capture mode</label>
-                      <select
-                        value={task.capture_mode}
-                        onChange={(e) =>
-                          updateTask(i(), {
-                            capture_mode: e.currentTarget.value as never,
-                          })
-                        }
-                      >
-                        <For each={CAPTURE_MODES}>
-                          {(m) => <option value={m}>{m}</option>}
-                        </For>
-                      </select>
-                    </div>
-                    <div class="field">
-                      <label>Post-action</label>
-                      <select
-                        value={task.post_action}
-                        onChange={(e) =>
-                          updateTask(i(), {
-                            post_action: e.currentTarget.value as never,
-                          })
-                        }
-                      >
-                        <For each={POST_ACTIONS}>
-                          {(p) => <option value={p}>{p}</option>}
-                        </For>
-                      </select>
-                    </div>
-                    <Show when={task.post_action === "upload"}>
-                      <div class="field">
-                        <label>Upload target</label>
-                        <select
-                          value={task.target_destination ?? "imgur"}
-                          onChange={(e) =>
-                            updateTask(i(), {
-                              target_destination: e.currentTarget
-                                .value as never,
-                            })
-                          }
-                        >
-                          <For each={UPLOAD_TARGETS}>
-                            {(t) => <option value={t}>{t}</option>}
-                          </For>
-                        </select>
+
+            <Show
+              when={c().capture_tasks.length > 0}
+              fallback={
+                <div class="empty">
+                  <span class="stick" />
+                  no tasks
+                  <p>
+                    press <kbd>new</kbd>, give it a hotkey, save.
+                  </p>
+                </div>
+              }
+            >
+              <div class="list">
+                <For each={c().capture_tasks}>
+                  {(task, i) => (
+                    <div class="list-item">
+                      <div class="list-item-body">
+                        <div class="list-item-title">{task.name || "—"}</div>
+                        <div class="list-item-meta">
+                          <span>
+                            <span class="k">mode </span>
+                            <span class="v">{task.capture_mode}</span>
+                          </span>
+                          <span>
+                            <span class="k">post </span>
+                            <span class="v">{task.post_action}</span>
+                          </span>
+                          <Show when={task.hotkey}>
+                            <span>
+                              <span class="k">key </span>
+                              <span class="v">{task.hotkey}</span>
+                            </span>
+                          </Show>
+                          <span>
+                            <span class="k">id </span>
+                            <span class="v">{task.id}</span>
+                          </span>
+                        </div>
+
+                        <div class="list-item-fields">
+                          <div class="field">
+                            <label class="field-label">name</label>
+                            <div class="field-control">
+                              <input
+                                type="text"
+                                value={task.name}
+                                onInput={(e) =>
+                                  updateTask(i(), {
+                                    name: e.currentTarget.value,
+                                  })
+                                }
+                              />
+                            </div>
+                          </div>
+                          <div class="field">
+                            <label class="field-label">hotkey</label>
+                            <div class="field-control">
+                              <HotkeyInput
+                                value={task.hotkey}
+                                onChange={(v) =>
+                                  updateTask(i(), { hotkey: v })
+                                }
+                              />
+                              <span class="field-hint">
+                                click, press combo
+                              </span>
+                            </div>
+                          </div>
+                          <div class="field">
+                            <label class="field-label">capture mode</label>
+                            <div class="field-control">
+                              <select
+                                value={task.capture_mode}
+                                onChange={(e) =>
+                                  updateTask(i(), {
+                                    capture_mode: e.currentTarget
+                                      .value as never,
+                                  })
+                                }
+                              >
+                                <For each={CAPTURE_MODES}>
+                                  {(m) => (
+                                    <option value={m.id}>{m.label}</option>
+                                  )}
+                                </For>
+                              </select>
+                            </div>
+                          </div>
+                          <div class="field">
+                            <label class="field-label">post-action</label>
+                            <div class="field-control">
+                              <select
+                                value={task.post_action}
+                                onChange={(e) =>
+                                  updateTask(i(), {
+                                    post_action: e.currentTarget
+                                      .value as never,
+                                  })
+                                }
+                              >
+                                <For each={POST_ACTIONS}>
+                                  {(p) => (
+                                    <option value={p.id}>{p.label}</option>
+                                  )}
+                                </For>
+                              </select>
+                            </div>
+                          </div>
+                          <Show when={task.post_action === "upload"}>
+                            <div class="field">
+                              <label class="field-label">target</label>
+                              <div class="field-control">
+                                <select
+                                  value={task.target_destination ?? "imgur"}
+                                  onChange={(e) =>
+                                    updateTask(i(), {
+                                      target_destination: e.currentTarget
+                                        .value as never,
+                                    })
+                                  }
+                                >
+                                  <For each={UPLOAD_TARGETS}>
+                                    {(t) => <option value={t}>{t}</option>}
+                                  </For>
+                                </select>
+                              </div>
+                            </div>
+                          </Show>
+                        </div>
                       </div>
-                    </Show>
-                    <div class="row" style="margin-top: 8px;">
-                      <button class="ghost" onClick={() => deleteTask(i())}>
-                        Delete
-                      </button>
-                      <span style="color: var(--fg-dim); font-size: 11px;">
-                        id: {task.id}
-                      </span>
+
+                      <div class="list-item-actions">
+                        <button
+                          class="btn"
+                          data-variant="ghost"
+                          data-size="xs"
+                          onClick={() => deleteTask(i())}
+                        >
+                          <Trash2 size={11} stroke-width={1.5} />
+                          delete
+                        </button>
+                      </div>
                     </div>
-                  </div>
-                )}
-              </For>
-            </div>
+                  )}
+                </For>
+              </div>
+            </Show>
           </>
         )}
       </Show>
