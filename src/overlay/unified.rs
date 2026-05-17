@@ -37,7 +37,7 @@ mod windows_impl {
                     GetWindowRect, IsIconic, IsWindowVisible, PostQuitMessage, RegisterClassW,
                     ShowWindow, TranslateMessage, CS_HREDRAW, CS_VREDRAW, GA_ROOT, GWL_EXSTYLE,
                     GWL_STYLE, MSG, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN,
-                    SM_YVIRTUALSCREEN, SW_SHOWMAXIMIZED, WM_DESTROY, WM_KEYDOWN, WM_LBUTTONDOWN,
+                    SM_YVIRTUALSCREEN, SW_SHOWNORMAL, WM_DESTROY, WM_KEYDOWN, WM_LBUTTONDOWN,
                     WM_LBUTTONUP, WM_MOUSEMOVE, WM_PAINT, WNDCLASSW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
                     WS_POPUP, WS_VISIBLE,
                 },
@@ -245,7 +245,7 @@ mod windows_impl {
                 Err(_) => return SelectionResult::Cancelled,
             };
 
-            let _ = ShowWindow(hwnd, SW_SHOWMAXIMIZED);
+            let _ = ShowWindow(hwnd, SW_SHOWNORMAL);
 
             let mut msg = MSG::default();
             while SELECTING.load(Ordering::SeqCst) {

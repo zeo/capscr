@@ -79,7 +79,7 @@ export function App() {
         </nav>
         <div class="sidebar-foot">
           <span class="path">~/.capscr</span>
-          <span>v0.3.2 / master</span>
+          <span>v0.3.3 / master</span>
         </div>
       </aside>
 
@@ -111,7 +111,7 @@ export function App() {
             : `${captures()?.length ?? 0} captures on disk`}
         </span>
         <span class="grow" />
-        <span class="tail">capscr v0.3.2</span>
+        <span class="tail">capscr v0.3.3</span>
       </footer>
 
       <Show when={toasts().length > 0}>
