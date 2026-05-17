@@ -106,6 +106,7 @@ fn main() {
             commands::save_edited_image,
             commands::copy_edited_image_to_clipboard,
             commands::upload_edited_image,
+            commands::upload_file,
         ])
         .build(tauri::generate_context!())
         .expect("error while building capscr")

@@ -1271,3 +1271,49 @@ kbd {
   gap: 4px;
   flex-wrap: wrap;
 }
+
+/* ---------------- drag-drop overlay ---------------- */
+
+.drop-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9998;
+  background: rgba(0, 0, 0, 0.6);
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+  animation: drop-in 120ms ease-out;
+}
+
+.drop-overlay-inner {
+  border: 2px dashed var(--paper);
+  padding: 32px 48px;
+  text-align: center;
+  background: var(--ink-2);
+  min-width: 280px;
+}
+
+.drop-overlay-glyph {
+  font-size: 56px;
+  line-height: 1;
+  color: var(--paper);
+  letter-spacing: 0;
+}
+
+.drop-overlay-title {
+  margin-top: 8px;
+  font-size: 13px;
+  color: var(--paper);
+  letter-spacing: var(--tracked-wide);
+}
+
+.drop-overlay-lede {
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--mute);
+}
+
+@keyframes drop-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}

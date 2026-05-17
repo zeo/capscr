@@ -538,6 +538,67 @@ pub fn copy_edited_image_to_clipboard(bytes: Vec<u8>) -> Result<(), String> {
 }
 
 #[tauri::command]
+pub fn upload_file(
+    path: String,
+    app: AppHandle,
+    state: State<AppState>,
+) -> Result<UploadResponse, String> {
+    let buf = PathBuf::from(&path);
+    let canonical = std::fs::canonicalize(&buf).map_err(|e| e.to_string())?;
+    if !canonical.is_file() {
+        return Err("not a regular file".into());
+    }
+
+    let ext = canonical
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|s| s.to_lowercase())
+        .unwrap_or_default();
+    let mime = match ext.as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "bmp" => "image/bmp",
+        "" => return Err("file has no extension; cannot detect type".into()),
+        other => return Err(format!("unsupported file type: .{}", other)),
+    };
+
+    let metadata = std::fs::metadata(&canonical).map_err(|e| e.to_string())?;
+    if metadata.len() > 100 * 1024 * 1024 {
+        return Err("file too large to upload (>100 MB)".into());
+    }
+
+    let bytes = std::fs::read(&canonical).map_err(|e| e.to_string())?;
+    let file_name = canonical
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("upload")
+        .to_string();
+
+    let config = state.config.lock().unwrap().clone();
+    let uploader = ImageUploader::new().map_err(|e| e.to_string())?;
+    let service = build_upload_service(&config);
+    let result = uploader
+        .upload_raw(&bytes, mime, &file_name, &service)
+        .map_err(|e| e.to_string())?;
+
+    *state.last_upload.lock().unwrap() = Some(UploadRecord {
+        url: result.url.clone(),
+        delete_url: result.delete_url.clone(),
+    });
+    if config.upload.copy_url_to_clipboard {
+        let _ = crate::upload::copy_url_to_clipboard(&result.url);
+    }
+    emit_upload_success(&app, &result);
+
+    Ok(UploadResponse {
+        url: result.url,
+        delete_url: result.delete_url,
+    })
+}
+
+#[tauri::command]
 pub fn upload_edited_image(
     bytes: Vec<u8>,
     app: AppHandle,

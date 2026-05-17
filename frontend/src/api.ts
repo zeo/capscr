@@ -109,4 +109,6 @@ export const api = {
   openPluginsFolder: () => invoke<void>("open_plugins_folder"),
   setAutostart: (enabled: boolean) => invoke<void>("set_autostart", { enabled }),
   getAutostart: () => invoke<boolean>("get_autostart"),
+  uploadFile: (path: string) =>
+    invoke<{ url: string; delete_url: string | null }>("upload_file", { path }),
 };

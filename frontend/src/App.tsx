@@ -55,6 +55,7 @@ function Hub() {
   const [uploads, setUploads] = createSignal<UploadCard[]>([]);
   const [recording, setRecording] = createSignal(false);
   const [config] = createResource(api.getConfig);
+  const [dragOver, setDragOver] = createSignal(false);
 
   const win = getCurrentWindow();
   const active = () => tab().id;
@@ -88,6 +89,25 @@ function Hub() {
       await listen("capscr://recording-started", () => setRecording(true)),
       await listen("capscr://recording-stopped", () => setRecording(false)),
     );
+
+    const dragUnlisten = await win.onDragDropEvent(async (e) => {
+      const payload = e.payload;
+      if (payload.type === "enter" || payload.type === "over") {
+        setDragOver(true);
+      } else if (payload.type === "leave") {
+        setDragOver(false);
+      } else if (payload.type === "drop") {
+        setDragOver(false);
+        for (const path of payload.paths) {
+          try {
+            await api.uploadFile(path);
+          } catch (err) {
+            pushToast("upload", String(err));
+          }
+        }
+      }
+    });
+    unlisteners.push(dragUnlisten);
   });
 
   onCleanup(() => unlisteners.forEach((u) => u()));
@@ -124,7 +144,7 @@ function Hub() {
         </nav>
         <div class="sidebar-foot">
           <span class="path">~/.capscr</span>
-          <span>v0.3.6 / master</span>
+          <span>v0.3.7 / master</span>
         </div>
       </aside>
 
@@ -158,8 +178,20 @@ function Hub() {
             : `${captures()?.length ?? 0} captures on disk`}
         </span>
         <span class="grow" />
-        <span class="tail">capscr v0.3.6</span>
+        <span class="tail">capscr v0.3.7</span>
       </footer>
+
+      <Show when={dragOver()}>
+        <div class="drop-overlay">
+          <div class="drop-overlay-inner">
+            <div class="drop-overlay-glyph">+</div>
+            <div class="drop-overlay-title">drop to upload</div>
+            <div class="drop-overlay-lede">
+              destination: {config()?.upload.destination ?? "..."}
+            </div>
+          </div>
+        </div>
+      </Show>
 
       <Show when={toasts().length > 0 || uploads().length > 0}>
         <div class="toasts">
