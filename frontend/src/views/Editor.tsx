@@ -83,6 +83,20 @@ export function Editor() {
       setStatus({ tone: "err", msg: "no image path received from backend" });
       return;
     }
+
+    // Block GIF editing — canvas can only sample the first frame and we'd
+    // export PNG bytes over the .gif file, destroying the animation. Until
+    // we have a real frame-aware GIF editor, refuse to load.
+    const ext = path.split(".").pop()?.toLowerCase();
+    if (ext === "gif") {
+      setImagePath(path);
+      setStatus({
+        tone: "err",
+        msg: "GIF editing isn't supported — would flatten frames. Close to keep the original.",
+      });
+      return;
+    }
+
     setImagePath(path);
 
     const img = new Image();

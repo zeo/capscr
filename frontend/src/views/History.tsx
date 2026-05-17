@@ -1,5 +1,12 @@
 import { createResource, createSignal, For, Show } from "solid-js";
-import { Copy, RefreshCw, ExternalLink, Trash2, Edit3 } from "lucide-solid";
+import {
+  Copy,
+  RefreshCw,
+  ExternalLink,
+  Trash2,
+  Edit3,
+  UploadCloud,
+} from "lucide-solid";
 import { api } from "../api";
 
 function formatBytes(b: number): string {
@@ -95,6 +102,13 @@ export function History() {
                     onClick={() => api.openEditor(e.path)}
                   >
                     <Edit3 size={12} stroke-width={1.5} />
+                  </button>
+                  <button
+                    class="icon-btn"
+                    title="re-upload"
+                    onClick={() => api.reuploadCapture(e.path)}
+                  >
+                    <UploadCloud size={12} stroke-width={1.5} />
                   </button>
                   <button
                     class="icon-btn"

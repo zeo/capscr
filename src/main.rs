@@ -81,6 +81,17 @@ fn main() {
         .setup(move |app| {
             build_tray(app)?;
             sync_autostart(app, autostart_desired);
+            // Make sure the asset:// protocol can reach the user's configured
+            // output dir even if they moved it off the default $PICTURE/capscr.
+            // The static scope in tauri.conf.json is the fallback; this widens
+            // it dynamically based on actual config.
+            {
+                let st = app.state::<state::AppState>();
+                let dir = st.config.lock().unwrap().output.directory.clone();
+                if let Err(e) = app.asset_protocol_scope().allow_directory(&dir, true) {
+                    tracing::warn!("asset scope allow_directory({:?}) failed: {e}", dir);
+                }
+            }
             let (tx, rx) = mpsc::channel::<HotkeyCommand>();
             {
                 let st = app.state::<state::AppState>();

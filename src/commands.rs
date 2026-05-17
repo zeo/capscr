@@ -61,7 +61,13 @@ pub fn set_config(config: Config, app: AppHandle, state: State<AppState>) -> Res
     crate::install_hdr_runtime_from_config(&config);
     state.send_hotkey_reload(config.capture_tasks.clone());
     let want_autostart = config.ui.auto_start;
+    let output_dir = config.output.directory.clone();
     *state.config.lock().unwrap() = config;
+    // Sync asset:// scope with the new output dir so History thumbnails keep
+    // loading after the user changes the path mid-session.
+    if let Err(e) = app.asset_protocol_scope().allow_directory(&output_dir, true) {
+        tracing::warn!("asset scope allow_directory({:?}) failed: {e}", output_dir);
+    }
     let manager = app.autolaunch();
     let current = manager.is_enabled().unwrap_or(false);
     if current != want_autostart {
