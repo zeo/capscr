@@ -163,7 +163,18 @@ mod windows_impl {
     }
 
     pub fn select() -> SelectionResult {
-        SELECTING.store(true, Ordering::SeqCst);
+        // Single-flight: the windows_impl module backs the entire selector with
+        // process-wide statics (START_X / SCREEN_BITMAP / etc.). A second
+        // simultaneous select() call from e.g. tray-click while a hotkey-bound
+        // capture is mid-drag would scramble those, so we reject overlap and
+        // let the caller treat it as cancelled.
+        if SELECTING
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            tracing::info!("selector already active — dropping overlapping invocation");
+            return SelectionResult::Cancelled;
+        }
         START_X.store(0, Ordering::SeqCst);
         START_Y.store(0, Ordering::SeqCst);
         END_X.store(0, Ordering::SeqCst);

@@ -1354,3 +1354,8 @@ kbd {
   outline: 1px solid var(--paper);
   outline-offset: 1px;
 }
+
+.list-item-meta .warn .v {
+  color: var(--paper);
+  border-bottom: 1px dotted var(--paper);
+}

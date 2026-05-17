@@ -150,7 +150,7 @@ function Hub() {
         </nav>
         <div class="sidebar-foot">
           <span class="path">~/.capscr</span>
-          <span>v0.3.10 / master</span>
+          <span>v{__APP_VERSION__} / master</span>
         </div>
       </aside>
 
@@ -184,7 +184,7 @@ function Hub() {
             : `${captures()?.length ?? 0} captures on disk`}
         </span>
         <span class="grow" />
-        <span class="tail">capscr v0.3.10</span>
+        <span class="tail">capscr v{__APP_VERSION__}</span>
       </footer>
 
       <Show when={dragOver()}>

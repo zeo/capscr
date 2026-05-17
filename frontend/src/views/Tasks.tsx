@@ -145,10 +145,24 @@ export function Tasks() {
                             <span class="k">post </span>
                             <span class="v">{task.post_action}</span>
                           </span>
-                          <Show when={task.hotkey}>
+                          <Show
+                            when={task.hotkey}
+                            fallback={
+                              <span class="warn">
+                                <span class="k">key </span>
+                                <span class="v">unbound</span>
+                              </span>
+                            }
+                          >
                             <span>
                               <span class="k">key </span>
                               <span class="v">{task.hotkey}</span>
+                            </span>
+                          </Show>
+                          <Show when={!task.name.trim()}>
+                            <span class="warn">
+                              <span class="k">name </span>
+                              <span class="v">required</span>
                             </span>
                           </Show>
                           <span>

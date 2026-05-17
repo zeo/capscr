@@ -10,7 +10,7 @@ use crate::plugin::{CaptureType, PluginEvent, PluginResponse};
 use crate::recording::{GifRecorder, RecordingSettings, RecordingState};
 use crate::sound::Sound;
 use crate::state::{AppState, UploadRecord};
-use crate::upload::{CustomUploader, FtpTarget, ImageUploader, UploadService};
+use crate::upload::{CustomUploader, FtpTarget, UploadService};
 use image::RgbaImage;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -234,7 +234,7 @@ fn run_post_action(
     };
 
     let do_upload = || -> anyhow::Result<crate::upload::UploadResult> {
-        let uploader = ImageUploader::new()?;
+        let uploader = crate::upload::shared_uploader()?;
         let service = build_upload_service(&config);
         let result = uploader.upload(image, &service)?;
         *state.last_upload.lock().unwrap() = Some(UploadRecord {
@@ -403,7 +403,7 @@ pub fn reupload_capture(
     }
     let img = image::open(&canonical).map_err(|e| e.to_string())?;
     let rgba = img.to_rgba8();
-    let uploader = ImageUploader::new().map_err(|e| e.to_string())?;
+    let uploader = crate::upload::shared_uploader().map_err(|e| e.to_string())?;
     let service = build_upload_service(&config);
     let result = uploader.upload(&rgba, &service).map_err(|e| e.to_string())?;
     *state.last_upload.lock().unwrap() = Some(UploadRecord {
@@ -590,7 +590,7 @@ pub fn upload_file(
         .to_string();
 
     let config = state.config.lock().unwrap().clone();
-    let uploader = ImageUploader::new().map_err(|e| e.to_string())?;
+    let uploader = crate::upload::shared_uploader().map_err(|e| e.to_string())?;
     let service = build_upload_service(&config);
     let result = uploader
         .upload_raw(&bytes, mime, &file_name, &service)
@@ -620,7 +620,7 @@ pub fn upload_edited_image(
     let img = image::load_from_memory(&bytes).map_err(|e| e.to_string())?;
     let rgba = img.to_rgba8();
     let config = state.config.lock().unwrap().clone();
-    let uploader = ImageUploader::new().map_err(|e| e.to_string())?;
+    let uploader = crate::upload::shared_uploader().map_err(|e| e.to_string())?;
     let service = build_upload_service(&config);
     let result = uploader.upload(&rgba, &service).map_err(|e| e.to_string())?;
     *state.last_upload.lock().unwrap() = Some(UploadRecord {
@@ -846,7 +846,7 @@ fn apply_gif_post_action(task: &CaptureTask, app: &AppHandle, path: &std::path::
                         return;
                     }
                 };
-                let uploader = match ImageUploader::new() {
+                let uploader = match crate::upload::shared_uploader() {
                     Ok(u) => u,
                     Err(e) => {
                         emit_error(&app2, "upload", &e.to_string());
