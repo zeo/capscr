@@ -1,12 +1,13 @@
 #![allow(dead_code)]
 
-use crate::capture::{Capture, RegionCapture, ScreenCapture, WindowCapture};
+use crate::capture::{Capture, Rectangle, RegionCapture, ScreenCapture, WindowCapture};
 use crate::clipboard::{get_unique_filepath, save_image, show_notification, ClipboardManager};
 use crate::config::{
     CaptureTask, Config, PostCaptureAction, TaskCaptureMode, TaskPostAction, UploadDestination,
 };
-use crate::overlay::{SelectionResult, UnifiedSelector};
+use crate::overlay::{RecordingOverlay, SelectionResult, UnifiedSelector};
 use crate::plugin::{CaptureType, PluginEvent, PluginResponse};
+use crate::recording::{GifRecorder, RecordingSettings, RecordingState};
 use crate::sound::Sound;
 use crate::state::{AppState, UploadRecord};
 use crate::upload::{CustomUploader, FtpTarget, ImageUploader, UploadService};
@@ -14,6 +15,7 @@ use image::RgbaImage;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_autostart::ManagerExt as AutostartManagerExt;
 use tauri_plugin_opener::OpenerExt;
@@ -512,19 +514,184 @@ pub fn trigger_task(app: &AppHandle, task_id: &str) {
 }
 
 pub fn run_task(task: &CaptureTask, app: &AppHandle) -> anyhow::Result<()> {
+    if matches!(task.capture_mode, TaskCaptureMode::RegionGif) {
+        return run_gif_task(task, app);
+    }
     let mode = match task.capture_mode {
         TaskCaptureMode::Region | TaskCaptureMode::Window | TaskCaptureMode::Fullscreen => {
             CaptureModeArg::from_task_mode(task.capture_mode)
         }
         TaskCaptureMode::ActiveMonitor => CaptureModeArg::ActiveMonitor,
-        TaskCaptureMode::RegionGif => {
-            // GIF recording is async; phase 2 ships still-image only.
-            // Phase 3 stub: treat as still region capture for now.
-            CaptureModeArg::Region
-        }
+        TaskCaptureMode::RegionGif => unreachable!("handled above"),
     };
     let post = PostActionArg::from_task_action(task.post_action);
     run_capture_pipeline(mode, post, app)
+}
+
+fn run_gif_task(task: &CaptureTask, app: &AppHandle) -> anyhow::Result<()> {
+    let state = app.state::<AppState>();
+    let current = *state.recording_state.lock().unwrap();
+    let active_id = state.recording_task_id.lock().unwrap().clone();
+
+    if matches!(current, RecordingState::Recording) {
+        // Same task hotkey re-pressed → user wants to stop.
+        // Different task hotkey while recording → ignore to avoid losing the in-progress recording.
+        if active_id.as_deref() == Some(task.id.as_str()) {
+            stop_gif_recording(app);
+        } else {
+            tracing::info!(
+                "ignoring gif start request from '{}': '{:?}' is already recording",
+                task.id,
+                active_id
+            );
+        }
+        return Ok(());
+    }
+
+    if matches!(current, RecordingState::Processing) {
+        // Mid-save from a previous run; skip.
+        return Ok(());
+    }
+
+    let selection = UnifiedSelector::select();
+    let region = match selection {
+        SelectionResult::Region(r) => r,
+        SelectionResult::Cancelled => return Ok(()),
+        _ => {
+            tracing::info!("gif task '{}' aborted: needs a region selection", task.id);
+            return Ok(());
+        }
+    };
+
+    start_gif_recording(task, app, region)
+}
+
+fn start_gif_recording(
+    task: &CaptureTask,
+    app: &AppHandle,
+    region: Rectangle,
+) -> anyhow::Result<()> {
+    let state = app.state::<AppState>();
+    let cfg = state.config.lock().unwrap().clone();
+
+    let settings = RecordingSettings {
+        fps: cfg.capture.gif_fps,
+        max_duration: Duration::from_secs(cfg.capture.gif_max_duration_secs as u64),
+        quality: cfg.output.quality,
+    };
+
+    let mut recorder = GifRecorder::new(settings).with_region(region);
+    recorder.start()?;
+
+    *state.gif_recorder.lock().unwrap() = Some(recorder);
+    *state.recording_state.lock().unwrap() = RecordingState::Recording;
+    *state.recording_task_id.lock().unwrap() = Some(task.id.clone());
+
+    RecordingOverlay::start(region);
+    let _ = app.emit("capscr://recording-started", task.id.clone());
+
+    let app2 = app.clone();
+    let task_owned = task.clone();
+    std::thread::spawn(move || {
+        loop {
+            std::thread::sleep(Duration::from_millis(300));
+            let st = app2.state::<AppState>();
+
+            let user_stopped = st.recording_task_id.lock().unwrap().is_none();
+            let recorder_done = {
+                let rec = st.gif_recorder.lock().unwrap();
+                match rec.as_ref() {
+                    Some(r) => !matches!(r.state(), RecordingState::Recording),
+                    None => true,
+                }
+            };
+
+            if user_stopped || recorder_done {
+                break;
+            }
+        }
+
+        finalize_gif_recording(&task_owned, &app2);
+    });
+
+    Ok(())
+}
+
+fn stop_gif_recording(app: &AppHandle) {
+    let state = app.state::<AppState>();
+    *state.recording_task_id.lock().unwrap() = None;
+    let mut guard = state.gif_recorder.lock().unwrap();
+    if let Some(rec) = guard.as_mut() {
+        rec.stop();
+    }
+}
+
+fn finalize_gif_recording(task: &CaptureTask, app: &AppHandle) {
+    RecordingOverlay::stop();
+
+    let state = app.state::<AppState>();
+    *state.recording_state.lock().unwrap() = RecordingState::Processing;
+
+    let cfg = state.config.lock().unwrap().clone();
+    let mut recorder = state.gif_recorder.lock().unwrap().take();
+
+    if let Some(ref mut rec) = recorder {
+        rec.stop();
+        std::thread::sleep(Duration::from_millis(250));
+
+        let mut path = cfg.output_path();
+        path.set_extension("gif");
+        let path = get_unique_filepath(&path);
+        std::fs::create_dir_all(&cfg.output.directory).ok();
+
+        match rec.save(&path) {
+            Ok(()) => {
+                *state.last_save.lock().unwrap() = Some(path.clone());
+                Sound::Screenshot.play_if_enabled(cfg.post_capture.play_sound);
+                if cfg.ui.show_notifications {
+                    let _ = show_notification("GIF saved", &path.to_string_lossy());
+                }
+                apply_gif_post_action(task, app, &path, &cfg);
+            }
+            Err(e) => {
+                tracing::warn!("gif save failed: {e}");
+                emit_error(app, "gif-save", &e.to_string());
+            }
+        }
+    }
+
+    *state.recording_state.lock().unwrap() = RecordingState::Idle;
+    *state.recording_task_id.lock().unwrap() = None;
+    let _ = app.emit("capscr://recording-stopped", task.id.clone());
+}
+
+fn apply_gif_post_action(task: &CaptureTask, app: &AppHandle, path: &std::path::Path, cfg: &Config) {
+    match task.post_action {
+        TaskPostAction::Clipboard | TaskPostAction::SaveAndClipboard => {
+            // Clipboard support for animated GIF varies wildly across OSes/apps.
+            // For now: copy the file path text so the user can paste into anything path-aware.
+            if let Ok(mut cb) = ClipboardManager::new() {
+                let _ = cb.copy_text(&path.to_string_lossy());
+            }
+        }
+        TaskPostAction::OpenEditor => {
+            let _ = open_in_default_image_editor(path);
+        }
+        TaskPostAction::Upload => {
+            // GIF upload bypasses the still-image path (which re-encodes to PNG).
+            // Plumbing raw-bytes upload through Imgur/Custom/FTP is its own commit;
+            // for now surface the limitation so the user knows the file is on disk.
+            let _ = cfg;
+            emit_error(
+                app,
+                "gif-upload",
+                "gif upload not wired yet — file saved to disk",
+            );
+        }
+        TaskPostAction::SaveFile | TaskPostAction::Prompt => {
+            // Already saved to disk; nothing further.
+        }
+    }
 }
 
 impl CaptureModeArg {

@@ -33,11 +33,12 @@ export function App() {
   const [tab, setTab] = createSignal<Tab>(TABS[0]);
   const [captures] = createResource(api.listCaptures);
   const [toasts, setToasts] = createSignal<Toast[]>([]);
+  const [recording, setRecording] = createSignal(false);
 
   const active = () => tab().id;
 
   let nextId = 1;
-  let unlisten: UnlistenFn | null = null;
+  const unlisteners: UnlistenFn[] = [];
 
   const pushToast = (kind: string, msg: string) => {
     const id = nextId++;
@@ -48,13 +49,17 @@ export function App() {
   };
 
   onMount(async () => {
-    unlisten = await listen<{ kind: string; msg: string }>(
-      "capscr://error",
-      (e) => pushToast(e.payload.kind, e.payload.msg),
+    unlisteners.push(
+      await listen<{ kind: string; msg: string }>(
+        "capscr://error",
+        (e) => pushToast(e.payload.kind, e.payload.msg),
+      ),
+      await listen("capscr://recording-started", () => setRecording(true)),
+      await listen("capscr://recording-stopped", () => setRecording(false)),
     );
   });
 
-  onCleanup(() => unlisten?.());
+  onCleanup(() => unlisteners.forEach((u) => u()));
 
   return (
     <div class="app">
@@ -79,7 +84,7 @@ export function App() {
         </nav>
         <div class="sidebar-foot">
           <span class="path">~/.capscr</span>
-          <span>v0.3.3 / master</span>
+          <span>v0.3.4 / master</span>
         </div>
       </aside>
 
@@ -104,14 +109,16 @@ export function App() {
       </main>
 
       <footer class="statusbar">
-        <span class="seg is-ok">ready</span>
+        <span class="seg" classList={{ "is-ok": !recording(), "is-rec": recording() }}>
+          {recording() ? "● recording" : "ready"}
+        </span>
         <span class="seg">
           {captures.loading
             ? "..."
             : `${captures()?.length ?? 0} captures on disk`}
         </span>
         <span class="grow" />
-        <span class="tail">capscr v0.3.3</span>
+        <span class="tail">capscr v0.3.4</span>
       </footer>
 
       <Show when={toasts().length > 0}>

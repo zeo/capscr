@@ -307,6 +307,20 @@ textarea,
   background: var(--text-2);
 }
 
+.statusbar .seg.is-rec {
+  color: var(--text-1);
+}
+
+.statusbar .seg.is-rec::before {
+  background: var(--text-1);
+  animation: rec-pulse 1s steps(2, end) infinite;
+}
+
+@keyframes rec-pulse {
+  from { opacity: 1; }
+  to { opacity: 0.2; }
+}
+
 .statusbar .grow {
   flex: 1;
 }

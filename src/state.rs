@@ -17,6 +17,7 @@ pub struct AppState {
     pub hotkey_tx: Mutex<Option<Sender<HotkeyCommand>>>,
     pub gif_recorder: Mutex<Option<GifRecorder>>,
     pub recording_state: Mutex<RecordingState>,
+    pub recording_task_id: Mutex<Option<String>>,
     pub last_save: Mutex<Option<PathBuf>>,
     pub last_upload: Mutex<Option<UploadRecord>>,
 }
@@ -41,6 +42,7 @@ impl AppState {
             hotkey_tx: Mutex::new(None),
             gif_recorder: Mutex::new(None),
             recording_state: Mutex::new(RecordingState::Idle),
+            recording_task_id: Mutex::new(None),
             last_save: Mutex::new(None),
             last_upload: Mutex::new(None),
         }
