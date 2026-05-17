@@ -4,6 +4,7 @@ import { Minus, Square, Copy as Restore, X } from "lucide-solid";
 
 interface Props {
   context?: string;
+  onClose?: () => void;
 }
 
 export function Titlebar(props: Props) {
@@ -25,6 +26,14 @@ export function Titlebar(props: Props) {
     if ((e.target as HTMLElement).closest(".titlebar-btn")) return;
     await win.toggleMaximize();
     setMaximized(await win.isMaximized());
+  };
+
+  const onClose = () => {
+    if (props.onClose) {
+      props.onClose();
+    } else {
+      void win.close();
+    }
   };
 
   return (
@@ -68,7 +77,7 @@ export function Titlebar(props: Props) {
           class="titlebar-btn"
           data-action="close"
           aria-label="close"
-          onClick={() => win.close()}
+          onClick={onClose}
         >
           <X size={14} stroke-width={1.5} />
         </button>

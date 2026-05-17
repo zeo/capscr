@@ -230,18 +230,23 @@ impl ImageUploader {
 
     pub fn upload(&self, image: &RgbaImage, service: &UploadService) -> Result<UploadResult> {
         let png_data = self.encode_png(image)?;
+        self.upload_raw(&png_data, "image/png", "screenshot.png", service)
+    }
 
-        if png_data.len() > MAX_UPLOAD_SIZE {
-            return Err(anyhow!(
-                "Image too large to upload ({} bytes)",
-                png_data.len()
-            ));
+    pub fn upload_raw(
+        &self,
+        data: &[u8],
+        mime: &str,
+        file_name: &str,
+        service: &UploadService,
+    ) -> Result<UploadResult> {
+        if data.len() > MAX_UPLOAD_SIZE {
+            return Err(anyhow!("Upload too large ({} bytes)", data.len()));
         }
-
         match service {
-            UploadService::Imgur => self.upload_imgur(&png_data),
-            UploadService::Custom(config) => self.upload_custom(&png_data, config),
-            UploadService::Ftp(target) => upload_ftp(&png_data, target),
+            UploadService::Imgur => self.upload_imgur(data, mime, file_name),
+            UploadService::Custom(config) => self.upload_custom(data, mime, file_name, config),
+            UploadService::Ftp(target) => upload_ftp(data, file_name, target),
         }
     }
 
@@ -251,14 +256,14 @@ impl ImageUploader {
         Ok(buffer.into_inner())
     }
 
-    fn upload_imgur(&self, png_data: &[u8]) -> Result<UploadResult> {
+    fn upload_imgur(&self, data: &[u8], mime: &str, file_name: &str) -> Result<UploadResult> {
         let client_id = "546c25a59c58ad7";
 
         let form = reqwest::blocking::multipart::Form::new().part(
             "image",
-            reqwest::blocking::multipart::Part::bytes(png_data.to_vec())
-                .file_name("screenshot.png")
-                .mime_str("image/png")?,
+            reqwest::blocking::multipart::Part::bytes(data.to_vec())
+                .file_name(file_name.to_string())
+                .mime_str(mime)?,
         );
 
         let response = self
@@ -323,7 +328,13 @@ impl ImageUploader {
         })
     }
 
-    fn upload_custom(&self, png_data: &[u8], config: &CustomUploader) -> Result<UploadResult> {
+    fn upload_custom(
+        &self,
+        data: &[u8],
+        mime: &str,
+        file_name: &str,
+        config: &CustomUploader,
+    ) -> Result<UploadResult> {
         if config.request_url.is_empty() {
             return Err(anyhow!("Custom uploader URL not configured"));
         }
@@ -338,9 +349,9 @@ impl ImageUploader {
 
         let form = reqwest::blocking::multipart::Form::new().part(
             config.file_form_name.clone(),
-            reqwest::blocking::multipart::Part::bytes(png_data.to_vec())
-                .file_name("screenshot.png")
-                .mime_str("image/png")?,
+            reqwest::blocking::multipart::Part::bytes(data.to_vec())
+                .file_name(file_name.to_string())
+                .mime_str(mime)?,
         );
 
         let response = self
@@ -570,7 +581,7 @@ pub(crate) fn validate_resolved_host(host: &str, port: u16) -> Result<()> {
     Ok(())
 }
 
-pub fn upload_ftp(png_data: &[u8], target: &FtpTarget) -> Result<UploadResult> {
+pub fn upload_ftp(data: &[u8], file_name: &str, target: &FtpTarget) -> Result<UploadResult> {
     use std::io::Cursor;
     use suppaftp::FtpStream;
 
@@ -581,7 +592,10 @@ pub fn upload_ftp(png_data: &[u8], target: &FtpTarget) -> Result<UploadResult> {
         return Err(anyhow!("FTPS not yet implemented; disable use_tls or use SFTP"));
     }
 
-    let filename = generate_remote_filename();
+    // Sanitize and uniquify the remote filename so callers can't smuggle path
+    // traversal and so two captures at the same second don't collide.
+    let safe = sanitize_remote_filename(file_name);
+    let filename = uniquify_remote_filename(&safe);
     let address = format!("{}:{}", target.host, target.port.max(1));
 
     let mut stream = FtpStream::connect(&address)
@@ -596,7 +610,7 @@ pub fn upload_ftp(png_data: &[u8], target: &FtpTarget) -> Result<UploadResult> {
             .map_err(|e| anyhow!("FTP cwd to '{}' failed: {}", target.remote_dir, e))?;
     }
 
-    let mut reader = Cursor::new(png_data.to_vec());
+    let mut reader = Cursor::new(data.to_vec());
     stream
         .put_file(&filename, &mut reader)
         .map_err(|e| anyhow!("FTP put_file failed: {}", e))?;
@@ -607,6 +621,38 @@ pub fn upload_ftp(png_data: &[u8], target: &FtpTarget) -> Result<UploadResult> {
         url,
         delete_url: None,
     })
+}
+
+fn sanitize_remote_filename(name: &str) -> String {
+    let trimmed = std::path::Path::new(name)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("upload");
+    let cleaned: String = trimmed
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
+        .take(120)
+        .collect();
+    if cleaned.is_empty() || cleaned == "." || cleaned == ".." {
+        "upload".to_string()
+    } else {
+        cleaned
+    }
+}
+
+fn uniquify_remote_filename(name: &str) -> String {
+    let path = std::path::Path::new(name);
+    let stem = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("upload");
+    let ext = path
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("bin");
+    let now = chrono::Local::now().format("%Y%m%d_%H%M%S").to_string();
+    let id = &uuid::Uuid::new_v4().as_simple().to_string()[..8];
+    format!("{}_{}_{}.{}", stem, now, id, ext)
 }
 
 #[cfg(test)]
@@ -637,7 +683,7 @@ mod tests {
             request_url: "http://insecure.example.com".to_string(),
             ..Default::default()
         };
-        let result = uploader.upload_custom(&[0u8; 100], &config);
+        let result = uploader.upload_custom(&[0u8; 100], "image/png", "test.png", &config);
         assert!(result.is_err());
     }
 

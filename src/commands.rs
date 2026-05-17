@@ -175,7 +175,7 @@ pub fn run_capture_pipeline(
         PostActionArg::Prompt => PostCaptureAction::PromptUser,
     };
 
-    run_post_action(&state, &image, post_action)
+    run_post_action(app, &state, &image, post_action)
 }
 
 fn build_upload_service(config: &Config) -> UploadService {
@@ -211,6 +211,7 @@ fn capture_active_monitor() -> anyhow::Result<RgbaImage> {
 }
 
 fn run_post_action(
+    app: &AppHandle,
     state: &AppState,
     image: &RgbaImage,
     action: PostCaptureAction,
@@ -232,19 +233,18 @@ fn run_post_action(
         Ok(())
     };
 
-    let do_upload = || -> anyhow::Result<UploadRecord> {
+    let do_upload = || -> anyhow::Result<crate::upload::UploadResult> {
         let uploader = ImageUploader::new()?;
         let service = build_upload_service(&config);
         let result = uploader.upload(image, &service)?;
-        let record = UploadRecord {
+        *state.last_upload.lock().unwrap() = Some(UploadRecord {
             url: result.url.clone(),
             delete_url: result.delete_url.clone(),
-        };
-        *state.last_upload.lock().unwrap() = Some(record.clone());
+        });
         if config.upload.copy_url_to_clipboard {
             let _ = crate::upload::copy_url_to_clipboard(&result.url);
         }
-        Ok(record)
+        Ok(result)
     };
 
     match action {
@@ -274,15 +274,9 @@ fn run_post_action(
             }
         }
         PostCaptureAction::Upload => {
-            let record = do_upload()?;
+            let result = do_upload()?;
             Sound::Upload.play_if_enabled(config.post_capture.play_sound);
-            if config.ui.show_notifications {
-                let body = match record.delete_url.as_ref() {
-                    Some(del) => format!("{}\nDelete: {}", record.url, del),
-                    None => record.url.clone(),
-                };
-                let _ = show_notification("Uploaded", &body);
-            }
+            emit_upload_success(app, &result);
         }
         PostCaptureAction::PromptUser => {
             let path = do_save()?;
@@ -396,6 +390,7 @@ pub fn copy_capture_to_clipboard(path: String, state: State<AppState>) -> Result
 #[tauri::command]
 pub fn reupload_capture(
     path: String,
+    app: AppHandle,
     state: State<AppState>,
 ) -> Result<UploadResponse, String> {
     let buf = PathBuf::from(&path);
@@ -418,6 +413,7 @@ pub fn reupload_capture(
     if config.upload.copy_url_to_clipboard {
         let _ = crate::upload::copy_url_to_clipboard(&result.url);
     }
+    emit_upload_success(&app, &result);
     Ok(UploadResponse {
         url: result.url,
         delete_url: result.delete_url,
@@ -544,6 +540,7 @@ pub fn copy_edited_image_to_clipboard(bytes: Vec<u8>) -> Result<(), String> {
 #[tauri::command]
 pub fn upload_edited_image(
     bytes: Vec<u8>,
+    app: AppHandle,
     state: State<AppState>,
 ) -> Result<UploadResponse, String> {
     let img = image::load_from_memory(&bytes).map_err(|e| e.to_string())?;
@@ -559,6 +556,7 @@ pub fn upload_edited_image(
     if config.upload.copy_url_to_clipboard {
         let _ = crate::upload::copy_url_to_clipboard(&result.url);
     }
+    emit_upload_success(&app, &result);
     Ok(UploadResponse {
         url: result.url,
         delete_url: result.delete_url,
@@ -763,15 +761,45 @@ fn apply_gif_post_action(task: &CaptureTask, app: &AppHandle, path: &std::path::
             let _ = open_editor_window(app, &path.to_string_lossy());
         }
         TaskPostAction::Upload => {
-            // GIF upload bypasses the still-image path (which re-encodes to PNG).
-            // Plumbing raw-bytes upload through Imgur/Custom/FTP is its own commit;
-            // for now surface the limitation so the user knows the file is on disk.
-            let _ = cfg;
-            emit_error(
-                app,
-                "gif-upload",
-                "gif upload not wired yet — file saved to disk",
-            );
+            let app2 = app.clone();
+            let path = path.to_path_buf();
+            let cfg = cfg.clone();
+            std::thread::spawn(move || {
+                let bytes = match std::fs::read(&path) {
+                    Ok(b) => b,
+                    Err(e) => {
+                        emit_error(&app2, "upload", &e.to_string());
+                        return;
+                    }
+                };
+                let uploader = match ImageUploader::new() {
+                    Ok(u) => u,
+                    Err(e) => {
+                        emit_error(&app2, "upload", &e.to_string());
+                        return;
+                    }
+                };
+                let service = build_upload_service(&cfg);
+                let file_name = path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("capture.gif");
+                match uploader.upload_raw(&bytes, "image/gif", file_name, &service) {
+                    Ok(result) => {
+                        let st = app2.state::<AppState>();
+                        *st.last_upload.lock().unwrap() = Some(UploadRecord {
+                            url: result.url.clone(),
+                            delete_url: result.delete_url.clone(),
+                        });
+                        if cfg.upload.copy_url_to_clipboard {
+                            let _ = crate::upload::copy_url_to_clipboard(&result.url);
+                        }
+                        Sound::Upload.play_if_enabled(cfg.post_capture.play_sound);
+                        emit_upload_success(&app2, &result);
+                    }
+                    Err(e) => emit_error(&app2, "upload", &e.to_string()),
+                }
+            });
         }
         TaskPostAction::SaveFile | TaskPostAction::Prompt => {
             // Already saved to disk; nothing further.
@@ -816,6 +844,22 @@ pub fn emit_error(app: &AppHandle, kind: &str, msg: &str) {
         ErrorEventPayload {
             kind: kind.to_string(),
             msg: msg.to_string(),
+        },
+    );
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct UploadSuccessPayload {
+    pub url: String,
+    pub delete_url: Option<String>,
+}
+
+pub fn emit_upload_success(app: &AppHandle, result: &crate::upload::UploadResult) {
+    let _ = app.emit(
+        "capscr://upload-success",
+        UploadSuccessPayload {
+            url: result.url.clone(),
+            delete_url: result.delete_url.clone(),
         },
     );
 }
