@@ -21,6 +21,7 @@ export interface OutputConfig {
   format: "Png" | "Jpeg" | "Gif" | "Webp" | "Bmp";
   quality: number;
   filename_template: string;
+  preserve_hdr: boolean;
 }
 
 export interface CaptureConfig {
@@ -123,4 +124,5 @@ export const api = {
   openEditor: (path: string) => invoke<void>("open_editor", { path }),
   checkForUpdates: () => invoke<UpdateInfo | null>("check_for_updates"),
   installUpdate: () => invoke<void>("install_update"),
+  isHdrCapture: (path: string) => invoke<boolean>("is_hdr_capture", { path }),
 };

@@ -415,6 +415,32 @@ function HdrPane(props: { c: AppConfig; patch: Patch }) {
           </label>
         </div>
       </div>
+      <div class="field">
+        <label class="field-label">preserve hdr</label>
+        <div class="field-control">
+          <label class="check">
+            <input
+              type="checkbox"
+              checked={c().output.preserve_hdr}
+              onChange={(e) =>
+                props.patch("output", {
+                  ...c().output,
+                  preserve_hdr: e.currentTarget.checked,
+                })
+              }
+            />
+            <span class="check-label">
+              {c().output.preserve_hdr
+                ? "writes a 16-bit bt.2020+pq .hdr.png sidecar next to each hdr capture"
+                : "tonemaps to sdr only — no hdr sidecar saved"}
+            </span>
+          </label>
+          <span class="field-hint">
+            only writes when source is hdr10 (the common case) — scrgb / hlg
+            land in v0.4. fullscreen / active-monitor captures only.
+          </span>
+        </div>
+      </div>
     </Section>
   );
 }

@@ -63,12 +63,20 @@ impl HdrCapture {
 
     /// Capture HDR content and automatically tonemap to SDR.
     pub fn capture(&self) -> Result<RgbaImage> {
+        let (img, _hdr) = self.capture_with_hdr()?;
+        Ok(img)
+    }
+
+    /// Same capture as `capture()`, but also returns the raw HDR bitmap when
+    /// the source was HDR. Used by the save path to write a sidecar HDR PNG
+    /// alongside the tonemapped SDR PNG.
+    pub fn capture_with_hdr(&self) -> Result<(RgbaImage, Option<crate::capture::HdrBitmap>)> {
         #[cfg(target_os = "windows")]
         {
             let hdr_info = Self::get_display_hdr_info()?;
 
             if !hdr_info.is_hdr_enabled {
-                return self.capture_sdr_fallback();
+                return Ok((self.capture_sdr_fallback()?, None));
             }
 
             let (raw_data, width, height, format) = self.capture_raw()?;
@@ -81,11 +89,23 @@ impl HdrCapture {
             }
 
             let sdr_white = hdr_info.sdr_white_level.max(80.0);
-            Ok(self.tonemap(&raw_data, width, height, format, sdr_white))
+            let sdr_img = self.tonemap(&raw_data, width, height, format, sdr_white);
+            let hdr_bitmap = if matches!(format, HdrFormat::Sdr) {
+                None
+            } else {
+                Some(crate::capture::HdrBitmap {
+                    width,
+                    height,
+                    format,
+                    data: raw_data,
+                    max_luminance_nits: hdr_info.max_luminance,
+                })
+            };
+            Ok((sdr_img, hdr_bitmap))
         }
         #[cfg(not(target_os = "windows"))]
         {
-            self.capture_sdr_fallback()
+            Ok((self.capture_sdr_fallback()?, None))
         }
     }
 

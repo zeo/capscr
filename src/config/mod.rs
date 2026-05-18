@@ -131,6 +131,12 @@ pub struct OutputConfig {
     pub format: ImageFormat,
     pub quality: u8,
     pub filename_template: String,
+    /// When true and the source is HDR (HDR10 currently — scRGB / HLG arrive
+    /// in Phase 2), capscr writes a `<basename>.hdr.png` sidecar alongside
+    /// the normal SDR file. The sidecar is a 16-bit BT.2020 + PQ PNG with a
+    /// `cICP` chunk so HDR-aware viewers display it as real HDR.
+    #[serde(default)]
+    pub preserve_hdr: bool,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -702,6 +708,7 @@ impl Default for Config {
                 format: ImageFormat::Png,
                 quality: 90,
                 filename_template: "capture_%Y%m%d_%H%M%S".to_string(),
+                preserve_hdr: false,
             },
             capture: CaptureConfig {
                 show_cursor: true,

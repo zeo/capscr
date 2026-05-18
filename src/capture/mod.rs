@@ -4,12 +4,15 @@ mod screen;
 mod window;
 mod region;
 mod hdr;
+mod hdr_png;
 mod tonemapping;
 
 pub use screen::ScreenCapture;
 pub use window::WindowCapture;
 pub use region::RegionCapture;
 pub use tonemapping::{SkivMode, SkivParams};
+pub use hdr::HdrCapture;
+pub use hdr_png::{encode_hdr_png, read_cicp, HdrBitmap};
 
 use std::sync::OnceLock;
 

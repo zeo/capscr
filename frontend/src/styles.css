@@ -1451,6 +1451,42 @@ kbd {
   font-size: 11px;
 }
 
+/* ---------------- editor HDR banner ---------------- */
+
+.editor-hdr-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 16px;
+  background: var(--ink-2);
+  border-bottom: 1px solid var(--rule-2);
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+.editor-hdr-glyph {
+  color: var(--paper);
+  letter-spacing: -1px;
+  flex-shrink: 0;
+  animation: rec-pulse 2.4s steps(2, end) infinite;
+}
+
+.editor-hdr-text {
+  line-height: 1.5;
+}
+
+.editor-hdr-text strong {
+  color: var(--paper);
+  font-weight: 500;
+}
+
+.editor-hdr-text code {
+  font-family: var(--mono-font-family);
+  background: var(--ink-3);
+  padding: 1px 4px;
+  border: 1px solid var(--rule);
+}
+
 /* ---------------- shortcuts overlay (F1) ---------------- */
 
 .shortcuts-overlay {

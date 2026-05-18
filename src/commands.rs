@@ -59,6 +59,17 @@ pub fn get_default_config() -> Config {
     Config::default()
 }
 
+/// Cheap-ish probe: reads PNG chunks until the `cICP` chunk or `IDAT`. The
+/// editor calls this on load to know whether to warn the user that edits
+/// will flatten HDR to SDR. Returns false on any read error.
+#[tauri::command]
+pub fn is_hdr_capture(path: String) -> bool {
+    let path = std::path::PathBuf::from(path);
+    crate::capture::read_cicp(&path)
+        .map(|info| info.is_hdr())
+        .unwrap_or(false)
+}
+
 #[tauri::command]
 pub fn set_config(config: Config, app: AppHandle, state: State<AppState>) -> Result<(), String> {
     config.validate().map_err(|e| e.to_string())?;
@@ -166,11 +177,11 @@ pub fn run_capture_pipeline(
         CaptureModeArg::ActiveMonitor => SelectionResult::FullScreen,
     };
 
-    let image = match selection {
+    let (image, hdr_bitmap) = match selection {
         SelectionResult::Cancelled => return Ok(()),
-        SelectionResult::Region(rect) => RegionCapture::new(rect).capture()?,
-        SelectionResult::Window(hwnd) => WindowCapture::new(hwnd).capture()?,
-        SelectionResult::FullScreen => capture_active_monitor()?,
+        SelectionResult::Region(rect) => (RegionCapture::new(rect).capture()?, None),
+        SelectionResult::Window(hwnd) => (WindowCapture::new(hwnd).capture()?, None),
+        SelectionResult::FullScreen => capture_active_monitor_with_hdr()?,
         SelectionResult::PickedColor(r, g, b) => {
             let hex = format!("#{:02X}{:02X}{:02X}", r, g, b);
             let mut cb = ClipboardManager::new()?;
@@ -212,6 +223,7 @@ pub fn run_capture_pipeline(
         let path = get_unique_filepath(&base);
         std::fs::create_dir_all(&config.output.directory).ok();
         crate::clipboard::save_image(&image, &path, config.output.format, config.output.quality)?;
+        maybe_write_hdr_sidecar(&path, &hdr_bitmap, &config);
         *state.last_save.lock().unwrap() = Some(path.clone());
         open_editor_window(app, &path.to_string_lossy())
             .map_err(|e| anyhow::anyhow!(e))?;
@@ -231,7 +243,17 @@ pub fn run_capture_pipeline(
         PostActionArg::Prompt => PostCaptureAction::PromptUser,
     };
 
-    run_post_action(app, &state, &image, post_action)
+    let result = run_post_action(app, &state, &image, post_action);
+    // After SDR save completes, drop the HDR sidecar next to it. The latest
+    // saved path is in state.last_save; we read it back rather than threading
+    // a return value through run_post_action.
+    if result.is_ok() {
+        let cfg = state.config.lock().unwrap().clone();
+        if let Some(sdr_path) = state.last_save.lock().unwrap().clone() {
+            maybe_write_hdr_sidecar(&sdr_path, &hdr_bitmap, &cfg);
+        }
+    }
+    result
 }
 
 fn build_upload_service(config: &Config) -> UploadService {
@@ -263,6 +285,22 @@ fn build_upload_service(config: &Config) -> UploadService {
 }
 
 fn capture_active_monitor() -> anyhow::Result<RgbaImage> {
+    let (img, _) = capture_active_monitor_with_hdr()?;
+    Ok(img)
+}
+
+// Returns the tonemapped SDR image alongside the raw HDR bitmap when the
+// source display is HDR. Region / Window captures go through GDI BitBlt and
+// can't produce HDR data, so only ActiveMonitor / Fullscreen call this.
+fn capture_active_monitor_with_hdr(
+) -> anyhow::Result<(RgbaImage, Option<crate::capture::HdrBitmap>)> {
+    use crate::capture::HdrCapture;
+    if HdrCapture::is_hdr_available() {
+        let hdr = HdrCapture::new();
+        if let Ok(pair) = hdr.capture_with_hdr() {
+            return Ok(pair);
+        }
+    }
     use crate::capture::list_monitors;
     let monitors = list_monitors().unwrap_or_default();
     let capture = if let Some(primary) = monitors.iter().find(|m| m.is_primary) {
@@ -270,7 +308,32 @@ fn capture_active_monitor() -> anyhow::Result<RgbaImage> {
     } else {
         ScreenCapture::primary().unwrap_or_else(|_| ScreenCapture::new())
     };
-    capture.capture()
+    Ok((capture.capture()?, None))
+}
+
+// If the user opted into HDR preservation and the source produced an HDR
+// bitmap, write a `<basename>.hdr.png` sidecar next to the SDR file. Failures
+// are reported via tracing but never fail the overall capture — the SDR file
+// is the source of truth.
+fn maybe_write_hdr_sidecar(
+    sdr_path: &std::path::Path,
+    hdr: &Option<crate::capture::HdrBitmap>,
+    config: &Config,
+) {
+    if !config.output.preserve_hdr {
+        return;
+    }
+    let Some(bitmap) = hdr.as_ref() else { return };
+    let stem = match sdr_path.file_stem() {
+        Some(s) => s.to_os_string(),
+        None => return,
+    };
+    let mut sidecar_name = stem;
+    sidecar_name.push(".hdr.png");
+    let sidecar_path = sdr_path.with_file_name(sidecar_name);
+    if let Err(e) = crate::capture::encode_hdr_png(&sidecar_path, bitmap) {
+        tracing::warn!("hdr sidecar write failed for {sidecar_path:?}: {e}");
+    }
 }
 
 fn run_post_action(

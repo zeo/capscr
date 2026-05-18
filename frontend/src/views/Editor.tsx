@@ -1,6 +1,7 @@
 import { createSignal, For, onCleanup, onMount, Show } from "solid-js";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { invoke } from "@tauri-apps/api/core";
+import { api } from "../api";
 import {
   ArrowRight,
   Square,
@@ -80,6 +81,8 @@ export function Editor() {
   const [textBuffer, setTextBuffer] = createSignal("");
   const [busy, setBusy] = createSignal<"save" | "copy" | "upload" | null>(null);
   const [status, setStatus] = createSignal<{ tone: string; msg: string } | null>(null);
+  const [isHdrSource, setIsHdrSource] = createSignal(false);
+  const [hdrSidecarPath, setHdrSidecarPath] = createSignal<string | null>(null);
 
   let dragStart: Point | null = null;
 
@@ -106,6 +109,29 @@ export function Editor() {
     }
 
     setImagePath(path);
+
+    // Probe for HDR before decoding. If the loaded PNG has a `cICP` chunk
+    // with PQ/HLG transfer, the canvas will tonemap to SDR for display and
+    // any save will lose HDR fidelity. Surface that to the user.
+    try {
+      const hdr = await api.isHdrCapture(path);
+      setIsHdrSource(hdr);
+      if (hdr) {
+        // Look for an `.hdr.png` sidecar (capscr writes this when preserve_hdr
+        // is on). If present, we'll preserve it on save by leaving it alone.
+        const dot = path.lastIndexOf(".");
+        const stem = dot > 0 ? path.slice(0, dot) : path;
+        const sidecar = `${stem}.hdr.png`;
+        try {
+          const sidecarIsHdr = await api.isHdrCapture(sidecar);
+          if (sidecarIsHdr) setHdrSidecarPath(sidecar);
+        } catch {
+          // sidecar absent — file simply doesn't exist
+        }
+      }
+    } catch {
+      // probe failure isn't fatal — fall through to normal load
+    }
 
     const img = new Image();
     img.src = `asset://localhost/${encodeURIComponent(path)}`;
@@ -674,6 +700,29 @@ export function Editor() {
           </button>
         </div>
       </div>
+
+      <Show when={isHdrSource()}>
+        <div class="editor-hdr-banner" role="status">
+          <span class="editor-hdr-glyph">▮</span>
+          <span class="editor-hdr-text">
+            <strong>HDR capture detected.</strong>
+            <Show
+              when={hdrSidecarPath()}
+              fallback={
+                <span>
+                  {" "}canvas annotates in SDR; saving from here will flatten the HDR file
+                  to SDR. close the editor without saving to keep the original HDR.
+                </span>
+              }
+            >
+              <span>
+                {" "}capscr kept the HDR original as <code>{hdrSidecarPath()!.split(/[\\/]/).pop()}</code>{" "}
+                — annotations save into the SDR copy; the HDR sidecar is untouched.
+              </span>
+            </Show>
+          </span>
+        </div>
+      </Show>
 
       <div class="editor-canvas-wrap" onWheel={onWheelZoom}>
         <Show
