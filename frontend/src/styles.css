@@ -1303,6 +1303,17 @@ kbd {
   background: var(--ink-1);
   box-shadow: 0 0 0 1px var(--rule);
   cursor: crosshair;
+  image-rendering: pixelated;
+}
+
+.editor-zoom-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 0 6px;
+  border-left: 1px solid var(--rule-2);
+  border-right: 1px solid var(--rule-2);
+  margin: 0 4px;
 }
 
 .editor-canvas[data-tool="text"] {

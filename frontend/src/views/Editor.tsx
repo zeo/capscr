@@ -12,6 +12,9 @@ import {
   Copy,
   Upload,
   X,
+  ZoomIn,
+  ZoomOut,
+  Maximize2,
 } from "lucide-solid";
 import { Titlebar } from "../components/Titlebar";
 
@@ -69,6 +72,9 @@ export function Editor() {
   const [textSize, setTextSize] = createSignal(24);
   const [ops, setOps] = createSignal<Op[]>([]);
   const [redoStack, setRedoStack] = createSignal<Op[]>([]);
+  // 1.0 = fit-to-wrap (handled by CSS max-width); >1.0 = explicit pixel scale.
+  const [zoom, setZoom] = createSignal(1.0);
+  const ZOOM_LEVELS = [0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 4.0];
   const [draft, setDraft] = createSignal<Op | null>(null);
   const [textInputAt, setTextInputAt] = createSignal<Point | null>(null);
   const [textBuffer, setTextBuffer] = createSignal("");
@@ -116,6 +122,15 @@ export function Editor() {
     redraw();
   });
 
+  const stepZoom = (dir: 1 | -1) => {
+    const cur = zoom();
+    const idx = ZOOM_LEVELS.findIndex((z) => Math.abs(z - cur) < 0.01);
+    const fallback = ZOOM_LEVELS.findIndex((z) => z >= cur);
+    const start = idx >= 0 ? idx : Math.max(0, fallback);
+    const next = Math.max(0, Math.min(ZOOM_LEVELS.length - 1, start + dir));
+    setZoom(ZOOM_LEVELS[next]);
+  };
+
   const onKeydown = (e: KeyboardEvent) => {
     if (textInputAt()) return;
     const mod = e.ctrlKey || e.metaKey;
@@ -125,6 +140,15 @@ export function Editor() {
     } else if ((e.key === "y" && mod) || (e.key === "z" && mod && e.shiftKey)) {
       e.preventDefault();
       redo();
+    } else if (mod && (e.key === "=" || e.key === "+")) {
+      e.preventDefault();
+      stepZoom(1);
+    } else if (mod && e.key === "-") {
+      e.preventDefault();
+      stepZoom(-1);
+    } else if (mod && e.key === "0") {
+      e.preventDefault();
+      setZoom(1.0);
     } else if (e.key === "Escape") {
       void win.close();
     } else if (e.key === "1") setTool("arrow");
@@ -132,6 +156,12 @@ export function Editor() {
     else if (e.key === "3") {
       setTool("text");
     } else if (e.key === "4") setTool("blur");
+  };
+
+  const onWheelZoom = (e: WheelEvent) => {
+    if (!(e.ctrlKey || e.metaKey)) return;
+    e.preventDefault();
+    stepZoom(e.deltaY < 0 ? 1 : -1);
   };
 
   // Replace the current canvas with a pasted clipboard image. ShareX has
@@ -594,6 +624,38 @@ export function Editor() {
             <RotateCw size={12} stroke-width={1.5} />
             redo
           </button>
+          <span class="editor-zoom-group">
+            <button
+              class="btn"
+              data-variant="ghost"
+              data-size="xs"
+              onClick={() => stepZoom(-1)}
+              title="ctrl+-"
+              disabled={zoom() <= ZOOM_LEVELS[0]}
+            >
+              <ZoomOut size={11} stroke-width={1.5} />
+            </button>
+            <button
+              class="btn"
+              data-variant="ghost"
+              data-size="xs"
+              onClick={() => setZoom(1.0)}
+              title="ctrl+0"
+            >
+              <Maximize2 size={11} stroke-width={1.5} />
+              {Math.round(zoom() * 100)}%
+            </button>
+            <button
+              class="btn"
+              data-variant="ghost"
+              data-size="xs"
+              onClick={() => stepZoom(1)}
+              title="ctrl+="
+              disabled={zoom() >= ZOOM_LEVELS[ZOOM_LEVELS.length - 1]}
+            >
+              <ZoomIn size={11} stroke-width={1.5} />
+            </button>
+          </span>
           <button class="btn" onClick={onSave} disabled={busy() !== null}>
             <Save size={12} stroke-width={1.5} />
             save
@@ -613,7 +675,7 @@ export function Editor() {
         </div>
       </div>
 
-      <div class="editor-canvas-wrap">
+      <div class="editor-canvas-wrap" onWheel={onWheelZoom}>
         <Show
           when={loaded()}
           fallback={
@@ -622,11 +684,19 @@ export function Editor() {
             </div>
           }
         >
-          <div class="editor-canvas-scroll">
+          <div
+            class="editor-canvas-scroll"
+            style={{ width: `${canvasRef ? canvasRef.width * zoom() : 0}px` }}
+          >
             <canvas
               ref={canvasRef!}
               class="editor-canvas"
               data-tool={tool()}
+              style={{
+                width: `${canvasRef ? canvasRef.width * zoom() : 0}px`,
+                height: `${canvasRef ? canvasRef.height * zoom() : 0}px`,
+                "max-width": "none",
+              }}
               onMouseDown={onMouseDown}
               onMouseMove={onMouseMove}
               onMouseUp={onMouseUp}

@@ -58,6 +58,8 @@ function Hub() {
   const [toasts, setToasts] = createSignal<Toast[]>([]);
   const [uploads, setUploads] = createSignal<UploadCard[]>([]);
   const [recording, setRecording] = createSignal(false);
+  const [recordingSince, setRecordingSince] = createSignal<number | null>(null);
+  const [recordingElapsed, setRecordingElapsed] = createSignal("00:00");
   const [config] = createResource(api.getConfig);
   const [dragOver, setDragOver] = createSignal(false);
   const [updateInfo, setUpdateInfo] = createSignal<UpdateInfo | null>(null);
@@ -106,6 +108,8 @@ function Hub() {
       ),
       await listen<string>("capscr://recording-started", (e) => {
         setRecording(true);
+        setRecordingSince(Date.now());
+        setRecordingElapsed("00:00");
         // Tell the user how to stop — re-pressing the task's hotkey toggles
         // the recording off, but that's not obvious. Look up the hotkey from
         // config so the toast is concrete.
@@ -116,7 +120,10 @@ function Hub() {
           : `recording — press the same hotkey again to stop`;
         pushToast("recording", hint);
       }),
-      await listen("capscr://recording-stopped", () => setRecording(false)),
+      await listen("capscr://recording-stopped", () => {
+        setRecording(false);
+        setRecordingSince(null);
+      }),
     );
 
     // Background update check — delayed 4s so it doesn't compete with hub
@@ -131,6 +138,20 @@ function Hub() {
           // updater endpoint unreachable / GitHub release missing — silent.
         });
     }, 4000);
+
+    // While recording, refresh the elapsed counter once per second so the
+    // statusbar shows mm:ss live. Cheap: a single setInterval that no-ops
+    // when not recording.
+    const tickHandle = setInterval(() => {
+      const since = recordingSince();
+      if (since === null) return;
+      const ms = Date.now() - since;
+      const totalSec = Math.floor(ms / 1000);
+      const mm = String(Math.floor(totalSec / 60)).padStart(2, "0");
+      const ss = String(totalSec % 60).padStart(2, "0");
+      setRecordingElapsed(`${mm}:${ss}`);
+    }, 1000);
+    unlisteners.push(() => clearInterval(tickHandle));
 
     // Alt+S/T/H/D/M for tab switching — sidebar titles advertise these so
     // the keybind has to actually work. We respect the dirty-state guard so
@@ -308,7 +329,9 @@ function Hub() {
       <footer class="statusbar">
         <span class="seg" classList={{ "is-ok": !recording(), "is-rec": recording() }}>
           <span class="seg-k">stat</span>
-          <span class="seg-v">{recording() ? "rec" : "rdy"}</span>
+          <span class="seg-v">
+            {recording() ? `rec ${recordingElapsed()}` : "rdy"}
+          </span>
         </span>
         <span class="seg-sep">│</span>
         <span class="seg">

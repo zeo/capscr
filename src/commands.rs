@@ -97,16 +97,42 @@ pub fn take_screenshot(
     let app_handle = app;
     std::thread::spawn(move || {
         if let Err(e) = run_capture_pipeline(mode, post, &app_handle) {
-            tracing::warn!("capture failed: {e}");
-            emit_error(&app_handle, "capture", &e.to_string());
+            tracing::warn!("capture failed: {e:#}");
+            let friendly = humanize_capture_error(&e);
+            emit_error(&app_handle, "capture", &friendly);
             let state = app_handle.state::<AppState>();
             let show = state.config.lock().unwrap().ui.show_notifications;
             if show {
-                let _ = show_notification("Capture failed", &e.to_string());
+                let _ = show_notification("Capture failed", &friendly);
             }
         }
     });
     Ok(())
+}
+
+// Translate the raw anyhow chain into something a non-engineer can act on.
+// We keep the original text as a suffix when none of the patterns match so
+// debugging info isn't lost.
+fn humanize_capture_error(e: &anyhow::Error) -> String {
+    let raw = format!("{:#}", e);
+    let s = raw.to_lowercase();
+    if s.contains("d3d11") || s.contains("device") || s.contains("dxgi") {
+        "GPU couldn't initialise the capture pipeline. Try updating your graphics driver or rebooting.".into()
+    } else if s.contains("no monitor") || s.contains("no display") || s.contains("monitor not found") {
+        "capscr couldn't find a display. If you just unplugged a monitor, try again or restart capscr.".into()
+    } else if s.contains("access is denied") || s.contains("permission") || s.contains("denied") {
+        "Windows blocked the capture. Run capscr as administrator or check Settings > Privacy > Screen recording.".into()
+    } else if s.contains("hdr") {
+        "HDR capture failed. Turn HDR off in Windows display settings, or disable HDR in capscr Settings > capture > hdr.".into()
+    } else if s.contains("shader") || s.contains("compile") {
+        "Shader compilation failed. Update your graphics driver. (If this keeps happening, file an issue with your GPU model.)".into()
+    } else if s.contains("clipboard") {
+        "Couldn't write to the clipboard. Another app may be holding it open — try the capture again.".into()
+    } else if s.contains("region") && (s.contains("invalid") || s.contains("zero")) {
+        "Selected region is too small or off-screen. Drag a larger area.".into()
+    } else {
+        raw
+    }
 }
 
 pub fn run_capture_pipeline(
@@ -818,6 +844,7 @@ fn start_gif_recording(
 
     RecordingOverlay::start(region);
     let _ = app.emit("capscr://recording-started", task.id.clone());
+    set_tray_tooltip(app, &format!("capscr · recording '{}'", task.name));
 
     let app2 = app.clone();
     let task_owned = task.clone();
@@ -892,6 +919,13 @@ fn finalize_gif_recording(task: &CaptureTask, app: &AppHandle) {
     *state.recording_state.lock().unwrap() = RecordingState::Idle;
     *state.recording_task_id.lock().unwrap() = None;
     let _ = app.emit("capscr://recording-stopped", task.id.clone());
+    set_tray_tooltip(app, "capscr");
+}
+
+fn set_tray_tooltip(app: &AppHandle, tooltip: &str) {
+    if let Some(tray) = app.tray_by_id("capscr-tray") {
+        let _ = tray.set_tooltip(Some(tooltip));
+    }
 }
 
 fn apply_gif_post_action(task: &CaptureTask, app: &AppHandle, path: &std::path::Path, cfg: &Config) {
