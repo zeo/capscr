@@ -128,7 +128,9 @@ function Hub() {
 
     // Background update check — delayed 4s so it doesn't compete with hub
     // first-paint or block the network during the user's first capture.
+    // Skip entirely if the user has opted out in Settings.
     setTimeout(() => {
+      if (config()?.ui.check_updates_on_launch === false) return;
       void api
         .checkForUpdates()
         .then((info) => {

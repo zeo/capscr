@@ -16,7 +16,6 @@
     "core:window:allow-is-maximized",
     "clipboard-manager:allow-write-text",
     "clipboard-manager:allow-write-image",
-    "clipboard-manager:allow-read-text",
     "notification:default",
     "dialog:default",
     "opener:default",

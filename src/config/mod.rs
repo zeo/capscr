@@ -258,6 +258,12 @@ pub struct UiConfig {
     pub minimize_to_tray: bool,
     #[serde(default)]
     pub auto_start: bool,
+    #[serde(default = "default_true")]
+    pub check_updates_on_launch: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -714,6 +720,7 @@ impl Default for Config {
                 copy_to_clipboard: true,
                 minimize_to_tray: true,
                 auto_start: false,
+                check_updates_on_launch: true,
             },
             post_capture: PostCaptureConfig::default(),
             upload: UploadConfig::default(),

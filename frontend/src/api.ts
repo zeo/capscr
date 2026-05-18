@@ -46,6 +46,7 @@ export interface UiConfig {
   copy_to_clipboard: boolean;
   minimize_to_tray: boolean;
   auto_start: boolean;
+  check_updates_on_launch: boolean;
 }
 
 export interface CaptureTask {

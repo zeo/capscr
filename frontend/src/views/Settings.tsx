@@ -542,6 +542,28 @@ function NotifyPane(props: { c: AppConfig; patch: Patch }) {
             </label>
           </div>
         </div>
+        <div class="field">
+          <label class="field-label">check for updates</label>
+          <div class="field-control">
+            <label class="check">
+              <input
+                type="checkbox"
+                checked={c().ui.check_updates_on_launch}
+                onChange={(e) =>
+                  props.patch("ui", {
+                    ...c().ui,
+                    check_updates_on_launch: e.currentTarget.checked,
+                  })
+                }
+              />
+              <span class="check-label">
+                {c().ui.check_updates_on_launch
+                  ? "queries GitHub releases 4s after hub opens"
+                  : "no network call, you'll need to grab updates manually"}
+              </span>
+            </label>
+          </div>
+        </div>
       </Section>
     </>
   );
