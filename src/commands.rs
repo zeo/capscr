@@ -465,6 +465,25 @@ pub fn exit_app(app: AppHandle) {
 
 const HUB_LABEL: &str = "hub";
 
+// Called in setup() so the WebView2 instance is warm before the user opens
+// the tray. Without this, the first tray click pays the full WebView2 cold-
+// boot cost (multi-second on most machines, >1min on some).
+pub fn prewarm_hub_window(app: &tauri::App) -> tauri::Result<()> {
+    if app.get_webview_window(HUB_LABEL).is_some() {
+        return Ok(());
+    }
+    let url = tauri::WebviewUrl::App("index.html".into());
+    tauri::WebviewWindowBuilder::new(app, HUB_LABEL, url)
+        .title("capscr")
+        .inner_size(900.0, 640.0)
+        .min_inner_size(720.0, 480.0)
+        .resizable(true)
+        .decorations(false)
+        .visible(false)
+        .build()?;
+    Ok(())
+}
+
 pub fn open_hub_window(app: &AppHandle) -> tauri::Result<()> {
     if let Some(window) = app.get_webview_window(HUB_LABEL) {
         let _ = window.show();

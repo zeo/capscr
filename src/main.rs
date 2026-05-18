@@ -98,6 +98,11 @@ fn main() {
                 *st.hotkey_tx.lock().unwrap() = Some(tx);
             }
             spawn_hotkey_thread(app.handle().clone(), rx, initial_tasks.clone());
+            // Warm the hub WebView2 ahead of the first tray click so it shows
+            // instantly instead of paying cold-boot cost on demand.
+            if let Err(e) = commands::prewarm_hub_window(app) {
+                tracing::warn!("hub pre-warm failed: {e}");
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
