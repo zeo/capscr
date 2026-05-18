@@ -171,6 +171,29 @@ pub fn run_capture_pipeline(
     post: PostActionArg,
     app: &AppHandle,
 ) -> anyhow::Result<()> {
+    use std::sync::atomic::Ordering;
+    let gate_state = app.state::<AppState>();
+    // Drop the trigger when a previous capture is still in flight (likely
+    // hung on a stuck D3D11 device or held selector). Without this gate a
+    // user repeatedly mashing the hotkey accumulates stalled worker threads.
+    if gate_state
+        .capture_in_progress
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        tracing::info!("capture already in progress; dropping new trigger");
+        return Ok(());
+    }
+    // Reset the gate on every exit (success, error, panic) so the user never
+    // has to restart capscr to unstick the trigger.
+    struct CaptureGate<'a>(&'a std::sync::atomic::AtomicBool);
+    impl<'a> Drop for CaptureGate<'a> {
+        fn drop(&mut self) {
+            self.0.store(false, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+    let _gate = CaptureGate(&gate_state.capture_in_progress);
+
     let selection = match mode {
         CaptureModeArg::Region | CaptureModeArg::Window | CaptureModeArg::Fullscreen => {
             UnifiedSelector::select()
@@ -245,16 +268,14 @@ pub fn run_capture_pipeline(
     };
 
     let result = run_post_action(app, &state, &image, post_action);
-    // After SDR save completes, drop the HDR sidecar next to it. The latest
-    // saved path is in state.last_save; we read it back rather than threading
-    // a return value through run_post_action.
-    if result.is_ok() {
+    // Drop the HDR sidecar next to the file we just wrote — never against
+    // a previous capture's path, which is what reading state.last_save
+    // would surface for clipboard-only / upload-only actions.
+    if let Ok(Some(sdr_path)) = &result {
         let cfg = state.config.lock().unwrap().clone();
-        if let Some(sdr_path) = state.last_save.lock().unwrap().clone() {
-            maybe_write_hdr_sidecar(&sdr_path, &hdr_bitmap, &cfg);
-        }
+        maybe_write_hdr_sidecar(sdr_path, &hdr_bitmap, &cfg);
     }
-    result
+    result.map(|_| ())
 }
 
 fn build_upload_service(config: &Config) -> UploadService {
@@ -348,12 +369,16 @@ fn maybe_write_hdr_sidecar(
     }
 }
 
+// Returns Some(path) when a fresh file was written *this call*. Callers
+// rely on this to tie the HDR sidecar to the right basename — reading
+// `state.last_save` would surface a previous capture's path when this
+// action was clipboard-only.
 fn run_post_action(
     app: &AppHandle,
     state: &AppState,
     image: &RgbaImage,
     action: PostCaptureAction,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Option<PathBuf>> {
     let config = state.config.lock().unwrap().clone();
 
     let do_save = || -> anyhow::Result<PathBuf> {
@@ -392,6 +417,7 @@ fn run_post_action(
             if config.ui.show_notifications {
                 let _ = show_notification("Capture saved", &path.to_string_lossy());
             }
+            Ok(Some(path))
         }
         PostCaptureAction::CopyToClipboard => {
             do_clipboard()?;
@@ -399,36 +425,47 @@ fn run_post_action(
             if config.ui.show_notifications {
                 let _ = show_notification("Copied", "Capture on clipboard");
             }
+            Ok(None)
         }
         PostCaptureAction::SaveAndCopy => {
             let path = do_save()?;
-            let _ = do_clipboard();
+            // Don't claim "+ copied" if the clipboard step actually failed —
+            // surface the partial success honestly. Save is the source of
+            // truth; clipboard is best-effort because another app could be
+            // holding it open.
+            let clipboard_ok = do_clipboard().is_ok();
             Sound::Screenshot.play_if_enabled(config.post_capture.play_sound);
             if config.ui.show_notifications {
-                let _ = show_notification(
-                    "Capture saved + copied",
-                    &path.to_string_lossy(),
-                );
+                let title = if clipboard_ok {
+                    "Capture saved + copied"
+                } else {
+                    "Capture saved (clipboard busy)"
+                };
+                let _ = show_notification(title, &path.to_string_lossy());
             }
+            Ok(Some(path))
         }
         PostCaptureAction::Upload => {
             let result = do_upload()?;
             Sound::Upload.play_if_enabled(config.post_capture.play_sound);
             emit_upload_success(app, &result);
+            Ok(None)
         }
         PostCaptureAction::PromptUser => {
             let path = do_save()?;
-            let _ = do_clipboard();
+            let clipboard_ok = do_clipboard().is_ok();
             Sound::Screenshot.play_if_enabled(config.post_capture.play_sound);
             if config.ui.show_notifications {
-                let _ = show_notification(
-                    "Capture saved + copied",
-                    &path.to_string_lossy(),
-                );
+                let title = if clipboard_ok {
+                    "Capture saved + copied"
+                } else {
+                    "Capture saved (clipboard busy)"
+                };
+                let _ = show_notification(title, &path.to_string_lossy());
             }
+            Ok(Some(path))
         }
     }
-    Ok(())
 }
 
 pub fn open_in_default_image_editor(path: &std::path::Path) -> anyhow::Result<()> {

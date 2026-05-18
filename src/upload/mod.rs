@@ -606,27 +606,64 @@ pub fn upload_ftp(data: &[u8], file_name: &str, target: &FtpTarget) -> Result<Up
 
     let mut stream = FtpStream::connect(&address)
         .map_err(|e| anyhow!("FTP connect to {} failed: {}", address, e))?;
-    stream
-        .login(&target.username, &target.password)
-        .map_err(|e| anyhow!("FTP login failed: {}", e))?;
+
+    // Helper to log out and tear down the socket no matter which step below
+    // failed — without this the connection lingered until the OS GC'd it,
+    // which on some servers blocked the next upload while the slot expired.
+    let close_quietly = |mut s: FtpStream| {
+        let _ = s.quit();
+    };
+    let with_cleanup = |res: Result<UploadResult>, s: FtpStream, partial: Option<&str>| {
+        if res.is_err() {
+            if let Some(name) = partial {
+                // Best-effort: remove the half-written remote file so the
+                // server doesn't accumulate corrupt artefacts from retries.
+                let mut s = s;
+                let _ = s.rm(name);
+                close_quietly(s);
+            } else {
+                close_quietly(s);
+            }
+        } else {
+            close_quietly(s);
+        }
+        res
+    };
+
+    if let Err(e) = stream.login(&target.username, &target.password) {
+        return with_cleanup(
+            Err(anyhow!("FTP login failed: {}", e)),
+            stream,
+            None,
+        );
+    }
 
     if !target.remote_dir.is_empty() {
-        stream
-            .cwd(&target.remote_dir)
-            .map_err(|e| anyhow!("FTP cwd to '{}' failed: {}", target.remote_dir, e))?;
+        if let Err(e) = stream.cwd(&target.remote_dir) {
+            return with_cleanup(
+                Err(anyhow!("FTP cwd to '{}' failed: {}", target.remote_dir, e)),
+                stream,
+                None,
+            );
+        }
     }
 
     let mut reader = Cursor::new(data.to_vec());
-    stream
-        .put_file(&filename, &mut reader)
-        .map_err(|e| anyhow!("FTP put_file failed: {}", e))?;
-    let _ = stream.quit();
+    if let Err(e) = stream.put_file(&filename, &mut reader) {
+        return with_cleanup(
+            Err(anyhow!("FTP put_file failed: {}", e)),
+            stream,
+            Some(&filename),
+        );
+    }
 
     let url = build_url(&target.public_url_template, &filename)?;
-    Ok(UploadResult {
+    let result = UploadResult {
         url,
         delete_url: None,
-    })
+    };
+    close_quietly(stream);
+    Ok(result)
 }
 
 fn sanitize_remote_filename(name: &str) -> String {

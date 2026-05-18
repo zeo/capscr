@@ -774,13 +774,48 @@ impl Config {
         if let Some(path) = Self::config_path() {
             if path.exists() {
                 let content = fs::read_to_string(&path)?;
-                let mut config: Config = toml::from_str(&content)?;
-                config.sanitize();
-                config.validate()?;
-                return Ok(config);
+                match toml::from_str::<Config>(&content) {
+                    Ok(mut config) => {
+                        config.sanitize();
+                        if let Err(e) = config.validate() {
+                            // Keep the validated-default fallback but preserve the
+                            // user's file by renaming it — they get a clean state
+                            // without losing the data they hand-edited.
+                            Self::backup_corrupt_config(&path, &content);
+                            tracing::warn!(
+                                "config at {path:?} failed validation: {e}. \
+                                 falling back to defaults; original saved to .bak"
+                            );
+                            return Ok(Config::default());
+                        }
+                        return Ok(config);
+                    }
+                    Err(e) => {
+                        Self::backup_corrupt_config(&path, &content);
+                        tracing::warn!(
+                            "config at {path:?} failed to parse: {e}. \
+                             falling back to defaults; original saved to .bak"
+                        );
+                        return Ok(Config::default());
+                    }
+                }
             }
         }
         Ok(Config::default())
+    }
+
+    fn backup_corrupt_config(path: &PathBuf, content: &str) {
+        let mut backup = path.clone();
+        let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
+        let new_name = format!(
+            "config.bad.{stamp}.toml"
+        );
+        backup.set_file_name(new_name);
+        // Write-then-replace: never delete the user's broken config until
+        // the backup has been written successfully.
+        if let Err(e) = fs::write(&backup, content) {
+            tracing::error!("could not back up corrupt config to {backup:?}: {e}");
+        }
     }
 
     pub fn save(&self) -> Result<()> {

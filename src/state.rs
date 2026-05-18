@@ -5,6 +5,7 @@ use crate::plugin::PluginManager;
 use crate::recording::{GifRecorder, RecordingState};
 use crossbeam_channel::Sender;
 use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
 use std::sync::Mutex;
 
 pub enum HotkeyCommand {
@@ -21,6 +22,10 @@ pub struct AppState {
     pub last_save: Mutex<Option<PathBuf>>,
     pub last_upload: Mutex<Option<UploadRecord>>,
     pub editor_image_path: Mutex<Option<String>>,
+    // True while a capture pipeline is in flight. Gates new triggers so a
+    // user mashing the hotkey while a previous capture is hung doesn't
+    // accumulate stalled worker threads.
+    pub capture_in_progress: AtomicBool,
 }
 
 #[derive(Clone, Debug)]
@@ -47,6 +52,7 @@ impl AppState {
             last_save: Mutex::new(None),
             last_upload: Mutex::new(None),
             editor_image_path: Mutex::new(None),
+            capture_in_progress: AtomicBool::new(false),
         }
     }
 

@@ -287,6 +287,7 @@ mod windows_hdr {
         };
         use windows::Win32::Graphics::Dxgi::{
             IDXGIOutput1, IDXGIResource, IDXGIOutputDuplication, DXGI_OUTDUPL_FRAME_INFO,
+            DXGI_ERROR_ACCESS_LOST, DXGI_ERROR_WAIT_TIMEOUT,
         };
         use windows::Win32::Graphics::Dxgi::Common::{
             DXGI_FORMAT_R10G10B10A2_UNORM, DXGI_FORMAT_R16G16B16A16_FLOAT,
@@ -328,17 +329,43 @@ mod windows_hdr {
             let device = device.ok_or_else(|| anyhow!("Failed to create D3D11 device"))?;
             let context = context.ok_or_else(|| anyhow!("Failed to get device context"))?;
 
-            let duplication = output1.DuplicateOutput(&device)?;
+            // DuplicateOutput can fail with ACCESS_LOST when another
+            // exclusive-mode app (full-screen game, RDP) is holding the
+            // output. Recreate once after a brief wait before giving up.
+            let mut duplication = match output1.DuplicateOutput(&device) {
+                Ok(d) => d,
+                Err(e) if e.code() == DXGI_ERROR_ACCESS_LOST => {
+                    std::thread::sleep(std::time::Duration::from_millis(200));
+                    output1.DuplicateOutput(&device).map_err(|e2| {
+                        anyhow!("Display capture is locked by another app: {e2}")
+                    })?
+                }
+                Err(e) => return Err(anyhow!("DuplicateOutput failed: {e}")),
+            };
 
             let mut frame_info = DXGI_OUTDUPL_FRAME_INFO::default();
             let mut desktop_resource: Option<IDXGIResource> = None;
 
             let mut acquired = false;
-            for _ in 0..10 {
+            for attempt in 0..10 {
                 match duplication.AcquireNextFrame(100, &mut frame_info, &mut desktop_resource) {
                     Ok(()) => {
                         acquired = true;
                         break;
+                    }
+                    Err(e) if e.code() == DXGI_ERROR_ACCESS_LOST && attempt < 9 => {
+                        // Display config changed (monitor unplug, sleep/wake,
+                        // resolution switch). The duplication object is dead;
+                        // re-acquire by recreating it from the same output.
+                        if let Ok(fresh) = output1.DuplicateOutput(&device) {
+                            duplication = fresh;
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(100));
+                    }
+                    Err(e) if e.code() == DXGI_ERROR_WAIT_TIMEOUT => {
+                        // Compositor produced no new frame within 100ms —
+                        // common on idle desktops. Just keep waiting.
+                        std::thread::sleep(std::time::Duration::from_millis(50));
                     }
                     Err(_) => {
                         std::thread::sleep(std::time::Duration::from_millis(50));
@@ -347,7 +374,9 @@ mod windows_hdr {
             }
 
             if !acquired {
-                return Err(anyhow!("Failed to acquire frame"));
+                return Err(anyhow!(
+                    "Failed to acquire HDR frame after 10 attempts — display may be sleeping"
+                ));
             }
 
             let _frame_guard = FrameGuard { duplication: &duplication, acquired: true };

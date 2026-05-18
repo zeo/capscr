@@ -69,7 +69,15 @@ fn main() {
         .init();
 
     let config = config::Config::load().unwrap_or_default();
-    let _ = config.ensure_output_dir();
+    if let Err(e) = config.ensure_output_dir() {
+        // The hub UI isn't up yet — surface this through the OS notification
+        // channel so the user knows captures will fail until they fix it.
+        let _ = clipboard::show_notification(
+            "capscr: captures folder unreachable",
+            &format!("{e}. Open Settings → Output to point at a writable path."),
+        );
+        tracing::error!("ensure_output_dir failed at startup: {e:#}");
+    }
     install_hdr_runtime_from_config(&config);
 
     let initial_tasks = config.capture_tasks.clone();
