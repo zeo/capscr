@@ -17,10 +17,21 @@ import {
   ZoomOut,
   Maximize2,
   Circle,
+  Minus,
+  CircleDashed,
+  Highlighter,
 } from "lucide-solid";
 import { Titlebar } from "../components/Titlebar";
 
-type Tool = "arrow" | "rect" | "text" | "blur" | "step";
+type Tool =
+  | "arrow"
+  | "rect"
+  | "text"
+  | "blur"
+  | "step"
+  | "line"
+  | "ellipse"
+  | "highlight";
 
 interface Point {
   x: number;
@@ -66,7 +77,39 @@ interface StepOp {
   radius: number;
 }
 
-type Op = ArrowOp | RectOp | TextOp | BlurOp | StepOp;
+interface LineOp {
+  kind: "line";
+  from: Point;
+  to: Point;
+  color: string;
+  width: number;
+}
+
+interface EllipseOp {
+  kind: "ellipse";
+  origin: Point;
+  size: { w: number; h: number };
+  color: string;
+  width: number;
+}
+
+interface HighlightOp {
+  kind: "highlight";
+  from: Point;
+  to: Point;
+  color: string;
+  width: number;
+}
+
+type Op =
+  | ArrowOp
+  | RectOp
+  | TextOp
+  | BlurOp
+  | StepOp
+  | LineOp
+  | EllipseOp
+  | HighlightOp;
 
 const COLORS = ["#ef4444", "#f59e0b", "#10b981", "#3b82f6", "#a855f7", "#ffffff", "#000000"];
 
@@ -193,6 +236,9 @@ export function Editor() {
       setTool("text");
     } else if (e.key === "4") setTool("blur");
     else if (e.key === "5") setTool("step");
+    else if (e.key === "6") setTool("line");
+    else if (e.key === "7") setTool("ellipse");
+    else if (e.key === "8") setTool("highlight");
   };
 
   const onWheelZoom = (e: WheelEvent) => {
@@ -294,6 +340,41 @@ export function Editor() {
         break;
       case "step":
         drawStep(ctx, op);
+        break;
+      case "line":
+        ctx.strokeStyle = op.color;
+        ctx.lineWidth = op.width;
+        ctx.lineCap = "round";
+        ctx.beginPath();
+        ctx.moveTo(op.from.x, op.from.y);
+        ctx.lineTo(op.to.x, op.to.y);
+        ctx.stroke();
+        break;
+      case "ellipse": {
+        const cx = op.origin.x + op.size.w / 2;
+        const cy = op.origin.y + op.size.h / 2;
+        const rx = Math.abs(op.size.w) / 2;
+        const ry = Math.abs(op.size.h) / 2;
+        ctx.strokeStyle = op.color;
+        ctx.lineWidth = op.width;
+        ctx.beginPath();
+        ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
+        ctx.stroke();
+        break;
+      }
+      case "highlight":
+        // semi-transparent thick stroke, behaves like a text-marker pen
+        ctx.save();
+        ctx.globalAlpha = 0.35;
+        ctx.globalCompositeOperation = "multiply";
+        ctx.strokeStyle = op.color;
+        ctx.lineWidth = op.width;
+        ctx.lineCap = "butt";
+        ctx.beginPath();
+        ctx.moveTo(op.from.x, op.from.y);
+        ctx.lineTo(op.to.x, op.to.y);
+        ctx.stroke();
+        ctx.restore();
         break;
     }
   }
@@ -399,6 +480,25 @@ export function Editor() {
       setDraft({ kind: "rect", origin: p, size: { w: 0, h: 0 }, color: color(), width: strokeWidth() });
     } else if (t === "blur") {
       setDraft({ kind: "blur", origin: p, size: { w: 0, h: 0 }, radius: 12 });
+    } else if (t === "line") {
+      setDraft({ kind: "line", from: p, to: p, color: color(), width: strokeWidth() });
+    } else if (t === "ellipse") {
+      setDraft({
+        kind: "ellipse",
+        origin: p,
+        size: { w: 0, h: 0 },
+        color: color(),
+        width: strokeWidth(),
+      });
+    } else if (t === "highlight") {
+      // 3x default stroke so the marker actually feels like a highlighter
+      setDraft({
+        kind: "highlight",
+        from: p,
+        to: p,
+        color: color(),
+        width: Math.max(8, strokeWidth() * 4),
+      });
     } else if (t === "text") {
       setTextInputAt(p);
       setTextBuffer("");
@@ -438,9 +538,9 @@ export function Editor() {
     const p = pointFromEvent(e);
     const d = draft();
     if (!d) return;
-    if (d.kind === "arrow") {
+    if (d.kind === "arrow" || d.kind === "line" || d.kind === "highlight") {
       setDraft({ ...d, to: p });
-    } else if (d.kind === "rect" || d.kind === "blur") {
+    } else if (d.kind === "rect" || d.kind === "blur" || d.kind === "ellipse") {
       const ox = Math.min(dragStart.x, p.x);
       const oy = Math.min(dragStart.y, p.y);
       const w = Math.abs(p.x - dragStart.x);
@@ -455,7 +555,7 @@ export function Editor() {
     dragStart = null;
     if (!d) return;
     // discard zero-size drafts
-    if (d.kind === "arrow") {
+    if (d.kind === "arrow" || d.kind === "line" || d.kind === "highlight") {
       const dx = d.to.x - d.from.x;
       const dy = d.to.y - d.from.y;
       if (Math.hypot(dx, dy) < 3) {
@@ -464,7 +564,7 @@ export function Editor() {
         return;
       }
     }
-    if (d.kind === "rect" || d.kind === "blur") {
+    if (d.kind === "rect" || d.kind === "blur" || d.kind === "ellipse") {
       if (d.size.w < 3 || d.size.h < 3) {
         setDraft(null);
         redraw();
@@ -653,6 +753,33 @@ export function Editor() {
           >
             <Circle size={14} stroke-width={1.5} />
           </button>
+          <button
+            type="button"
+            class="tool"
+            classList={{ "is-active": tool() === "line" }}
+            onClick={() => setTool("line")}
+            title="line (6)"
+          >
+            <Minus size={14} stroke-width={1.5} />
+          </button>
+          <button
+            type="button"
+            class="tool"
+            classList={{ "is-active": tool() === "ellipse" }}
+            onClick={() => setTool("ellipse")}
+            title="ellipse (7)"
+          >
+            <CircleDashed size={14} stroke-width={1.5} />
+          </button>
+          <button
+            type="button"
+            class="tool"
+            classList={{ "is-active": tool() === "highlight" }}
+            onClick={() => setTool("highlight")}
+            title="highlighter (8)"
+          >
+            <Highlighter size={14} stroke-width={1.5} />
+          </button>
         </div>
 
         <div class="editor-colors">
@@ -671,7 +798,15 @@ export function Editor() {
         </div>
 
         <div class="editor-controls">
-          <Show when={tool() === "arrow" || tool() === "rect"}>
+          <Show
+            when={
+              tool() === "arrow" ||
+              tool() === "rect" ||
+              tool() === "line" ||
+              tool() === "ellipse" ||
+              tool() === "highlight"
+            }
+          >
             <label class="ctrl">
               <span>stroke</span>
               <input
