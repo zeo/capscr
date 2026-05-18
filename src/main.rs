@@ -145,6 +145,8 @@ fn main() {
             commands::get_autostart,
             commands::list_installed_plugins,
             commands::open_plugins_folder,
+            commands::check_for_updates,
+            commands::install_update,
             commands::get_editor_image_path,
             commands::open_editor,
             commands::save_edited_image,

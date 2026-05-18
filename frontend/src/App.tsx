@@ -3,9 +3,9 @@ import { listen, UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { Copy, ExternalLink, Trash2, X } from "lucide-solid";
+import { Copy, ExternalLink, Trash2, X, Download } from "lucide-solid";
 import { Titlebar } from "./components/Titlebar";
-import { api } from "./api";
+import { api, UpdateInfo } from "./api";
 import { configDirty, setConfigDirty } from "./dirty";
 import { Settings } from "./views/Settings";
 import { History } from "./views/History";
@@ -60,6 +60,9 @@ function Hub() {
   const [recording, setRecording] = createSignal(false);
   const [config] = createResource(api.getConfig);
   const [dragOver, setDragOver] = createSignal(false);
+  const [updateInfo, setUpdateInfo] = createSignal<UpdateInfo | null>(null);
+  const [updateDismissed, setUpdateDismissed] = createSignal(false);
+  const [updating, setUpdating] = createSignal(false);
 
   const win = getCurrentWindow();
   const active = () => tab().id;
@@ -104,6 +107,19 @@ function Hub() {
       await listen("capscr://recording-started", () => setRecording(true)),
       await listen("capscr://recording-stopped", () => setRecording(false)),
     );
+
+    // Background update check — delayed 4s so it doesn't compete with hub
+    // first-paint or block the network during the user's first capture.
+    setTimeout(() => {
+      void api
+        .checkForUpdates()
+        .then((info) => {
+          if (info) setUpdateInfo(info);
+        })
+        .catch(() => {
+          // updater endpoint unreachable / GitHub release missing — silent.
+        });
+    }, 4000);
 
     const dragUnlisten = await win.onDragDropEvent(async (e) => {
       const payload = e.payload;
@@ -151,6 +167,19 @@ function Hub() {
     }
   };
 
+  const runUpdate = async () => {
+    setUpdating(true);
+    try {
+      await api.installUpdate();
+      // installUpdate triggers app.restart() on success, so we shouldn't
+      // get here. If we do, treat it as the update having installed without
+      // a restart (rare).
+    } catch (e) {
+      pushToast("update", String(e));
+      setUpdating(false);
+    }
+  };
+
   return (
     <div class="app">
       <Titlebar context={tab().context} onClose={onClose} />
@@ -184,6 +213,39 @@ function Hub() {
           <span class="build">v{__APP_VERSION__}·rel</span>
         </div>
       </aside>
+
+      <Show when={updateInfo() && !updateDismissed()}>
+        <div class="update-banner">
+          <span class="update-banner-glyph">▮</span>
+          <div class="update-banner-text">
+            <span class="update-banner-title">
+              update available · v{updateInfo()!.version}
+            </span>
+            <span class="update-banner-meta">
+              you're on v{updateInfo()!.current_version}
+            </span>
+          </div>
+          <button
+            type="button"
+            class="btn"
+            data-size="xs"
+            onClick={runUpdate}
+            disabled={updating()}
+          >
+            <Download size={11} stroke-width={1.5} />
+            {updating() ? "installing..." : "install + restart"}
+          </button>
+          <button
+            type="button"
+            class="btn"
+            data-variant="ghost"
+            data-size="xs"
+            onClick={() => setUpdateDismissed(true)}
+          >
+            later
+          </button>
+        </div>
+      </Show>
 
       <main class="content">
         <Switch>

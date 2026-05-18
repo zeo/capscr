@@ -91,6 +91,12 @@ export interface InstalledPlugin {
   enabled: boolean;
 }
 
+export interface UpdateInfo {
+  version: string;
+  current_version: string;
+  notes: string | null;
+}
+
 export const api = {
   getConfig: () => invoke<AppConfig>("get_config"),
   setConfig: (config: AppConfig) => invoke<void>("set_config", { config }),
@@ -112,4 +118,6 @@ export const api = {
   uploadFile: (path: string) =>
     invoke<{ url: string; delete_url: string | null }>("upload_file", { path }),
   openEditor: (path: string) => invoke<void>("open_editor", { path }),
+  checkForUpdates: () => invoke<UpdateInfo | null>("check_for_updates"),
+  installUpdate: () => invoke<void>("install_update"),
 };

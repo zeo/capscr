@@ -463,6 +463,41 @@ pub fn exit_app(app: AppHandle) {
     app.exit(0);
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct UpdateInfo {
+    pub version: String,
+    pub current_version: String,
+    pub notes: Option<String>,
+}
+
+#[tauri::command]
+pub async fn check_for_updates(app: AppHandle) -> Result<Option<UpdateInfo>, String> {
+    use tauri_plugin_updater::UpdaterExt;
+    let updater = app.updater().map_err(|e| e.to_string())?;
+    let update = updater.check().await.map_err(|e| e.to_string())?;
+    Ok(update.map(|u| UpdateInfo {
+        version: u.version.to_string(),
+        current_version: u.current_version.to_string(),
+        notes: u.body.clone(),
+    }))
+}
+
+#[tauri::command]
+pub async fn install_update(app: AppHandle) -> Result<(), String> {
+    use tauri_plugin_updater::UpdaterExt;
+    let updater = app.updater().map_err(|e| e.to_string())?;
+    let update = updater
+        .check()
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "no update available".to_string())?;
+    update
+        .download_and_install(|_chunk, _total| {}, || {})
+        .await
+        .map_err(|e| e.to_string())?;
+    app.restart();
+}
+
 const HUB_LABEL: &str = "hub";
 
 // Called in setup() so the WebView2 instance is warm before the user opens
