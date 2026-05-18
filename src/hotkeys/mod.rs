@@ -69,6 +69,10 @@ impl HotkeyManager {
         None
     }
 
+    pub fn task_for_event_id(&self, id: u32) -> Option<String> {
+        self.registered.get(&id).cloned()
+    }
+
     pub fn unregister_all(&mut self) {
         self.registered.clear();
     }

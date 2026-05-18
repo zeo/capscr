@@ -252,11 +252,18 @@ pub fn show_notification(title: &str, body: &str) -> Result<()> {
     let safe_title = sanitize_notification_text(title);
     let safe_body = sanitize_notification_text(body);
 
-    notify_rust::Notification::new()
-        .summary(&safe_title)
+    let mut n = notify_rust::Notification::new();
+    n.summary(&safe_title)
         .body(&safe_body)
-        .timeout(notify_rust::Timeout::Milliseconds(3000))
-        .show()?;
+        .timeout(notify_rust::Timeout::Milliseconds(3000));
+
+    // Anchor the toast to our explicit AUMID so Windows Action Center groups
+    // notifications under "capscr" with our icon, not under the PowerShell
+    // fallback (the generic blue icon).
+    #[cfg(windows)]
+    n.app_id("io.rot.capscr");
+
+    n.show()?;
 
     Ok(())
 }

@@ -75,6 +75,11 @@ mod windows_impl {
 
     static SCREEN_BITMAP: Mutex<Option<isize>> = Mutex::new(None);
     static SCREEN_DC: Mutex<Option<isize>> = Mutex::new(None);
+    // Persistent back buffer for double-buffered WM_PAINT. Without this, every
+    // mouse move allocated/freed a screen-size GDI bitmap (~32 MB on a 4K
+    // display × ~100 mouse-events/sec = visible flicker / stutter).
+    static BACK_BITMAP: Mutex<Option<isize>> = Mutex::new(None);
+    static BACK_DC: Mutex<Option<isize>> = Mutex::new(None);
     static SCREEN_WIDTH: AtomicI32 = AtomicI32::new(0);
     static SCREEN_HEIGHT: AtomicI32 = AtomicI32::new(0);
     static VIRTUAL_X: AtomicI32 = AtomicI32::new(0);
@@ -332,11 +337,25 @@ mod windows_impl {
                 let height = SCREEN_HEIGHT.load(Ordering::SeqCst);
 
                 // Compose the whole frame into a back buffer, then BitBlt once
-                // to the window. Eliminates the intermediate-state flicker the
-                // user saw while WM_PAINT walked through screen → dim → border.
-                let back_dc = CreateCompatibleDC(hdc);
-                let back_bmp = CreateCompatibleBitmap(hdc, width, height);
-                let old_back = SelectObject(back_dc, back_bmp);
+                // to the window. The back buffer is cached for the life of the
+                // selector — recreating it every paint allocated ~32 MB of GDI
+                // memory per frame on 4K displays and caused visible flicker
+                // under fast mouse movement.
+                let (back_dc, _back_bmp) = {
+                    let mut dc_guard = BACK_DC.lock().unwrap();
+                    let mut bmp_guard = BACK_BITMAP.lock().unwrap();
+                    if dc_guard.is_none() {
+                        let dc = CreateCompatibleDC(hdc);
+                        let bmp = CreateCompatibleBitmap(hdc, width, height);
+                        SelectObject(dc, bmp);
+                        *dc_guard = Some(dc.0 as isize);
+                        *bmp_guard = Some(bmp.0 as isize);
+                    }
+                    (
+                        HDC(dc_guard.unwrap() as *mut _),
+                        HBITMAP(bmp_guard.unwrap() as *mut _),
+                    )
+                };
 
                 if let Some(dc) = *SCREEN_DC.lock().unwrap() {
                     if let Some(bmp) = *SCREEN_BITMAP.lock().unwrap() {
@@ -543,9 +562,8 @@ mod windows_impl {
                 // Single blit of the composited frame.
                 let _ = BitBlt(hdc, 0, 0, width, height, back_dc, 0, 0, SRCCOPY);
 
-                SelectObject(back_dc, old_back);
-                let _ = DeleteObject(back_bmp);
-                let _ = DeleteDC(back_dc);
+                // back_dc / back_bmp are cached for the life of the selector
+                // window; they're freed in WM_DESTROY, not here.
 
                 let _ = EndPaint(hwnd, &ps);
                 LRESULT(0)
@@ -646,6 +664,15 @@ mod windows_impl {
                 LRESULT(0)
             }
             WM_DESTROY => {
+                // Release the cached back buffer that WM_PAINT created on
+                // demand — leaks ~32 MB of GDI memory per selector invocation
+                // otherwise.
+                if let Some(dc) = BACK_DC.lock().unwrap().take() {
+                    let _ = DeleteDC(HDC(dc as *mut _));
+                }
+                if let Some(bmp) = BACK_BITMAP.lock().unwrap().take() {
+                    let _ = DeleteObject(HBITMAP(bmp as *mut _));
+                }
                 SELECTING.store(false, Ordering::SeqCst);
                 PostQuitMessage(0);
                 LRESULT(0)

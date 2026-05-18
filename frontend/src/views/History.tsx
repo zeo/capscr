@@ -66,11 +66,27 @@ export function History() {
       <Show
         when={entries() && entries()!.length > 0}
         fallback={
-          <div class="empty">
-            <span class="stick" />
-            no captures
-            <p>take a screenshot or fire a task.</p>
-          </div>
+          <Show
+            when={!entries.loading}
+            fallback={
+              <div class="empty">
+                <span class="stick" />
+                reading...
+              </div>
+            }
+          >
+            <div class="empty">
+              <span class="stick" />
+              no captures yet
+              <p>
+                press <kbd>Numpad 5</kbd> to drag a region capture to clipboard,
+                or <kbd>Pause</kbd> to record a GIF.
+              </p>
+              <p class="muted" style="margin-top: 8px; font-size: 11px;">
+                rebind these in <strong>tasks</strong> · destinations live in <strong>destinations</strong>.
+              </p>
+            </div>
+          </Show>
         }
       >
         <div class="tiles">

@@ -7,6 +7,7 @@ import {
   Type,
   Droplet,
   RotateCcw,
+  RotateCw,
   Save,
   Copy,
   Upload,
@@ -67,6 +68,7 @@ export function Editor() {
   const [strokeWidth, setStrokeWidth] = createSignal(3);
   const [textSize, setTextSize] = createSignal(24);
   const [ops, setOps] = createSignal<Op[]>([]);
+  const [redoStack, setRedoStack] = createSignal<Op[]>([]);
   const [draft, setDraft] = createSignal<Op | null>(null);
   const [textInputAt, setTextInputAt] = createSignal<Point | null>(null);
   const [textBuffer, setTextBuffer] = createSignal("");
@@ -116,9 +118,13 @@ export function Editor() {
 
   const onKeydown = (e: KeyboardEvent) => {
     if (textInputAt()) return;
-    if (e.key === "z" && (e.ctrlKey || e.metaKey)) {
+    const mod = e.ctrlKey || e.metaKey;
+    if (e.key === "z" && mod && !e.shiftKey) {
       e.preventDefault();
       undo();
+    } else if ((e.key === "y" && mod) || (e.key === "z" && mod && e.shiftKey)) {
+      e.preventDefault();
+      redo();
     } else if (e.key === "Escape") {
       void win.close();
     } else if (e.key === "1") setTool("arrow");
@@ -309,6 +315,7 @@ export function Editor() {
       }
     }
     setOps([...ops(), d]);
+    setRedoStack([]);
     setDraft(null);
     redraw();
   }
@@ -321,6 +328,7 @@ export function Editor() {
         ...ops(),
         { kind: "text", origin: at, text: t, color: color(), fontSize: textSize() },
       ]);
+      setRedoStack([]);
     }
     setTextInputAt(null);
     setTextBuffer("");
@@ -333,8 +341,20 @@ export function Editor() {
   }
 
   function undo() {
-    if (ops().length === 0) return;
-    setOps(ops().slice(0, -1));
+    const cur = ops();
+    if (cur.length === 0) return;
+    const last = cur[cur.length - 1];
+    setOps(cur.slice(0, -1));
+    setRedoStack([...redoStack(), last]);
+    redraw();
+  }
+
+  function redo() {
+    const stack = redoStack();
+    if (stack.length === 0) return;
+    const next = stack[stack.length - 1];
+    setRedoStack(stack.slice(0, -1));
+    setOps([...ops(), next]);
     redraw();
   }
 
@@ -514,9 +534,25 @@ export function Editor() {
         </div>
 
         <div class="editor-actions">
-          <button class="btn" data-variant="ghost" onClick={undo} title="ctrl+z">
+          <button
+            class="btn"
+            data-variant="ghost"
+            onClick={undo}
+            title="ctrl+z"
+            disabled={ops().length === 0}
+          >
             <RotateCcw size={12} stroke-width={1.5} />
             undo
+          </button>
+          <button
+            class="btn"
+            data-variant="ghost"
+            onClick={redo}
+            title="ctrl+y"
+            disabled={redoStack().length === 0}
+          >
+            <RotateCw size={12} stroke-width={1.5} />
+            redo
           </button>
           <button class="btn" onClick={onSave} disabled={busy() !== null}>
             <Save size={12} stroke-width={1.5} />

@@ -3,8 +3,8 @@
 use crate::config::{CaptureTask, Config};
 use crate::plugin::PluginManager;
 use crate::recording::{GifRecorder, RecordingState};
+use crossbeam_channel::Sender;
 use std::path::PathBuf;
-use std::sync::mpsc::Sender;
 use std::sync::Mutex;
 
 pub enum HotkeyCommand {

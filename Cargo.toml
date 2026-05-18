@@ -1,6 +1,6 @@
 [package]
 name = "capscr"
-version = "0.3.19"
+version = "0.3.20"
 edition = "2021"
 description = "A clean, modern screen capture tool with HDR support"
 authors = ["capscr"]
@@ -24,8 +24,13 @@ tauri-plugin-autostart = "2"
 tauri-plugin-window-state = "2"
 tauri-plugin-single-instance = "2"
 
-# Global hotkeys (native, polled from a tokio task)
+# Global hotkeys (native, OS-event-driven via crossbeam channel)
 global-hotkey = "0.6"
+
+# Used to select between the hotkey-event channel and the reload-command
+# channel in the hotkey thread — replaces a 100ms busy-poll loop that drained
+# laptop batteries.
+crossbeam-channel = "0.5"
 
 # Screen capture
 xcap = "0.0.14"
