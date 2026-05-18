@@ -5,6 +5,8 @@ mod clipboard;
 mod commands;
 mod config;
 mod hotkeys;
+#[cfg(windows)]
+mod jumplist;
 mod overlay;
 mod plugin;
 mod recording;
@@ -52,6 +54,8 @@ fn set_dpi_awareness() {}
 
 fn main() {
     set_dpi_awareness();
+    #[cfg(windows)]
+    jumplist::set_app_user_model_id();
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::from_default_env())
         .init();
@@ -64,8 +68,16 @@ fn main() {
     let app_state = state::AppState::new(config);
 
     let autostart_desired = app_state.config.lock().unwrap().ui.auto_start;
+    let initial_jump = parse_jump_arg(std::env::args());
 
     tauri::Builder::default()
+        // single-instance plugin must be the first one — when a second
+        // capscr.exe launches (e.g. via a jump list shortcut), it forwards
+        // argv to the running instance and exits.
+        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            let kind = parse_jump_arg(argv.iter().cloned());
+            dispatch_jump(app, kind.as_deref());
+        }))
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
@@ -81,6 +93,10 @@ fn main() {
         .setup(move |app| {
             build_tray(app)?;
             sync_autostart(app, autostart_desired);
+            #[cfg(windows)]
+            if let Err(e) = jumplist::register() {
+                tracing::warn!("jumplist register failed: {e}");
+            }
             // Make sure the asset:// protocol can reach the user's configured
             // output dir even if they moved it off the default $PICTURE/capscr.
             // The static scope in tauri.conf.json is the fallback; this widens
@@ -102,6 +118,16 @@ fn main() {
             // instantly instead of paying cold-boot cost on demand.
             if let Err(e) = commands::prewarm_hub_window(app) {
                 tracing::warn!("hub pre-warm failed: {e}");
+            }
+            // First-launch jump-list dispatch: if capscr.exe was launched with
+            // --jump=<kind>, run that action now. We delay slightly so the tray
+            // and webview are fully ready before any capture pipeline fires.
+            if let Some(kind) = initial_jump.clone() {
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(Duration::from_millis(250)).await;
+                    dispatch_jump(&handle, Some(&kind));
+                });
             }
             Ok(())
         })
@@ -377,4 +403,49 @@ fn spawn_hotkey_thread(
             std::thread::sleep(Duration::from_millis(100));
         }
     });
+}
+
+fn parse_jump_arg<I: IntoIterator<Item = String>>(args: I) -> Option<String> {
+    args.into_iter()
+        .find_map(|a| a.strip_prefix("--jump=").map(String::from))
+}
+
+fn dispatch_jump(app: &tauri::AppHandle, kind: Option<&str>) {
+    use commands::{CaptureModeArg, PostActionArg};
+    let Some(kind) = kind else {
+        // Bare second launch (no --jump=) — just surface the hub.
+        let _ = commands::open_hub_window(app);
+        return;
+    };
+    let app_clone = app.clone();
+    let spawn_capture = move |mode: CaptureModeArg| {
+        std::thread::spawn(move || {
+            if let Err(e) =
+                commands::run_capture_pipeline(mode, PostActionArg::Clipboard, &app_clone)
+            {
+                tracing::warn!("jump-list capture failed: {e}");
+                commands::emit_error(&app_clone, "capture", &e.to_string());
+            }
+        });
+    };
+    match kind {
+        "region" => spawn_capture(CaptureModeArg::Region),
+        "window" => spawn_capture(CaptureModeArg::Window),
+        "fullscreen" => spawn_capture(CaptureModeArg::Fullscreen),
+        "captures" => {
+            let st = app.state::<state::AppState>();
+            let dir = st.config.lock().unwrap().output.directory.clone();
+            let _ = std::fs::create_dir_all(&dir);
+            use tauri_plugin_opener::OpenerExt;
+            let _ = app
+                .opener()
+                .open_path(dir.to_string_lossy().to_string(), None::<&str>);
+        }
+        "hub" => {
+            let _ = commands::open_hub_window(app);
+        }
+        other => {
+            tracing::warn!("unknown --jump= kind: {other}");
+        }
+    }
 }

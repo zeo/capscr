@@ -1,6 +1,6 @@
 [package]
 name = "capscr"
-version = "0.3.17"
+version = "0.3.18"
 edition = "2021"
 description = "A clean, modern screen capture tool with HDR support"
 authors = ["capscr"]
@@ -22,6 +22,7 @@ tauri-plugin-opener = "2"
 tauri-plugin-updater = "2"
 tauri-plugin-autostart = "2"
 tauri-plugin-window-state = "2"
+tauri-plugin-single-instance = "2"
 
 # Global hotkeys (native, polled from a tokio task)
 global-hotkey = "0.6"
@@ -89,7 +90,13 @@ windows = { version = "0.58", features = [
     "Win32_UI_WindowsAndMessaging",
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_HiDpi",
+    "Win32_UI_Shell",
+    "Win32_UI_Shell_Common",
+    "Win32_UI_Shell_PropertiesSystem",
     "Win32_System_LibraryLoader",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_Variant",
     "Win32_Graphics_Gdi",
     "Win32_Graphics_Dxgi",
     "Win32_Graphics_Dxgi_Common",
