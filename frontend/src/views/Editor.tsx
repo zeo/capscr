@@ -134,10 +134,50 @@ export function Editor() {
     } else if (e.key === "4") setTool("blur");
   };
 
+  // Replace the current canvas with a pasted clipboard image. ShareX has
+  // this; users expect it. We accept any image/* type the browser decoded.
+  const onPaste = async (e: ClipboardEvent) => {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+    for (let i = 0; i < items.length; i++) {
+      const it = items[i];
+      if (!it.type.startsWith("image/")) continue;
+      const blob = it.getAsFile();
+      if (!blob) continue;
+      e.preventDefault();
+      const url = URL.createObjectURL(blob);
+      try {
+        const img = new Image();
+        img.src = url;
+        await img.decode();
+        baseImage = img;
+        canvasRef.width = img.naturalWidth;
+        canvasRef.height = img.naturalHeight;
+        setOps([]);
+        setRedoStack([]);
+        setLoaded(true);
+        setStatus({
+          tone: "ok",
+          msg: "pasted from clipboard — save to write back to disk.",
+        });
+        redraw();
+      } catch (err) {
+        setStatus({ tone: "err", msg: `paste failed: ${err}` });
+      } finally {
+        URL.revokeObjectURL(url);
+      }
+      return;
+    }
+  };
+
   onMount(() => {
     window.addEventListener("keydown", onKeydown);
+    window.addEventListener("paste", onPaste);
   });
-  onCleanup(() => window.removeEventListener("keydown", onKeydown));
+  onCleanup(() => {
+    window.removeEventListener("keydown", onKeydown);
+    window.removeEventListener("paste", onPaste);
+  });
 
   function pointFromEvent(e: MouseEvent): Point {
     const rect = canvasRef.getBoundingClientRect();

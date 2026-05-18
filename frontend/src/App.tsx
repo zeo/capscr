@@ -154,7 +154,20 @@ function Hub() {
         setDragOver(false);
       } else if (payload.type === "drop") {
         setDragOver(false);
-        for (const path of payload.paths) {
+        // Cap concurrent uploads so dragging 50 files onto the window doesn't
+        // melt the UI thread. Anything over the cap is rejected with a single
+        // explanatory toast — the user can re-drop the remainder.
+        const MAX_BATCH = 5;
+        const paths = payload.paths;
+        const accepted = paths.slice(0, MAX_BATCH);
+        const overflow = paths.length - accepted.length;
+        if (overflow > 0) {
+          pushToast(
+            "upload",
+            `dropped ${paths.length} files — uploading first ${MAX_BATCH}, drop the rest after these finish`,
+          );
+        }
+        for (const path of accepted) {
           try {
             await api.uploadFile(path);
           } catch (err) {
@@ -334,7 +347,7 @@ function Hub() {
       </Show>
 
       <Show when={toasts().length > 0 || uploads().length > 0}>
-        <div class="toasts">
+        <div class="toasts" role="region" aria-label="notifications">
           <For each={uploads()}>
             {(u) => (
               <div class="toast upload-card">
@@ -388,7 +401,13 @@ function Hub() {
           </For>
           <For each={toasts()}>
             {(t) => (
-              <div class="toast" data-kind={t.kind}>
+              <output
+                class="toast"
+                data-kind={t.kind}
+                role="status"
+                aria-live="polite"
+                aria-atomic="true"
+              >
                 <span class="toast-kind">{t.kind}</span>
                 <span class="toast-msg">{t.msg}</span>
                 <button
@@ -401,7 +420,7 @@ function Hub() {
                 >
                   ×
                 </button>
-              </div>
+              </output>
             )}
           </For>
         </div>
