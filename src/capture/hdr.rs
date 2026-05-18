@@ -63,7 +63,7 @@ impl HdrCapture {
 
     /// Capture HDR content and automatically tonemap to SDR.
     pub fn capture(&self) -> Result<RgbaImage> {
-        let (img, _hdr) = self.capture_with_hdr()?;
+        let (img, _hdr) = self.capture_with_hdr_at(None)?;
         Ok(img)
     }
 
@@ -71,15 +71,24 @@ impl HdrCapture {
     /// the source was HDR. Used by the save path to write a sidecar HDR PNG
     /// alongside the tonemapped SDR PNG.
     pub fn capture_with_hdr(&self) -> Result<(RgbaImage, Option<crate::capture::HdrBitmap>)> {
+        self.capture_with_hdr_at(None)
+    }
+
+    /// Variant that targets the monitor containing the given desktop point.
+    /// `None` falls back to the first DXGI output (legacy behaviour).
+    pub fn capture_with_hdr_at(
+        &self,
+        target: Option<(i32, i32)>,
+    ) -> Result<(RgbaImage, Option<crate::capture::HdrBitmap>)> {
         #[cfg(target_os = "windows")]
         {
             let hdr_info = Self::get_display_hdr_info()?;
 
             if !hdr_info.is_hdr_enabled {
-                return Ok((self.capture_sdr_fallback()?, None));
+                return Ok((self.capture_sdr_fallback_at(target)?, None));
             }
 
-            let (raw_data, width, height, format) = self.capture_raw()?;
+            let (raw_data, width, height, format) = self.capture_raw(target)?;
 
             if width == 0 || height == 0 {
                 return Err(anyhow!("Invalid capture dimensions"));
@@ -105,24 +114,29 @@ impl HdrCapture {
         }
         #[cfg(not(target_os = "windows"))]
         {
-            Ok((self.capture_sdr_fallback()?, None))
+            Ok((self.capture_sdr_fallback_at(target)?, None))
         }
     }
 
-    fn capture_raw(&self) -> Result<(Vec<u8>, u32, u32, HdrFormat)> {
+    fn capture_raw(&self, target: Option<(i32, i32)>) -> Result<(Vec<u8>, u32, u32, HdrFormat)> {
         #[cfg(target_os = "windows")]
         {
-            windows_hdr::capture_hdr_screen()
+            windows_hdr::capture_hdr_screen(target)
         }
         #[cfg(not(target_os = "windows"))]
         {
+            let _ = target;
             Err(anyhow!("HDR capture not available on this platform"))
         }
     }
 
-    fn capture_sdr_fallback(&self) -> Result<RgbaImage> {
+    fn capture_sdr_fallback_at(&self, target: Option<(i32, i32)>) -> Result<RgbaImage> {
         use super::{Capture, ScreenCapture};
-        let capture = ScreenCapture::new();
+        let capture = match target {
+            Some((x, y)) => ScreenCapture::at_point(x, y)
+                .unwrap_or_else(|_| ScreenCapture::primary().unwrap_or_else(|_| ScreenCapture::new())),
+            None => ScreenCapture::new(),
+        };
         capture.capture()
     }
 
@@ -262,7 +276,9 @@ mod windows_hdr {
         }
     }
 
-    pub fn capture_hdr_screen() -> Result<(Vec<u8>, u32, u32, HdrFormat)> {
+    pub fn capture_hdr_screen(
+        target: Option<(i32, i32)>,
+    ) -> Result<(Vec<u8>, u32, u32, HdrFormat)> {
         use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_HARDWARE;
         use windows::Win32::Graphics::Direct3D11::{
             D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext, ID3D11Texture2D,
@@ -291,8 +307,7 @@ mod windows_hdr {
 
         unsafe {
             let factory: IDXGIFactory1 = CreateDXGIFactory1()?;
-            let adapter: IDXGIAdapter1 = factory.EnumAdapters1(0)?;
-            let output: IDXGIOutput = adapter.EnumOutputs(0)?;
+            let (adapter, output) = pick_adapter_output(&factory, target)?;
             let output1: IDXGIOutput1 = output.cast()?;
 
             let mut device: Option<ID3D11Device> = None;
@@ -433,6 +448,33 @@ mod windows_hdr {
             DXGI_FORMAT_B8G8R8A8_UNORM => 4,
             DXGI_FORMAT_R8G8B8A8_UNORM => 4,
             _ => 4,
+        }
+    }
+
+    fn pick_adapter_output(
+        factory: &IDXGIFactory1,
+        target: Option<(i32, i32)>,
+    ) -> Result<(IDXGIAdapter1, IDXGIOutput)> {
+        unsafe {
+            if let Some((tx, ty)) = target {
+                let mut adapter_idx = 0u32;
+                while let Ok(adapter) = factory.EnumAdapters1(adapter_idx) {
+                    let mut output_idx = 0u32;
+                    while let Ok(output) = adapter.EnumOutputs(output_idx) {
+                        if let Ok(desc) = output.GetDesc() {
+                            let r = desc.DesktopCoordinates;
+                            if tx >= r.left && tx < r.right && ty >= r.top && ty < r.bottom {
+                                return Ok((adapter, output));
+                            }
+                        }
+                        output_idx += 1;
+                    }
+                    adapter_idx += 1;
+                }
+            }
+            let adapter = factory.EnumAdapters1(0)?;
+            let output = adapter.EnumOutputs(0)?;
+            Ok((adapter, output))
         }
     }
 }

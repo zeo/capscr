@@ -54,6 +54,13 @@ fn set_dpi_awareness() {
 fn set_dpi_awareness() {}
 
 fn main() {
+    // Early exit for --version / --help so capscr.exe behaves like a normal
+    // CLI when invoked from PowerShell. Done before tracing / DPI / Tauri
+    // setup so the process is genuinely transient in those modes.
+    if handle_cli_short_circuit(std::env::args()) {
+        return;
+    }
+
     set_dpi_awareness();
     #[cfg(windows)]
     jumplist::set_app_user_model_id();
@@ -448,6 +455,64 @@ fn parse_jump_arg<I: IntoIterator<Item = String>>(args: I) -> Option<String> {
     args.into_iter()
         .find_map(|a| a.strip_prefix("--jump=").map(String::from))
 }
+
+/// Returns true when the process should exit immediately after writing to the
+/// parent console (--version / --help). Tauri normally builds the GUI window
+/// subsystem with no attached console, so on Windows we hop onto the parent's
+/// console via AttachConsole before printing.
+fn handle_cli_short_circuit<I: IntoIterator<Item = String>>(args: I) -> bool {
+    let mut want_version = false;
+    let mut want_help = false;
+    for a in args.into_iter().skip(1) {
+        match a.as_str() {
+            "--version" | "-V" => want_version = true,
+            "--help" | "-h" => want_help = true,
+            _ => {}
+        }
+    }
+    if !want_version && !want_help {
+        return false;
+    }
+    attach_parent_console();
+    if want_version {
+        println!("capscr {}", env!("CARGO_PKG_VERSION"));
+    } else {
+        print_help();
+    }
+    true
+}
+
+fn print_help() {
+    println!(
+        "capscr {} — modern HDR-aware screen capture\n\
+        \n\
+        Usage:\n  \
+          capscr [--jump=<kind>]\n  \
+          capscr --version | -V\n  \
+          capscr --help | -h\n\
+        \n\
+        Options:\n  \
+          --jump=<kind>   Trigger a one-shot action and exit. kinds: region, window, fullscreen, captures, hub\n  \
+          --version       Print version and exit\n  \
+          --help          Print this help and exit\n\
+        \n\
+        With no flags, capscr runs in the tray. Click the icon or press a configured hotkey to capture.\n\
+        Hub UI: <hotkeys / tasks / settings / history / marketplace> via tray menu or jump list.\n\
+        Repo:   https://github.com/lintowe/capscr",
+        env!("CARGO_PKG_VERSION")
+    );
+}
+
+#[cfg(windows)]
+fn attach_parent_console() {
+    use windows::Win32::System::Console::{AttachConsole, ATTACH_PARENT_PROCESS};
+    unsafe {
+        let _ = AttachConsole(ATTACH_PARENT_PROCESS);
+    }
+}
+
+#[cfg(not(windows))]
+fn attach_parent_console() {}
 
 fn dispatch_jump(app: &tauri::AppHandle, kind: Option<&str>) {
     use commands::{CaptureModeArg, PostActionArg};

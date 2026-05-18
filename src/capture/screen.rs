@@ -31,6 +31,13 @@ impl ScreenCapture {
         })
     }
 
+    pub fn at_point(x: i32, y: i32) -> Result<Self> {
+        let monitor = Monitor::from_point(x, y)?;
+        Ok(Self {
+            monitor_id: Some(monitor.id()),
+        })
+    }
+
     pub fn all_monitors() -> Result<RgbaImage> {
         const MAX_TOTAL_DIMENSION: i32 = 32768;
 

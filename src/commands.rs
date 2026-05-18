@@ -284,31 +284,42 @@ fn build_upload_service(config: &Config) -> UploadService {
     }
 }
 
-fn capture_active_monitor() -> anyhow::Result<RgbaImage> {
-    let (img, _) = capture_active_monitor_with_hdr()?;
-    Ok(img)
-}
-
 // Returns the tonemapped SDR image alongside the raw HDR bitmap when the
 // source display is HDR. Region / Window captures go through GDI BitBlt and
 // can't produce HDR data, so only ActiveMonitor / Fullscreen call this.
+// Targets the monitor under the cursor; the primary monitor was previously
+// hardcoded and surprised multi-display users.
 fn capture_active_monitor_with_hdr(
 ) -> anyhow::Result<(RgbaImage, Option<crate::capture::HdrBitmap>)> {
     use crate::capture::HdrCapture;
+    let target = cursor_position();
     if HdrCapture::is_hdr_available() {
         let hdr = HdrCapture::new();
-        if let Ok(pair) = hdr.capture_with_hdr() {
+        if let Ok(pair) = hdr.capture_with_hdr_at(target) {
             return Ok(pair);
         }
     }
-    use crate::capture::list_monitors;
-    let monitors = list_monitors().unwrap_or_default();
-    let capture = if let Some(primary) = monitors.iter().find(|m| m.is_primary) {
-        ScreenCapture::with_monitor(primary.id)
-    } else {
-        ScreenCapture::primary().unwrap_or_else(|_| ScreenCapture::new())
+    let capture = match target {
+        Some((x, y)) => ScreenCapture::at_point(x, y).unwrap_or_else(|_| {
+            ScreenCapture::primary().unwrap_or_else(|_| ScreenCapture::new())
+        }),
+        None => ScreenCapture::primary().unwrap_or_else(|_| ScreenCapture::new()),
     };
     Ok((capture.capture()?, None))
+}
+
+#[cfg(windows)]
+fn cursor_position() -> Option<(i32, i32)> {
+    use windows::Win32::Foundation::POINT;
+    use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
+    let mut p = POINT::default();
+    unsafe { GetCursorPos(&mut p).ok()? };
+    Some((p.x, p.y))
+}
+
+#[cfg(not(windows))]
+fn cursor_position() -> Option<(i32, i32)> {
+    None
 }
 
 // If the user opted into HDR preservation and the source produced an HDR
