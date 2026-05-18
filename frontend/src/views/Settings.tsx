@@ -6,12 +6,12 @@ import { Save } from "lucide-solid";
 
 type Pane = "general" | "capture" | "hdr" | "hotkeys" | "notify";
 
-const PANES: { id: Pane; num: string; label: string }[] = [
-  { id: "general", num: "i", label: "general" },
-  { id: "capture", num: "ii", label: "capture" },
-  { id: "hdr", num: "iii", label: "hdr" },
-  { id: "hotkeys", num: "iv", label: "hotkeys" },
-  { id: "notify", num: "v", label: "notify" },
+const PANES: { id: Pane; label: string }[] = [
+  { id: "general", label: "general" },
+  { id: "capture", label: "capture" },
+  { id: "hdr", label: "hdr" },
+  { id: "hotkeys", label: "hotkeys" },
+  { id: "notify", label: "notify" },
 ];
 
 export function Settings() {
@@ -46,7 +46,6 @@ export function Settings() {
   return (
     <>
       <div class="view-head">
-        <span class="num">i</span>
         <h1>settings</h1>
         <span class="lede">
           <code>%appdata%\capscr\config.toml</code>
@@ -64,7 +63,6 @@ export function Settings() {
               onClick={() => setPane(p.id)}
               disabled={!config()}
             >
-              <span style="opacity: .55; margin-right: 8px;">{p.num}</span>
               {p.label}
             </button>
           )}
@@ -128,7 +126,7 @@ type Patch = <K extends keyof AppConfig>(key: K, value: AppConfig[K]) => void;
 function GeneralPane(props: { c: AppConfig; patch: Patch }) {
   const c = () => props.c;
   return (
-    <Section num="i" title="output">
+    <Section title="output">
       <div class="field">
         <label class="field-label">directory</label>
         <div class="field-control">
@@ -203,7 +201,7 @@ function CapturePane(props: { c: AppConfig; patch: Patch }) {
   const c = () => props.c;
   return (
     <>
-      <Section num="i" title="cursor">
+      <Section title="cursor">
         <div class="field">
           <label class="field-label">show cursor</label>
           <div class="field-control">
@@ -226,7 +224,7 @@ function CapturePane(props: { c: AppConfig; patch: Patch }) {
         </div>
       </Section>
 
-      <Section num="ii" title="gif recording">
+      <Section title="gif recording">
         <div class="field">
           <label class="field-label">frame rate</label>
           <div class="field-control">
@@ -273,7 +271,7 @@ function CapturePane(props: { c: AppConfig; patch: Patch }) {
 function HdrPane(props: { c: AppConfig; patch: Patch }) {
   const c = () => props.c;
   return (
-    <Section num="i" title="skiv tonemap">
+    <Section title="skiv tonemap">
       <div class="field">
         <label class="field-label">mode</label>
         <div class="field-control">
@@ -371,7 +369,7 @@ function HdrPane(props: { c: AppConfig; patch: Patch }) {
 function HotkeysPane(props: { c: AppConfig; patch: Patch }) {
   const c = () => props.c;
   return (
-    <Section num="i" title="quick hotkeys">
+    <Section title="quick hotkeys">
       <div class="field">
         <label class="field-label">screenshot</label>
         <div class="field-control">
@@ -404,7 +402,7 @@ function NotifyPane(props: { c: AppConfig; patch: Patch }) {
   const c = () => props.c;
   return (
     <>
-      <Section num="i" title="feedback">
+      <Section title="feedback">
         <div class="field">
           <label class="field-label">os notifications</label>
           <div class="field-control">
@@ -449,7 +447,7 @@ function NotifyPane(props: { c: AppConfig; patch: Patch }) {
         </div>
       </Section>
 
-      <Section num="ii" title="system">
+      <Section title="system">
         <div class="field">
           <label class="field-label">launch on boot</label>
           <div class="field-control">

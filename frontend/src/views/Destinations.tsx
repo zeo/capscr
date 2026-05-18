@@ -30,7 +30,6 @@ export function Destinations() {
   return (
     <>
       <div class="view-head">
-        <span class="num">iv</span>
         <h1>destinations</h1>
         <span class="lede">where uploads go. https only.</span>
       </div>
@@ -47,7 +46,7 @@ export function Destinations() {
       >
         {(c) => (
           <>
-            <Section num="i" title="active target">
+            <Section title="active target">
               <div class="field">
                 <label class="field-label">target</label>
                 <div class="field-control">
@@ -89,7 +88,7 @@ export function Destinations() {
               </div>
             </Section>
 
-            <Section num="ii" title="custom http">
+            <Section title="custom http">
               <div class="field">
                 <label class="field-label">post url</label>
                 <div class="field-control">

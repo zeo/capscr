@@ -48,7 +48,6 @@ export function History() {
   return (
     <>
       <div class="view-head">
-        <span class="num">iii</span>
         <h1>history</h1>
         <span class="lede">
           {entries.loading

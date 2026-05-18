@@ -1,6 +1,6 @@
 [package]
 name = "capscr"
-version = "0.3.15"
+version = "0.3.16"
 edition = "2021"
 description = "A clean, modern screen capture tool with HDR support"
 authors = ["capscr"]

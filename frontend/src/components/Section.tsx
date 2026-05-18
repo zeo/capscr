@@ -1,20 +1,27 @@
-import { JSX } from "solid-js";
+import { JSX, Show } from "solid-js";
 
 interface Props {
-  num: string; // "01"
   title: string;
   desc?: string;
   children: JSX.Element;
 }
 
+/**
+ * Section header reads as an instrument label, not an editorial heading:
+ * `── output ─────────────────` with the description (if any) pulled to
+ * the far right. No counter, no decoration glyph.
+ */
 export function Section(props: Props) {
   return (
     <section class="section">
-      <div class="section-head">
-        <span class="num">{props.num}</span>
-        <span class="title">{props.title}</span>
-        {props.desc && <span class="desc">{props.desc}</span>}
-      </div>
+      <header class="section-head">
+        <span class="section-lead">──</span>
+        <span class="section-title">{props.title}</span>
+        <span class="section-rule" aria-hidden="true" />
+        <Show when={props.desc}>
+          <span class="section-desc">{props.desc}</span>
+        </Show>
+      </header>
       {props.children}
     </section>
   );

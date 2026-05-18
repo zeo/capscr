@@ -39,12 +39,11 @@ export function Marketplace() {
   return (
     <>
       <div class="view-head">
-        <span class="num">v</span>
         <h1>plugins</h1>
         <span class="lede">drop a plugin dir into the folder, reload.</span>
       </div>
 
-      <Section num="i" title="installed">
+      <Section title="installed">
         <div class="row between" style="margin: 4px 0 14px;">
           <div class="btn-row">
             <button class="btn" onClick={openFolder}>
@@ -120,7 +119,7 @@ export function Marketplace() {
         </Show>
       </Section>
 
-      <Section num="ii" title="browse">
+      <Section title="browse">
         <div class="empty">
           <span class="stick" />
           marketplace

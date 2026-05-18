@@ -27,17 +27,17 @@ interface UploadCard {
 
 type Tab = {
   id: "settings" | "tasks" | "history" | "destinations" | "marketplace";
-  num: string;
+  key: string; // single-char keyboard mnemonic shown in brackets, also Alt-N shortcut
   label: string;
   context: string;
 };
 
 const TABS: Tab[] = [
-  { id: "settings", num: "i", label: "settings", context: "settings" },
-  { id: "tasks", num: "ii", label: "tasks", context: "tasks" },
-  { id: "history", num: "iii", label: "history", context: "history" },
-  { id: "destinations", num: "iv", label: "destinations", context: "upload" },
-  { id: "marketplace", num: "v", label: "plugins", context: "plugins" },
+  { id: "settings", key: "s", label: "settings", context: "settings" },
+  { id: "tasks", key: "t", label: "tasks", context: "tasks" },
+  { id: "history", key: "h", label: "history", context: "history" },
+  { id: "destinations", key: "d", label: "destinations", context: "upload" },
+  { id: "marketplace", key: "m", label: "plugins", context: "plugins" },
 ];
 
 export function App() {
@@ -132,7 +132,9 @@ function Hub() {
       <Titlebar context={tab().context} onClose={onClose} />
 
       <aside class="sidebar">
-        <div class="sidebar-label">nav</div>
+        <div class="sidebar-label">
+          <span class="sidebar-label-mark">▮</span> capscr/console
+        </div>
         <nav class="sidebar-nav">
           <For each={TABS}>
             {(t) => (
@@ -141,16 +143,21 @@ function Hub() {
                 class="nav-item"
                 classList={{ "is-active": active() === t.id }}
                 onClick={() => setTab(t)}
+                title={`Alt+${t.key.toUpperCase()}`}
               >
-                <span class="nav-item-num">{t.num}</span>
-                <span>{t.label}</span>
+                <span class="nav-item-key">
+                  <span class="nav-item-bracket">[</span>
+                  {t.key}
+                  <span class="nav-item-bracket">]</span>
+                </span>
+                <span class="nav-item-label">{t.label}</span>
               </button>
             )}
           </For>
         </nav>
         <div class="sidebar-foot">
           <span class="path">~/.capscr</span>
-          <span>v{__APP_VERSION__} / master</span>
+          <span class="build">v{__APP_VERSION__}·rel</span>
         </div>
       </aside>
 
@@ -176,15 +183,24 @@ function Hub() {
 
       <footer class="statusbar">
         <span class="seg" classList={{ "is-ok": !recording(), "is-rec": recording() }}>
-          {recording() ? "● recording" : "ready"}
+          <span class="seg-k">stat</span>
+          <span class="seg-v">{recording() ? "rec" : "rdy"}</span>
         </span>
+        <span class="seg-sep">│</span>
         <span class="seg">
-          {captures.loading
-            ? "..."
-            : `${captures()?.length ?? 0} captures on disk`}
+          <span class="seg-k">cap</span>
+          <span class="seg-v">{captures.loading ? "·" : (captures()?.length ?? 0).toString().padStart(3, "0")}</span>
+        </span>
+        <span class="seg-sep">│</span>
+        <span class="seg">
+          <span class="seg-k">tab</span>
+          <span class="seg-v">{tab().id}</span>
         </span>
         <span class="grow" />
-        <span class="tail">capscr v{__APP_VERSION__}</span>
+        <span class="seg tail">
+          <span class="seg-k">capscr</span>
+          <span class="seg-v">v{__APP_VERSION__}</span>
+        </span>
       </footer>
 
       <Show when={dragOver()}>

@@ -80,7 +80,6 @@ export function Tasks() {
   return (
     <>
       <div class="view-head">
-        <span class="num">ii</span>
         <h1>tasks</h1>
         <span class="lede">
           one hotkey, one capture, one post-action.
