@@ -1,6 +1,6 @@
 [package]
 name = "capscr"
-version = "0.3.28"
+version = "0.3.29"
 edition = "2021"
 description = "A clean, modern screen capture tool with HDR support"
 authors = ["capscr"]
@@ -82,6 +82,12 @@ uuid = { version = "1.0", features = ["v4"] }
 # host re-lands; until then it's a security-advisory liability with no consumer.
 zip = "2.2"
 semver = "1.0"
+
+# Marketplace integrity — sha256 of plugin payload + hex en/decode for the
+# manifest entry. Both already transitive; pinning them as direct deps so the
+# marketplace path doesn't break on upstream churn.
+sha2 = "0.10"
+hex = "0.4"
 
 # Upload destinations: FTP (SFTP planned, currently out of tree)
 suppaftp = { version = "6.0", features = ["native-tls"] }

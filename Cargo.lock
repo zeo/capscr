@@ -564,7 +564,7 @@ dependencies = [
 
 [[package]]
 name = "capscr"
-version = "0.3.28"
+version = "0.3.29"
 dependencies = [
  "anyhow",
  "arboard",
@@ -573,6 +573,7 @@ dependencies = [
  "directories",
  "gif 0.13.3",
  "global-hotkey",
+ "hex",
  "image",
  "imgref",
  "notify-rust",
@@ -582,6 +583,7 @@ dependencies = [
  "semver",
  "serde",
  "serde_json",
+ "sha2",
  "suppaftp",
  "tauri",
  "tauri-build",

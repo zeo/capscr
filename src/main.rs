@@ -7,6 +7,7 @@ mod config;
 mod hotkeys;
 #[cfg(windows)]
 mod jumplist;
+mod marketplace;
 mod overlay;
 mod plugin;
 mod recording;
@@ -153,6 +154,9 @@ fn main() {
             commands::get_autostart,
             commands::list_installed_plugins,
             commands::open_plugins_folder,
+            commands::marketplace_browse,
+            commands::marketplace_install,
+            commands::marketplace_uninstall,
             commands::check_for_updates,
             commands::install_update,
             commands::get_editor_image_path,

@@ -1226,3 +1226,39 @@ pub fn open_plugins_folder(app: AppHandle) -> Result<(), String> {
         .open_path(dir.to_string_lossy().to_string(), None::<&str>)
         .map_err(|e| e.to_string())
 }
+
+#[tauri::command]
+pub async fn marketplace_browse(state: State<'_, AppState>) -> Result<Vec<crate::marketplace::RegistryEntry>, String> {
+    let url = state.config.lock().unwrap().marketplace.registry_url.clone();
+    // reqwest::blocking inside an async command — push to a worker thread so
+    // we don't park the tokio runtime.
+    tokio::task::spawn_blocking(move || crate::marketplace::fetch_registry(&url))
+        .await
+        .map_err(|e| e.to_string())?
+        .map(|reg| reg.plugins)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn marketplace_install(id: String, state: State<'_, AppState>) -> Result<(), String> {
+    let url = state.config.lock().unwrap().marketplace.registry_url.clone();
+    let plugins = plugins_dir()?;
+    tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+        let registry = crate::marketplace::fetch_registry(&url)?;
+        let entry = registry
+            .plugins
+            .iter()
+            .find(|p| p.id == id)
+            .ok_or_else(|| anyhow::anyhow!("plugin '{}' not in registry", id))?;
+        crate::marketplace::install_plugin(&plugins, entry)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn marketplace_uninstall(id: String) -> Result<(), String> {
+    let plugins = plugins_dir()?;
+    crate::marketplace::uninstall_plugin(&plugins, &id).map_err(|e| e.to_string())
+}

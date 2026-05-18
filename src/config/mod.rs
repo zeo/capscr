@@ -33,6 +33,8 @@ pub struct Config {
     pub upload: UploadConfig,
     #[serde(default)]
     pub performance: PerformanceConfig,
+    #[serde(default)]
+    pub marketplace: MarketplaceConfig,
     #[serde(default = "default_capture_tasks")]
     pub capture_tasks: Vec<CaptureTask>,
 }
@@ -373,6 +375,27 @@ pub struct UploadConfig {
     pub imgur_client_id: String,
     #[serde(default)]
     pub ftp: FtpUploadConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MarketplaceConfig {
+    /// JSON endpoint the marketplace browser queries. Defaults to capscr's
+    /// canonical registry on rot.lt. Power users can point at their own
+    /// mirror — must be HTTPS (validated client-side).
+    #[serde(default = "default_marketplace_registry_url")]
+    pub registry_url: String,
+}
+
+impl Default for MarketplaceConfig {
+    fn default() -> Self {
+        Self {
+            registry_url: default_marketplace_registry_url(),
+        }
+    }
+}
+
+fn default_marketplace_registry_url() -> String {
+    "https://rot.lt/capscr/registry.json".to_string()
 }
 
 fn default_imgur_client_id() -> String {
@@ -732,6 +755,7 @@ impl Default for Config {
             post_capture: PostCaptureConfig::default(),
             upload: UploadConfig::default(),
             performance: PerformanceConfig::default(),
+            marketplace: MarketplaceConfig::default(),
             capture_tasks: default_capture_tasks(),
         }
     }

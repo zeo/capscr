@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "updated_unix": 1715990400,
+  "plugins": [
+    {
+      "id": "hello-world",
+      "name": "Hello World",
+      "version": "0.1.0",
+      "description": "Smoke-test plugin. Logs a line when capscr finishes a capture.",
+      "author": "rot",
+      "homepage": "https://rot.lt/capscr/plugins/hello-world",
+      "download_url": "https://rot.lt/capscr/plugins/hello-world-0.1.0.zip",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "size_bytes": 512,
+      "tags": ["example"],
+      "min_capscr_version": "0.3.28",
+      "license": "MIT"
+    },
+    {
+      "id": "ocr-tesseract",
+      "name": "OCR (Tesseract)",
+      "version": "1.0.0",
+      "description": "Extract text from captures via Tesseract. Adds 'OCR' as a post-capture action.",
+      "author": "rot",
+      "homepage": "https://rot.lt/capscr/plugins/ocr-tesseract",
+      "download_url": "https://rot.lt/capscr/plugins/ocr-tesseract-1.0.0.zip",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "size_bytes": 1234567,
+      "tags": ["ocr", "text", "productivity"],
+      "min_capscr_version": "0.3.28",
+      "license": "Apache-2.0"
+    }
+  ]
+}

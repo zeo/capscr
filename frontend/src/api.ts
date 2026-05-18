@@ -94,6 +94,21 @@ export interface InstalledPlugin {
   enabled: boolean;
 }
 
+export interface RegistryEntry {
+  id: string;
+  name: string;
+  version: string;
+  description: string;
+  author: string;
+  homepage: string;
+  download_url: string;
+  sha256: string;
+  size_bytes: number;
+  tags: string[];
+  min_capscr_version: string;
+  license: string;
+}
+
 export interface UpdateInfo {
   version: string;
   current_version: string;
@@ -125,4 +140,7 @@ export const api = {
   checkForUpdates: () => invoke<UpdateInfo | null>("check_for_updates"),
   installUpdate: () => invoke<void>("install_update"),
   isHdrCapture: (path: string) => invoke<boolean>("is_hdr_capture", { path }),
+  marketplaceBrowse: () => invoke<RegistryEntry[]>("marketplace_browse"),
+  marketplaceInstall: (id: string) => invoke<void>("marketplace_install", { id }),
+  marketplaceUninstall: (id: string) => invoke<void>("marketplace_uninstall", { id }),
 };
