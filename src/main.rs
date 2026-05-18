@@ -367,13 +367,24 @@ fn spawn_hotkey_thread(
         for task in &initial_tasks {
             hm.try_register(task.id.clone(), &task.hotkey);
         }
-        for err in hm.take_errors() {
+        let startup_errors = hm.take_errors();
+        for err in &startup_errors {
             tracing::warn!(
                 "hotkey '{}' for task '{}' failed: {}",
                 err.hotkey,
                 err.task_id,
                 err.reason
             );
+        }
+        // Surface startup hotkey errors via OS notification — the hub window
+        // may not be open yet, so emit_error toasts would be lost.
+        if !startup_errors.is_empty() {
+            let summary = startup_errors
+                .iter()
+                .map(|e| format!("'{}' ({}): {}", e.hotkey, e.task_id, e.reason))
+                .collect::<Vec<_>>()
+                .join("\n");
+            let _ = clipboard::show_notification("capscr: hotkey conflicts", &summary);
         }
 
         loop {

@@ -2,6 +2,7 @@ import { createResource, createSignal, For, Match, Show, Switch } from "solid-js
 import { Section } from "../components/Section";
 import { HotkeyInput } from "../components/HotkeyInput";
 import { api, AppConfig } from "../api";
+import { setConfigDirty } from "../dirty";
 import { Save } from "lucide-solid";
 
 type Pane = "general" | "capture" | "hdr" | "hotkeys" | "notify";
@@ -26,6 +27,7 @@ export function Settings() {
     const c = config();
     if (!c) return;
     mutate({ ...c, [key]: value });
+    setConfigDirty(true);
   };
 
   const save = async () => {
@@ -36,6 +38,7 @@ export function Settings() {
     try {
       await api.setConfig(c);
       setStatus({ tone: "ok", msg: "saved." });
+      setConfigDirty(false);
     } catch (e) {
       setStatus({ tone: "err", msg: `err: ${e}` });
     } finally {

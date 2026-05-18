@@ -2,6 +2,7 @@ import { createResource, createSignal, Show } from "solid-js";
 import { Save } from "lucide-solid";
 import { Section } from "../components/Section";
 import { api, AppConfig } from "../api";
+import { setConfigDirty } from "../dirty";
 
 export function Destinations() {
   const [config, { mutate }] = createResource<AppConfig>(api.getConfig);
@@ -16,6 +17,7 @@ export function Destinations() {
     try {
       await api.setConfig(c);
       setStatus({ tone: "ok", msg: "saved." });
+      setConfigDirty(false);
     } catch (e) {
       setStatus({ tone: "err", msg: `err: ${e}` });
     }
@@ -25,6 +27,7 @@ export function Destinations() {
     const c = config();
     if (!c) return;
     mutate({ ...c, upload: next });
+    setConfigDirty(true);
   };
 
   return (

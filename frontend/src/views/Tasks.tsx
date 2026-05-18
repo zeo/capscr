@@ -1,6 +1,7 @@
 import { createResource, createSignal, For, Show } from "solid-js";
 import { Plus, Save, Trash2 } from "lucide-solid";
 import { api, AppConfig, CaptureTask } from "../api";
+import { setConfigDirty } from "../dirty";
 import { HotkeyInput } from "../components/HotkeyInput";
 
 const CAPTURE_MODES: { id: CaptureTask["capture_mode"]; label: string }[] = [
@@ -38,6 +39,7 @@ export function Tasks() {
     const next = [...c.capture_tasks];
     next[index] = { ...next[index], ...partial } as CaptureTask;
     mutate({ ...c, capture_tasks: next });
+    setConfigDirty(true);
   };
 
   const deleteTask = (index: number) => {
@@ -45,6 +47,7 @@ export function Tasks() {
     if (!c) return;
     const next = c.capture_tasks.filter((_, i) => i !== index);
     mutate({ ...c, capture_tasks: next });
+    setConfigDirty(true);
   };
 
   const addTask = () => {
@@ -60,6 +63,7 @@ export function Tasks() {
       target_destination: null,
     };
     mutate({ ...c, capture_tasks: [...c.capture_tasks, newTask] });
+    setConfigDirty(true);
   };
 
   const save = async () => {
@@ -72,6 +76,7 @@ export function Tasks() {
         tone: "ok",
         msg: `${c.capture_tasks.length} task${c.capture_tasks.length === 1 ? "" : "s"} live.`,
       });
+      setConfigDirty(false);
     } catch (e) {
       setStatus({ tone: "err", msg: `err: ${e}` });
     }

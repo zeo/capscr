@@ -6,6 +6,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { Copy, ExternalLink, Trash2, X } from "lucide-solid";
 import { Titlebar } from "./components/Titlebar";
 import { api } from "./api";
+import { configDirty, setConfigDirty } from "./dirty";
 import { Settings } from "./views/Settings";
 import { History } from "./views/History";
 import { Destinations } from "./views/Destinations";
@@ -66,9 +67,17 @@ function Hub() {
   let nextId = 1;
   const unlisteners: UnlistenFn[] = [];
 
+  // Cap so error storms (network down, upload retry loops, etc.) can't pile
+  // up unbounded DOM nodes — anything older than the cap is silently dropped.
+  const MAX_TOASTS = 8;
+  const MAX_UPLOADS = 6;
+
   const pushToast = (kind: string, msg: string) => {
     const id = nextId++;
-    setToasts((cur) => [...cur, { id, kind, msg }]);
+    setToasts((cur) => {
+      const next = [...cur, { id, kind, msg }];
+      return next.length > MAX_TOASTS ? next.slice(-MAX_TOASTS) : next;
+    });
     setTimeout(() => {
       setToasts((cur) => cur.filter((t) => t.id !== id));
     }, 6000);
@@ -76,7 +85,10 @@ function Hub() {
 
   const pushUpload = (url: string, deleteUrl: string | null) => {
     const id = nextId++;
-    setUploads((cur) => [...cur, { id, url, deleteUrl }]);
+    setUploads((cur) => {
+      const next = [...cur, { id, url, deleteUrl }];
+      return next.length > MAX_UPLOADS ? next.slice(-MAX_UPLOADS) : next;
+    });
   };
 
   onMount(async () => {
@@ -115,7 +127,19 @@ function Hub() {
 
   onCleanup(() => unlisteners.forEach((u) => u()));
 
+  const confirmDiscardEdits = (): boolean =>
+    !configDirty() || window.confirm("Discard unsaved settings changes?");
+
+  const tryChangeTab = (next: Tab) => {
+    if (tab().id === next.id) return;
+    if (!confirmDiscardEdits()) return;
+    setConfigDirty(false);
+    setTab(next);
+  };
+
   const onClose = () => {
+    if (!confirmDiscardEdits()) return;
+    setConfigDirty(false);
     const c = config();
     // Default to hide-to-tray when config hasn't loaded yet — destroying the
     // window on early X-clicks just forces a slow re-create on the next tray
@@ -142,7 +166,7 @@ function Hub() {
                 type="button"
                 class="nav-item"
                 classList={{ "is-active": active() === t.id }}
-                onClick={() => setTab(t)}
+                onClick={() => tryChangeTab(t)}
                 title={`Alt+${t.key.toUpperCase()}`}
               >
                 <span class="nav-item-key">
@@ -196,6 +220,13 @@ function Hub() {
           <span class="seg-k">tab</span>
           <span class="seg-v">{tab().id}</span>
         </span>
+        <Show when={configDirty()}>
+          <span class="seg-sep">│</span>
+          <span class="seg is-dirty">
+            <span class="seg-k">edit</span>
+            <span class="seg-v">unsaved</span>
+          </span>
+        </Show>
         <span class="grow" />
         <span class="seg tail">
           <span class="seg-k">capscr</span>
