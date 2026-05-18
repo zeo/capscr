@@ -16,10 +16,11 @@ import {
   ZoomIn,
   ZoomOut,
   Maximize2,
+  Circle,
 } from "lucide-solid";
 import { Titlebar } from "../components/Titlebar";
 
-type Tool = "arrow" | "rect" | "text" | "blur";
+type Tool = "arrow" | "rect" | "text" | "blur" | "step";
 
 interface Point {
   x: number;
@@ -57,7 +58,15 @@ interface BlurOp {
   radius: number;
 }
 
-type Op = ArrowOp | RectOp | TextOp | BlurOp;
+interface StepOp {
+  kind: "step";
+  center: Point;
+  number: number;
+  color: string;
+  radius: number;
+}
+
+type Op = ArrowOp | RectOp | TextOp | BlurOp | StepOp;
 
 const COLORS = ["#ef4444", "#f59e0b", "#10b981", "#3b82f6", "#a855f7", "#ffffff", "#000000"];
 
@@ -71,6 +80,7 @@ export function Editor() {
   const [color, setColor] = createSignal<string>(COLORS[0]);
   const [strokeWidth, setStrokeWidth] = createSignal(3);
   const [textSize, setTextSize] = createSignal(24);
+  const [stepRadius, setStepRadius] = createSignal(16);
   const [ops, setOps] = createSignal<Op[]>([]);
   const [redoStack, setRedoStack] = createSignal<Op[]>([]);
   // 1.0 = fit-to-wrap (handled by CSS max-width); >1.0 = explicit pixel scale.
@@ -182,6 +192,7 @@ export function Editor() {
     else if (e.key === "3") {
       setTool("text");
     } else if (e.key === "4") setTool("blur");
+    else if (e.key === "5") setTool("step");
   };
 
   const onWheelZoom = (e: WheelEvent) => {
@@ -281,7 +292,34 @@ export function Editor() {
       case "blur":
         applyBlur(ctx, op);
         break;
+      case "step":
+        drawStep(ctx, op);
+        break;
     }
+  }
+
+  function drawStep(ctx: CanvasRenderingContext2D, op: StepOp) {
+    const r = op.radius;
+    ctx.beginPath();
+    ctx.arc(op.center.x, op.center.y, r, 0, Math.PI * 2);
+    ctx.fillStyle = op.color;
+    ctx.fill();
+    // contrasting outline so the pin reads on busy backgrounds
+    ctx.strokeStyle = "rgba(0,0,0,0.6)";
+    ctx.lineWidth = Math.max(1, r * 0.08);
+    ctx.stroke();
+    const label = String(op.number);
+    // white text on the colored disk
+    ctx.fillStyle = "#ffffff";
+    ctx.font = `bold ${Math.round(r * 1.1)}px "Fira Code", "Hack", ui-monospace, monospace`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.shadowColor = "rgba(0,0,0,0.65)";
+    ctx.shadowBlur = 3;
+    ctx.fillText(label, op.center.x, op.center.y + 1);
+    ctx.shadowBlur = 0;
+    ctx.textAlign = "start";
+    ctx.textBaseline = "alphabetic";
   }
 
   function drawArrow(
@@ -369,7 +407,30 @@ export function Editor() {
         const el = document.getElementById("editor-text-input") as HTMLInputElement | null;
         el?.focus();
       }, 0);
+    } else if (t === "step") {
+      // Click-to-drop, not drag. Auto-increment from the highest existing
+      // step number so undo/redo stays consistent.
+      const next = nextStepNumber();
+      const op: StepOp = {
+        kind: "step",
+        center: p,
+        number: next,
+        color: color(),
+        radius: stepRadius(),
+      };
+      setOps([...ops(), op]);
+      setRedoStack([]);
+      dragStart = null;
+      redraw();
     }
+  }
+
+  function nextStepNumber(): number {
+    let max = 0;
+    for (const op of ops()) {
+      if (op.kind === "step" && op.number > max) max = op.number;
+    }
+    return max + 1;
   }
 
   function onMouseMove(e: MouseEvent) {
@@ -583,6 +644,15 @@ export function Editor() {
           >
             <Droplet size={14} stroke-width={1.5} />
           </button>
+          <button
+            type="button"
+            class="tool"
+            classList={{ "is-active": tool() === "step" }}
+            onClick={() => setTool("step")}
+            title="numbered step (5)"
+          >
+            <Circle size={14} stroke-width={1.5} />
+          </button>
         </div>
 
         <div class="editor-colors">
@@ -601,7 +671,7 @@ export function Editor() {
         </div>
 
         <div class="editor-controls">
-          <Show when={tool() !== "text" && tool() !== "blur"}>
+          <Show when={tool() === "arrow" || tool() === "rect"}>
             <label class="ctrl">
               <span>stroke</span>
               <input
@@ -625,6 +695,19 @@ export function Editor() {
                 onInput={(e) => setTextSize(parseInt(e.currentTarget.value))}
               />
               <span class="ctrl-val">{textSize()}</span>
+            </label>
+          </Show>
+          <Show when={tool() === "step"}>
+            <label class="ctrl">
+              <span>size</span>
+              <input
+                type="range"
+                min={8}
+                max={48}
+                value={stepRadius()}
+                onInput={(e) => setStepRadius(parseInt(e.currentTarget.value))}
+              />
+              <span class="ctrl-val">{stepRadius()}</span>
             </label>
           </Show>
         </div>

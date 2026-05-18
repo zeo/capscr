@@ -6,8 +6,6 @@
 // The COM calls here are all best-effort: if any step fails, the jump list
 // silently stays as Windows' default. We never want this to block startup.
 
-#![cfg(windows)]
-
 use std::ffi::OsStr;
 use std::os::windows::ffi::OsStrExt;
 use windows::core::{Interface, PCWSTR};
