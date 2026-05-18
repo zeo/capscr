@@ -55,6 +55,11 @@ pub fn get_config(state: State<AppState>) -> Result<Config, String> {
 }
 
 #[tauri::command]
+pub fn get_default_config() -> Config {
+    Config::default()
+}
+
+#[tauri::command]
 pub fn set_config(config: Config, app: AppHandle, state: State<AppState>) -> Result<(), String> {
     config.validate().map_err(|e| e.to_string())?;
     config.save().map_err(|e| e.to_string())?;

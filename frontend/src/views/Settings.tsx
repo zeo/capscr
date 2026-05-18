@@ -1,9 +1,10 @@
 import { createResource, createSignal, For, Match, Show, Switch } from "solid-js";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { Section } from "../components/Section";
 import { HotkeyInput } from "../components/HotkeyInput";
 import { api, AppConfig } from "../api";
 import { setConfigDirty } from "../dirty";
-import { Save } from "lucide-solid";
+import { FolderOpen, RotateCcw, Save } from "lucide-solid";
 
 type Pane = "general" | "capture" | "hdr" | "hotkeys" | "notify";
 
@@ -43,6 +44,21 @@ export function Settings() {
       setStatus({ tone: "err", msg: `err: ${e}` });
     } finally {
       setSaving(false);
+    }
+  };
+
+  const resetDefaults = async () => {
+    if (!window.confirm("Replace every setting with the defaults? Tasks, hotkeys, and destinations will all reset.")) {
+      return;
+    }
+    setStatus({ tone: "", msg: "loading defaults..." });
+    try {
+      const defaults = await api.getDefaultConfig();
+      mutate(defaults);
+      setConfigDirty(true);
+      setStatus({ tone: "ok", msg: "loaded — click save to commit." });
+    } catch (e) {
+      setStatus({ tone: "err", msg: `err: ${e}` });
     }
   };
 
@@ -112,6 +128,16 @@ export function Settings() {
                   {status()!.msg}
                 </span>
               </Show>
+              <button
+                class="btn"
+                data-variant="ghost"
+                onClick={resetDefaults}
+                disabled={saving()}
+                title="restore every setting to its default"
+              >
+                <RotateCcw size={12} stroke-width={1.5} />
+                reset
+              </button>
               <button class="btn" onClick={save} disabled={saving()}>
                 <Save size={12} stroke-width={1.5} />
                 {saving() ? "saving..." : "save"}
@@ -128,18 +154,42 @@ type Patch = <K extends keyof AppConfig>(key: K, value: AppConfig[K]) => void;
 
 function GeneralPane(props: { c: AppConfig; patch: Patch }) {
   const c = () => props.c;
+  const pickDirectory = async () => {
+    const picked = await openDialog({
+      directory: true,
+      multiple: false,
+      defaultPath: c().output.directory,
+      title: "Pick output directory",
+    });
+    if (typeof picked === "string" && picked.length > 0) {
+      props.patch("output", { ...c().output, directory: picked });
+    }
+  };
   return (
     <Section title="output">
       <div class="field">
         <label class="field-label">directory</label>
         <div class="field-control">
-          <input
-            type="text"
-            value={c().output.directory}
-            onInput={(e) =>
-              props.patch("output", { ...c().output, directory: e.currentTarget.value })
-            }
-          />
+          <div class="input-row">
+            <input
+              type="text"
+              value={c().output.directory}
+              onInput={(e) =>
+                props.patch("output", { ...c().output, directory: e.currentTarget.value })
+              }
+            />
+            <button
+              type="button"
+              class="btn"
+              data-variant="ghost"
+              data-size="xs"
+              onClick={pickDirectory}
+              title="browse for folder"
+            >
+              <FolderOpen size={11} stroke-width={1.5} />
+              browse
+            </button>
+          </div>
           <span class="field-hint">absolute path or %env% template</span>
         </div>
       </div>

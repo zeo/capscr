@@ -99,6 +99,7 @@ export interface UpdateInfo {
 
 export const api = {
   getConfig: () => invoke<AppConfig>("get_config"),
+  getDefaultConfig: () => invoke<AppConfig>("get_default_config"),
   setConfig: (config: AppConfig) => invoke<void>("set_config", { config }),
   takeScreenshot: (mode: CaptureMode, post: PostAction) =>
     invoke<void>("take_screenshot", { mode, post }),

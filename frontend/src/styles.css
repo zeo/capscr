@@ -561,6 +561,18 @@ textarea,
   min-width: 0;
 }
 
+.input-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 360px;
+}
+
+.input-row input[type="text"] {
+  flex: 1;
+  max-width: none;
+}
+
 input[type="text"],
 input[type="number"],
 input[type="password"],

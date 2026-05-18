@@ -104,7 +104,18 @@ function Hub() {
         "capscr://upload-success",
         (e) => pushUpload(e.payload.url, e.payload.delete_url),
       ),
-      await listen("capscr://recording-started", () => setRecording(true)),
+      await listen<string>("capscr://recording-started", (e) => {
+        setRecording(true);
+        // Tell the user how to stop — re-pressing the task's hotkey toggles
+        // the recording off, but that's not obvious. Look up the hotkey from
+        // config so the toast is concrete.
+        const taskId = e.payload;
+        const task = config()?.capture_tasks.find((t) => t.id === taskId);
+        const hint = task?.hotkey
+          ? `recording — press ${task.hotkey} again to stop`
+          : `recording — press the same hotkey again to stop`;
+        pushToast("recording", hint);
+      }),
       await listen("capscr://recording-stopped", () => setRecording(false)),
     );
 

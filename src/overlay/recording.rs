@@ -200,7 +200,10 @@ mod windows_impl {
                 if wparam.0 == TIMER_ID {
                     let current = FLASH_STATE.load(Ordering::SeqCst);
                     FLASH_STATE.store(!current, Ordering::SeqCst);
-                    let _ = InvalidateRect(hwnd, None, true);
+                    // erase=false: WM_PAINT already FillRects the entire client
+                    // area each frame, so letting GDI erase to white first just
+                    // adds a flicker frame.
+                    let _ = InvalidateRect(hwnd, None, false);
                 }
                 LRESULT(0)
             }
