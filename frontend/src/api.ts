@@ -85,6 +85,7 @@ export interface HistoryEntry {
   size_bytes: number;
   modified_unix: number;
   is_gif: boolean;
+  has_hdr: boolean;
 }
 
 export interface InstalledPlugin {

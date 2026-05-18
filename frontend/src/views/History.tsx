@@ -164,6 +164,15 @@ export function History() {
                     <span>{formatBytes(e.size_bytes)}</span>
                     <span>·</span>
                     <span>{formatDate(e.modified_unix)}</span>
+                    <Show when={e.has_hdr}>
+                      <span>·</span>
+                      <span
+                        class="tile-tag"
+                        title="HDR sidecar present (.hdr.png)"
+                      >
+                        HDR
+                      </span>
+                    </Show>
                   </div>
                 </div>
               </div>

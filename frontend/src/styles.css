@@ -987,6 +987,16 @@ button.btn,
   font-variant-numeric: tabular-nums;
 }
 
+.tile-tag {
+  color: var(--text-2);
+  border: 1px solid var(--rule);
+  padding: 0 4px;
+  font-size: 9px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  line-height: 1.4;
+}
+
 .tile-actions {
   position: absolute;
   inset: 0 0 auto 0;

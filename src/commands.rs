@@ -47,6 +47,7 @@ pub struct HistoryEntry {
     pub size_bytes: u64,
     pub modified_unix: u64,
     pub is_gif: bool,
+    pub has_hdr: bool,
 }
 
 #[tauri::command]
@@ -453,9 +454,19 @@ pub fn list_captures(state: State<AppState>) -> Result<Vec<HistoryEntry>, String
         return Ok(Vec::new());
     }
 
-    let mut entries: Vec<HistoryEntry> = Vec::new();
+    // First pass: collect every present filename so we can mark each SDR
+    // entry's `has_hdr` by looking up a `<stem>.hdr.png` sidecar.
+    let mut filenames: std::collections::HashSet<String> = std::collections::HashSet::new();
     let read = std::fs::read_dir(&dir).map_err(|e| e.to_string())?;
-    for entry in read.flatten() {
+    let dir_entries: Vec<_> = read.flatten().collect();
+    for entry in &dir_entries {
+        if let Some(name) = entry.file_name().to_str() {
+            filenames.insert(name.to_string());
+        }
+    }
+
+    let mut entries: Vec<HistoryEntry> = Vec::new();
+    for entry in &dir_entries {
         let path = entry.path();
         if !path.is_file() {
             continue;
@@ -466,6 +477,16 @@ pub fn list_captures(state: State<AppState>) -> Result<Vec<HistoryEntry>, String
             .map(|s| s.to_lowercase())
             .unwrap_or_default();
         if !matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp") {
+            continue;
+        }
+        let filename = path
+            .file_name()
+            .and_then(|f| f.to_str())
+            .unwrap_or("")
+            .to_string();
+        // Hide raw HDR sidecars from the History grid — they're paired with
+        // an SDR file and surface via the `has_hdr` badge on that entry.
+        if filename.ends_with(".hdr.png") {
             continue;
         }
         let metadata = match entry.metadata() {
@@ -479,16 +500,19 @@ pub fn list_captures(state: State<AppState>) -> Result<Vec<HistoryEntry>, String
             .map(|d| d.as_secs())
             .unwrap_or(0);
 
+        let has_hdr = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .map(|stem| filenames.contains(&format!("{stem}.hdr.png")))
+            .unwrap_or(false);
+
         entries.push(HistoryEntry {
             path: path.to_string_lossy().to_string(),
-            filename: path
-                .file_name()
-                .and_then(|f| f.to_str())
-                .unwrap_or("")
-                .to_string(),
+            filename,
             size_bytes: metadata.len(),
             modified_unix,
             is_gif: ext == "gif",
+            has_hdr,
         });
     }
     entries.sort_by_key(|e| std::cmp::Reverse(e.modified_unix));
