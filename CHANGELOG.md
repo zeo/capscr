@@ -6,6 +6,19 @@ format follows [keep-a-changelog](https://keepachangelog.com/en/1.1.0/) loosely.
 
 nothing pending. drop ideas in github issues.
 
+## [0.3.30] — 2026-05-19
+
+### added
+- README cross-links — `rot.lt/work/capscr` as homepage, `rot.lt/work/capscr/plugins` as marketplace, `lintowe/capscr-plugins` as source-of-truth registry. New `## Plugins` section pointing at `docs/marketplace.md` as the publishing contract.
+
+### changed
+- Marketplace tab empty-state copy bumped to match rot.lt's wording for a unified read across the two surfaces: *"there are no plugins to install yet — the plugin runtime (event hooks, wasm host) ships in v0.4."*
+
+## [0.3.29] — 2026-05-18
+
+### added
+- **Marketplace client** — functional end-to-end. New `src/marketplace.rs` (registry fetch + sha256-verified plugin install + zip extraction with path-traversal defence). New Tauri commands `marketplace_browse / marketplace_install / marketplace_uninstall`. Marketplace tab rewritten with live browse / install / uninstall UI. Config field `marketplace.registry_url` (defaults to `https://rot.lt/capscr/registry.json`). Server-side contract documented in `docs/marketplace.md` + `docs/registry.example.json`.
+
 ## [0.3.25] — 2026-05-18
 
 ### added

@@ -2,6 +2,11 @@
 
 Fast HDR-aware Windows screen capture, designed to replace ShareX without the bloat.
 
+- **Homepage**: [rot.lt/work/capscr](https://rot.lt/work/capscr)
+- **Plugins**: [rot.lt/work/capscr/plugins](https://rot.lt/work/capscr/plugins) · publishing contract: [`docs/marketplace.md`](docs/marketplace.md) · source-of-truth registry: [`lintowe/capscr-plugins`](https://github.com/lintowe/capscr-plugins)
+- **Downloads**: [GitHub Releases](https://github.com/lintowe/capscr/releases) (MSI + NSIS, signed updater)
+- **License**: MIT
+
 ## Features
 
 - **HDR captures that look right.** Windows.Graphics.Capture FP16 → SKIV ICtCp luminance-only tonemap (per-frame MaxCLL via P99, chroma preservation) → SDR PNG. Per-monitor SDR-white detection.
@@ -78,13 +83,21 @@ cargo tauri build
 
 For signed bundles set `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` before `cargo tauri build`. Generate a keypair with `cargo tauri signer generate -w ./signing/key.priv` and paste the public key into `tauri.conf.json` → `plugins.updater.pubkey`.
 
+## Plugins
+
+capscr ships with a built-in marketplace. Open the hub (tray → click capscr), switch to the **plugins** tab, and the in-app browser fetches [`rot.lt/capscr/registry.json`](https://rot.lt/capscr/registry.json) to show available plugins. Click `[install]` and capscr downloads the plugin zip, verifies its sha256, and extracts it to `%APPDATA%/com.capscr.capscr/data/plugins/<id>/`.
+
+The marketplace contract — what `registry.json` must look like, what goes in a plugin zip, how publishing works — is documented in [`docs/marketplace.md`](docs/marketplace.md). The source-of-truth registry lives at [`lintowe/capscr-plugins`](https://github.com/lintowe/capscr-plugins).
+
+**Status:** the plugin runtime (event hooks, WASM host) arrives in v0.4. Today's plugins install as metadata-only; they appear under "installed" but don't yet execute any logic.
+
 ## Roadmap
 
 Work that did not make 0.3.1:
 
-- In-app canvas editor (arrows, text, blur, step numbers, crop) — currently shells out to the OS default image app for the `OpenEditor` post-action.
-- WASM plugin host with manifest-declared permissions + marketplace fed by github.com/lintowe/capscr-plugins.
-- HDR-preserved output (JPEG-XL, AVIF with PQ, PNG+cICP).
+- In-app canvas editor (arrows, text, blur, step numbers, crop) — _shipped 0.3.10+_.
+- WASM plugin host with manifest-declared permissions + marketplace fed by github.com/lintowe/capscr-plugins — _marketplace client shipped 0.3.29; runtime host in v0.4_.
+- HDR-preserved output (JPEG-XL, AVIF with PQ, PNG+cICP) — _PNG+cICP shipped 0.3.28 for HDR10 source; scRGB and HLG in v0.4. JXL/AVIF deferred._
 - SFTP destination (planned behind a `sftp` feature flag once the russh API stabilises).
 - DPAPI / Windows credential vault for stored FTP passwords (currently plaintext in `config.toml`).
 

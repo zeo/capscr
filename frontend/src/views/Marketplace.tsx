@@ -205,7 +205,10 @@ export function Marketplace() {
                   <div class="empty">
                     <span class="stick" />
                     empty registry
-                    <p>no plugins listed at the configured registry URL.</p>
+                    <p>
+                      there are no plugins to install yet — the plugin
+                      runtime (event hooks, wasm host) ships in v0.4.
+                    </p>
                   </div>
                 }
               >
