@@ -19,6 +19,7 @@ const MAX_RESPONSE_PATH_LEN: usize = 128;
 pub enum UploadService {
     #[default]
     Imgur,
+    ImgurWithClientId(String),
     Custom(CustomUploader),
     Ftp(FtpTarget),
 }
@@ -244,7 +245,8 @@ impl ImageUploader {
             return Err(anyhow!("Upload too large ({} bytes)", data.len()));
         }
         match service {
-            UploadService::Imgur => self.upload_imgur(data, mime, file_name),
+            UploadService::Imgur => self.upload_imgur(data, mime, file_name, "546c25a59c58ad7"),
+            UploadService::ImgurWithClientId(cid) => self.upload_imgur(data, mime, file_name, cid),
             UploadService::Custom(config) => self.upload_custom(data, mime, file_name, config),
             UploadService::Ftp(target) => upload_ftp(data, file_name, target),
         }
@@ -256,9 +258,13 @@ impl ImageUploader {
         Ok(buffer.into_inner())
     }
 
-    fn upload_imgur(&self, data: &[u8], mime: &str, file_name: &str) -> Result<UploadResult> {
-        let client_id = "546c25a59c58ad7";
-
+    fn upload_imgur(
+        &self,
+        data: &[u8],
+        mime: &str,
+        file_name: &str,
+        client_id: &str,
+    ) -> Result<UploadResult> {
         let form = reqwest::blocking::multipart::Form::new().part(
             "image",
             reqwest::blocking::multipart::Part::bytes(data.to_vec())

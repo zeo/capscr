@@ -67,6 +67,28 @@ export function Destinations() {
                   </select>
                 </div>
               </div>
+              <Show when={c().upload.destination === "Imgur"}>
+                <div class="field">
+                  <label class="field-label">imgur client-id</label>
+                  <div class="field-control">
+                    <input
+                      type="text"
+                      placeholder="546c25a59c58ad7"
+                      value={c().upload.imgur_client_id}
+                      onInput={(e) =>
+                        patch({
+                          ...c().upload,
+                          imgur_client_id: e.currentTarget.value,
+                        })
+                      }
+                    />
+                    <span class="field-hint">
+                      leave blank for capscr's shared key; paste your own from
+                      api.imgur.com to avoid rate-limit pile-ups.
+                    </span>
+                  </div>
+                </div>
+              </Show>
               <div class="field">
                 <label class="field-label">copy url to clipboard</label>
                 <div class="field-control">

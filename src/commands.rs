@@ -191,7 +191,14 @@ pub fn run_capture_pipeline(
 
 fn build_upload_service(config: &Config) -> UploadService {
     match config.upload.destination {
-        UploadDestination::Imgur => UploadService::Imgur,
+        UploadDestination::Imgur => {
+            let cid = config.upload.imgur_client_id.trim();
+            if cid.is_empty() || cid == "546c25a59c58ad7" {
+                UploadService::Imgur
+            } else {
+                UploadService::ImgurWithClientId(cid.to_string())
+            }
+        }
         UploadDestination::Custom => UploadService::Custom(CustomUploader {
             name: "Custom".to_string(),
             request_url: config.upload.custom_url.clone(),

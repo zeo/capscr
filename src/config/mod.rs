@@ -357,8 +357,16 @@ pub struct UploadConfig {
     pub custom_url: String,
     pub custom_form_name: String,
     pub custom_response_path: String,
+    #[serde(default = "default_imgur_client_id")]
+    pub imgur_client_id: String,
     #[serde(default)]
     pub ftp: FtpUploadConfig,
+}
+
+fn default_imgur_client_id() -> String {
+    // Built-in bot Client-ID. Power users who hit Imgur's per-app rate limit
+    // (or want their own analytics) can paste a personal Client-ID over this.
+    "546c25a59c58ad7".to_string()
 }
 
 impl Default for UploadConfig {
@@ -369,6 +377,7 @@ impl Default for UploadConfig {
             custom_url: String::new(),
             custom_form_name: String::from("file"),
             custom_response_path: String::from("url"),
+            imgur_client_id: default_imgur_client_id(),
             ftp: FtpUploadConfig::default(),
         }
     }

@@ -132,6 +132,20 @@ function Hub() {
         });
     }, 4000);
 
+    // Alt+S/T/H/D/M for tab switching — sidebar titles advertise these so
+    // the keybind has to actually work. We respect the dirty-state guard so
+    // Alt-jumping out of unsaved edits still prompts.
+    const onKey = (ev: KeyboardEvent) => {
+      if (!ev.altKey || ev.ctrlKey || ev.metaKey || ev.shiftKey) return;
+      const k = ev.key.toLowerCase();
+      const target = TABS.find((t) => t.key === k);
+      if (!target) return;
+      ev.preventDefault();
+      tryChangeTab(target);
+    };
+    window.addEventListener("keydown", onKey);
+    unlisteners.push(() => window.removeEventListener("keydown", onKey));
+
     const dragUnlisten = await win.onDragDropEvent(async (e) => {
       const payload = e.payload;
       if (payload.type === "enter" || payload.type === "over") {

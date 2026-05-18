@@ -37,6 +37,7 @@ export interface UploadConfig {
   custom_url: string;
   custom_form_name: string;
   custom_response_path: string;
+  imgur_client_id: string;
 }
 
 export interface UiConfig {
