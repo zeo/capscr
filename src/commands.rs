@@ -171,6 +171,24 @@ pub fn run_capture_pipeline(
     post: PostActionArg,
     app: &AppHandle,
 ) -> anyhow::Result<()> {
+    run_capture_pipeline_inner(mode, post, app, None)
+}
+
+pub fn run_capture_pipeline_with_target(
+    mode: CaptureModeArg,
+    post: PostActionArg,
+    app: &AppHandle,
+    upload_target: Option<crate::config::TaskUploadTarget>,
+) -> anyhow::Result<()> {
+    run_capture_pipeline_inner(mode, post, app, upload_target)
+}
+
+fn run_capture_pipeline_inner(
+    mode: CaptureModeArg,
+    post: PostActionArg,
+    app: &AppHandle,
+    upload_target: Option<crate::config::TaskUploadTarget>,
+) -> anyhow::Result<()> {
     use std::sync::atomic::Ordering;
     let gate_state = app.state::<AppState>();
     // Drop the trigger when a previous capture is still in flight (likely
@@ -316,7 +334,7 @@ pub fn run_capture_pipeline(
         PostActionArg::Prompt => PostCaptureAction::PromptUser,
     };
 
-    let result = run_post_action(app, &state, &image, post_action);
+    let result = run_post_action(app, &state, &image, post_action, upload_target);
     // Drop the HDR sidecar next to the file we just wrote — never against
     // a previous capture's path, which is what reading state.last_save
     // would surface for clipboard-only / upload-only actions.
@@ -330,31 +348,57 @@ pub fn run_capture_pipeline(
     result.map(|_| ())
 }
 
+fn build_ftp_service(config: &Config) -> UploadService {
+    UploadService::Ftp(FtpTarget {
+        host: config.upload.ftp.host.clone(),
+        port: config.upload.ftp.port,
+        username: config.upload.ftp.username.clone(),
+        password: config.upload.ftp.password.clone(),
+        remote_dir: config.upload.ftp.remote_dir.clone(),
+        use_tls: config.upload.ftp.use_tls,
+        public_url_template: config.upload.ftp.public_url_template.clone(),
+    })
+}
+
+fn build_imgur_service(config: &Config) -> UploadService {
+    let cid = config.upload.imgur_client_id.trim();
+    if cid.is_empty() || cid == "546c25a59c58ad7" {
+        UploadService::Imgur
+    } else {
+        UploadService::ImgurWithClientId(cid.to_string())
+    }
+}
+
+// Build an upload service, optionally overriding the global destination with a
+// per-task target. `target_override = None` uses the global config destination.
 fn build_upload_service(config: &Config) -> UploadService {
-    match config.upload.destination {
-        UploadDestination::Imgur => {
-            let cid = config.upload.imgur_client_id.trim();
-            if cid.is_empty() || cid == "546c25a59c58ad7" {
-                UploadService::Imgur
-            } else {
-                UploadService::ImgurWithClientId(cid.to_string())
-            }
-        }
-        UploadDestination::Custom => UploadService::Custom(CustomUploader {
+    build_upload_service_for_target(config, None)
+}
+
+fn build_upload_service_for_target(
+    config: &Config,
+    target_override: Option<crate::config::TaskUploadTarget>,
+) -> UploadService {
+    use crate::config::TaskUploadTarget;
+    match target_override {
+        None => match config.upload.destination {
+            UploadDestination::Imgur => build_imgur_service(config),
+            UploadDestination::Custom => UploadService::Custom(CustomUploader {
+                name: "Custom".to_string(),
+                request_url: config.upload.custom_url.clone(),
+                file_form_name: config.upload.custom_form_name.clone(),
+                response_url_path: config.upload.custom_response_path.clone(),
+            }),
+            UploadDestination::Ftp => build_ftp_service(config),
+        },
+        Some(TaskUploadTarget::Imgur) => build_imgur_service(config),
+        Some(TaskUploadTarget::Custom) => UploadService::Custom(CustomUploader {
             name: "Custom".to_string(),
             request_url: config.upload.custom_url.clone(),
             file_form_name: config.upload.custom_form_name.clone(),
             response_url_path: config.upload.custom_response_path.clone(),
         }),
-        UploadDestination::Ftp => UploadService::Ftp(FtpTarget {
-            host: config.upload.ftp.host.clone(),
-            port: config.upload.ftp.port,
-            username: config.upload.ftp.username.clone(),
-            password: config.upload.ftp.password.clone(),
-            remote_dir: config.upload.ftp.remote_dir.clone(),
-            use_tls: config.upload.ftp.use_tls,
-            public_url_template: config.upload.ftp.public_url_template.clone(),
-        }),
+        Some(TaskUploadTarget::Ftp) => build_ftp_service(config),
     }
 }
 
@@ -453,6 +497,7 @@ fn run_post_action(
     state: &AppState,
     image: &RgbaImage,
     action: PostCaptureAction,
+    upload_target: Option<crate::config::TaskUploadTarget>,
 ) -> anyhow::Result<Option<PathBuf>> {
     let config = state.config.lock().unwrap().clone();
 
@@ -473,7 +518,7 @@ fn run_post_action(
 
     let do_upload = || -> anyhow::Result<crate::upload::UploadResult> {
         let uploader = crate::upload::shared_uploader()?;
-        let service = build_upload_service(&config);
+        let service = build_upload_service_for_target(&config, upload_target);
         let result = uploader.upload(image, &service)?;
         *state.last_upload.lock().unwrap() = Some(UploadRecord {
             url: result.url.clone(),
@@ -911,8 +956,16 @@ pub fn save_edited_image(
         let _ = std::fs::remove_file(&tmp);
         return Err(format!("rename failed: {e}"));
     }
-    // Surface the edit to the History tab so its tile picks up the new
-    // modified time without a manual reload.
+    // the hdr sidecar (<stem>.hdr.png) was captured from the original unedited
+    // pixels — once we overwrite the sdr file the sidecar no longer represents
+    // the image content, so remove it rather than leaving a misleading orphan
+    if let Some(stem) = buf.file_stem().and_then(|s| s.to_str()) {
+        let sidecar = buf.with_file_name(format!("{stem}.hdr.png"));
+        if sidecar.exists() {
+            let _ = std::fs::remove_file(&sidecar);
+        }
+    }
+    // surface the edit to the History tab so its tile picks up the new mtime
     let _ = app.emit("capscr://capture-saved", buf.to_string_lossy().to_string());
     Ok(())
 }
@@ -1057,7 +1110,7 @@ pub fn run_task(task: &CaptureTask, app: &AppHandle) -> anyhow::Result<()> {
         TaskCaptureMode::RegionGif => unreachable!("handled above"),
     };
     let post = PostActionArg::from_task_action(task.post_action);
-    run_capture_pipeline(mode, post, app)
+    run_capture_pipeline_with_target(mode, post, app, task.target_destination)
 }
 
 fn run_gif_task(task: &CaptureTask, app: &AppHandle) -> anyhow::Result<()> {
@@ -1067,14 +1120,24 @@ fn run_gif_task(task: &CaptureTask, app: &AppHandle) -> anyhow::Result<()> {
 
     if matches!(current, RecordingState::Recording) {
         // Same task hotkey re-pressed → user wants to stop.
-        // Different task hotkey while recording → ignore to avoid losing the in-progress recording.
+        // Different task hotkey while recording → reject and tell the user.
         if active_id.as_deref() == Some(task.id.as_str()) {
             stop_gif_recording(app);
         } else {
-            tracing::info!(
-                "ignoring gif start request from '{}': '{:?}' is already recording",
-                task.id,
-                active_id
+            let active_name = {
+                let cfg = state.config.lock().unwrap();
+                active_id.as_deref()
+                    .and_then(|id| cfg.capture_tasks.iter().find(|t| t.id == id))
+                    .map(|t| t.name.clone())
+                    .unwrap_or_else(|| "another task".to_string())
+            };
+            emit_error(
+                app,
+                "recording",
+                &format!(
+                    "already recording '{}' — press its hotkey again to stop first",
+                    active_name
+                ),
             );
         }
         return Ok(());
@@ -1222,6 +1285,7 @@ fn apply_gif_post_action(task: &CaptureTask, app: &AppHandle, path: &std::path::
             let app2 = app.clone();
             let path = path.to_path_buf();
             let cfg = cfg.clone();
+            let target_override = task.target_destination;
             std::thread::spawn(move || {
                 let bytes = match std::fs::read(&path) {
                     Ok(b) => b,
@@ -1237,7 +1301,7 @@ fn apply_gif_post_action(task: &CaptureTask, app: &AppHandle, path: &std::path::
                         return;
                     }
                 };
-                let service = build_upload_service(&cfg);
+                let service = build_upload_service_for_target(&cfg, target_override);
                 let file_name = path
                     .file_name()
                     .and_then(|n| n.to_str())

@@ -140,15 +140,15 @@ export function Destinations() {
                       min={1}
                       max={65535}
                       value={c().upload.ftp.port}
-                      onInput={(e) =>
-                        patch({
-                          ...c().upload,
-                          ftp: {
-                            ...c().upload.ftp,
-                            port: parseInt(e.currentTarget.value || "21"),
-                          },
-                        })
-                      }
+                      onInput={(e) => {
+                        const v = parseInt(e.currentTarget.value);
+                        if (!isNaN(v) && v >= 1 && v <= 65535) {
+                          patch({
+                            ...c().upload,
+                            ftp: { ...c().upload.ftp, port: v },
+                          });
+                        }
+                      }}
                     />
                     <span class="field-hint">21 plain, 990 implicit tls</span>
                   </div>
@@ -208,6 +208,7 @@ export function Destinations() {
                       <input
                         type="checkbox"
                         checked={c().upload.ftp.use_tls}
+                        disabled
                         onChange={(e) =>
                           patch({
                             ...c().upload,
@@ -215,9 +216,7 @@ export function Destinations() {
                           })
                         }
                       />
-                      <span class="check-label">
-                        {c().upload.ftp.use_tls ? "ftps (explicit tls)" : "plain ftp"}
-                      </span>
+                      <span class="check-label">plain ftp only — ftps planned for v0.4</span>
                     </label>
                   </div>
                 </div>

@@ -85,10 +85,16 @@ export function History() {
     }, 4000);
   };
 
+  const [deleteError, setDeleteError] = createSignal<string | null>(null);
   const doDelete = (path: string) => {
     api.deleteCapture(path).then(() => {
       setConfirmDelete(null);
+      setDeleteError(null);
       refetch();
+    }).catch((e: unknown) => {
+      setConfirmDelete(null);
+      setDeleteError(String(e));
+      setTimeout(() => setDeleteError(null), 6000);
     });
   };
 
@@ -150,6 +156,12 @@ export function History() {
           reload
         </button>
       </div>
+
+      <Show when={deleteError()}>
+        <div class="flash" data-tone="err" style="margin-bottom: 12px;">
+          delete failed: {deleteError()}
+        </div>
+      </Show>
 
       <Show
         when={entries() && entries()!.length > 0}

@@ -229,12 +229,15 @@ export function Tasks() {
                             <div class="field-control">
                               <select
                                 value={task.post_action}
-                                onChange={(e) =>
-                                  updateTask(i(), {
-                                    post_action: e.currentTarget
-                                      .value as never,
-                                  })
-                                }
+                                onChange={(e) => {
+                                  const action = e.currentTarget.value as CaptureTask["post_action"];
+                                  const update: Partial<CaptureTask> = { post_action: action };
+                                  // auto-pick imgur when switching to upload so target is never null
+                                  if (action === "upload" && !task.target_destination) {
+                                    update.target_destination = "imgur";
+                                  }
+                                  updateTask(i(), update);
+                                }}
                               >
                                 <For each={POST_ACTIONS}>
                                   {(p) => (

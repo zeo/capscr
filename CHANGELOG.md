@@ -6,6 +6,17 @@ format follows [keep-a-changelog](https://keepachangelog.com/en/1.1.0/) loosely.
 
 nothing pending. drop ideas in github issues.
 
+## [0.3.37] — 2026-05-19
+
+### fixed
+- **per-task upload target now actually works** — `task.target_destination` was serialized, shown in the tasks ui, and saved to config, but never read by the backend. every upload silently used the global destination from the destinations tab regardless of what was set per-task. now wired through `run_capture_pipeline` and `apply_gif_post_action` so a task with target `imgur` uploads to imgur even if the global setting is `ftp`, and vice versa.
+- **hdr sidecar deleted on editor save** — `save_edited_image` overwrote the sdr png but left a stale `<stem>.hdr.png` sidecar next to it. the history grid would still show the hdr badge, and the sidecar represented different pixels than the edited image. now removed on every editor save.
+- **second gif-task hotkey shows a toast instead of silently doing nothing** — pressing a different gif task's hotkey while recording now emits "already recording '…' — press its hotkey again to stop first" instead of silently ignoring the press.
+- **ftps checkbox disabled in ftp ui** — the checkbox was enabled but the backend rejects `use_tls=true` with "not yet implemented". the checkbox is now disabled with a "plain ftp only — ftps planned for v0.4" label.
+- **ftp port field rejects non-numeric input** — `parseInt(value)` could produce `NaN` if the user typed letters or cleared the field. now validates before patching config.
+- **tasks auto-set upload target to imgur when switching to "upload"** — switching a task's post-action to "upload" with no target selected left `target_destination = null`, which would silently use the global config destination at runtime. now defaults to `"imgur"` on the action switch so the user always sees a concrete selection.
+- **deleteCapture error now visible** — `api.deleteCapture()` had no `.catch()` handler; a permission-denied or file-locked failure was silently swallowed. the error is now shown as an inline flash message for 6 seconds.
+
 ## [0.3.36] — 2026-05-19
 
 ### fixed
