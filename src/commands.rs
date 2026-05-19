@@ -961,6 +961,9 @@ pub fn save_edited_image(
     if !canonical_parent.starts_with(&dir_canonical) {
         return Err("Path is outside the configured output directory".into());
     }
+    if bytes.is_empty() {
+        return Err("Image data is empty".into());
+    }
     if bytes.len() > 100 * 1024 * 1024 {
         return Err("Image too large to save".into());
     }
