@@ -436,7 +436,14 @@ fn spawn_hotkey_thread(
         loop {
             cb::select! {
                 recv(hotkey_rx) -> ev => {
-                    let Ok(ev) = ev else { break };
+                    let Ok(ev) = ev else {
+                        // global-hotkey channel closed — this should not happen
+                        // during normal operation. if it does, hotkeys are dead
+                        // until restart.
+                        tracing::error!("global hotkey channel closed unexpectedly; all hotkeys disabled");
+                        commands::emit_error(&app, "hotkey", "hotkey listener stopped — restart capscr to restore hotkeys");
+                        break;
+                    };
                     if ev.state != global_hotkey::HotKeyState::Pressed {
                         continue;
                     }
