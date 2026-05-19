@@ -201,6 +201,26 @@ pub fn run_capture_pipeline(
         CaptureModeArg::ActiveMonitor => SelectionResult::FullScreen,
     };
 
+    // Honour the configured pre-capture delay (used to set up menus / hover
+    // states between picking the region and the actual grab). Skip when the
+    // selection was cancelled or a color was picked — neither produces a
+    // pixel capture.
+    if matches!(
+        selection,
+        SelectionResult::Region(_) | SelectionResult::Window(_) | SelectionResult::FullScreen
+    ) {
+        let delay_ms = app
+            .state::<AppState>()
+            .config
+            .lock()
+            .unwrap()
+            .capture
+            .delay_ms;
+        if delay_ms > 0 {
+            std::thread::sleep(Duration::from_millis(delay_ms as u64));
+        }
+    }
+
     let (image, hdr_bitmap) = match selection {
         SelectionResult::Cancelled => return Ok(()),
         SelectionResult::Region(rect) => (RegionCapture::new(rect).capture()?, None),

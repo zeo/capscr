@@ -29,6 +29,7 @@ nothing pending. drop ideas in github issues.
 - **deleting a capture from History orphaned its HDR sidecar** — `delete_capture` only removed the SDR file, leaving `<stem>.hdr.png` on disk. Now removes both atomically (best-effort on the sidecar).
 - **DXGI staging texture stayed mapped if `Vec::with_capacity` OOM'd** — the manual `Unmap` calls had to be repeated at every error path. Replaced with a `MapGuard` Drop struct so the unmap is unconditional, even on panic.
 - **uploads didn't retry transient network failures** — a flaky link / 5xx burp during an imgur upload returned an error immediately. Now retries 3 times with 300ms → 600ms backoff, but only for transient markers (timeout, connection reset, 502/503/504, TLS handshake, DNS, etc) — never for auth errors or response-shape errors. New tests `transient_classifier_retries_network_failures` and `transient_classifier_skips_real_failures` lock the policy.
+- **`capture.delay_ms` setting was dead code** — exposed in Settings, accepted in config, validated on save, but never actually slept. The capture pipeline now honours it: after the selector returns (or immediately for Active Monitor mode) the pipeline sleeps for `delay_ms` before grabbing pixels. Useful for capturing tooltips / menus that need a moment to appear.
 - silence a clippy `duplicated attribute` warning on `src/jumplist.rs` — the module is already gated `#[cfg(windows)]` at the use-site, so the inner `#![cfg(windows)]` was redundant.
 
 ## [0.3.30] — 2026-05-19
