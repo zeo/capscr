@@ -177,7 +177,7 @@ export function Marketplace() {
                         class="btn"
                         data-variant="ghost"
                         data-size="xs"
-                        disabled={busyId() === p.id}
+                        disabled={busyId() !== null}
                         onClick={() => toggleEnabled(p)}
                       >
                         <Power size={11} stroke-width={1.5} />
@@ -187,7 +187,7 @@ export function Marketplace() {
                         class="btn"
                         data-variant="ghost"
                         data-size="xs"
-                        disabled={busyId() === p.id}
+                        disabled={busyId() !== null}
                         onClick={() => uninstall(p)}
                       >
                         <Trash2 size={11} stroke-width={1.5} />
@@ -309,7 +309,7 @@ export function Marketplace() {
                               <button
                                 class="btn"
                                 data-size="xs"
-                                disabled={busyId() === entry.id}
+                                disabled={busyId() !== null}
                                 onClick={() => install(entry)}
                               >
                                 <Download size={11} stroke-width={1.5} />

@@ -263,7 +263,11 @@ fn run_capture_pipeline_inner(
             let mut cb = ClipboardManager::new()?;
             cb.copy_text(&hex)?;
             let state = app.state::<AppState>();
-            let show = state.config.lock().unwrap().ui.show_notifications;
+            let (show, play_sound) = {
+                let cfg = state.config.lock().unwrap();
+                (cfg.ui.show_notifications, cfg.post_capture.play_sound)
+            };
+            Sound::Screenshot.play_if_enabled(play_sound);
             if show {
                 let _ = show_notification("Color picked", &hex);
             }

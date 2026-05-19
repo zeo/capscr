@@ -207,16 +207,17 @@ mod windows_impl {
 
             let screen_dc = GetDC(None);
             let mem_dc = CreateCompatibleDC(screen_dc);
-            let bitmap = CreateCompatibleBitmap(screen_dc, virt_width, virt_height);
-            let old_bitmap = SelectObject(mem_dc, bitmap);
-
-            BitBlt(mem_dc, 0, 0, virt_width, virt_height, screen_dc, virt_x, virt_y, SRCCOPY).ok();
-
-            SelectObject(mem_dc, old_bitmap);
+            if !mem_dc.is_invalid() {
+                let bitmap = CreateCompatibleBitmap(screen_dc, virt_width, virt_height);
+                if !bitmap.is_invalid() {
+                    let old_bitmap = SelectObject(mem_dc, bitmap);
+                    BitBlt(mem_dc, 0, 0, virt_width, virt_height, screen_dc, virt_x, virt_y, SRCCOPY).ok();
+                    SelectObject(mem_dc, old_bitmap);
+                    *SCREEN_BITMAP.lock().unwrap() = Some(bitmap.0 as isize);
+                }
+                *SCREEN_DC.lock().unwrap() = Some(mem_dc.0 as isize);
+            }
             ReleaseDC(None, screen_dc);
-
-            *SCREEN_BITMAP.lock().unwrap() = Some(bitmap.0 as isize);
-            *SCREEN_DC.lock().unwrap() = Some(mem_dc.0 as isize);
 
             let instance = match GetModuleHandleW(PCWSTR::null()) {
                 Ok(i) => i,
