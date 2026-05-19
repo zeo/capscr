@@ -262,59 +262,64 @@ impl GifRecorder {
             }
         }
 
-        let file = OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(path)?;
-        let mut encoder = Encoder::new(file, width, height, &[])?;
-        encoder.set_repeat(Repeat::Infinite)?;
+        // Scope the encoder so it's dropped (and its file handle closed/flushed)
+        // before we check the file size with metadata(). On Windows, an open
+        // file handle prevents accurate metadata reads and may block deletion.
+        {
+            let file = OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .open(path)?;
+            let mut encoder = Encoder::new(file, width, height, &[])?;
+            encoder.set_repeat(Repeat::Infinite)?;
 
-        let fps = self.settings.fps.clamp(1, 60);
-        let delay = (100.0 / fps as f64).clamp(2.0, 100.0) as u16;
+            let fps = self.settings.fps.clamp(1, 60);
+            let delay = (100.0 / fps as f64).clamp(2.0, 100.0) as u16;
 
-        let filter = if self.settings.quality >= 80 {
-            image::imageops::FilterType::Lanczos3
-        } else if self.settings.quality >= 50 {
-            image::imageops::FilterType::Triangle
-        } else {
-            image::imageops::FilterType::Nearest
-        };
-
-        for captured in frames.iter() {
-            let resized = if captured.image.width() != orig_width
-                || captured.image.height() != orig_height
-            {
-                image::imageops::resize(
-                    &captured.image,
-                    orig_width,
-                    orig_height,
-                    filter,
-                )
+            let filter = if self.settings.quality >= 80 {
+                image::imageops::FilterType::Lanczos3
+            } else if self.settings.quality >= 50 {
+                image::imageops::FilterType::Triangle
             } else {
-                captured.image.clone()
+                image::imageops::FilterType::Nearest
             };
 
-            let rgba_data: Vec<u8> = resized.into_raw();
-            let pixel_count = (width as usize).saturating_mul(height as usize);
-            let rgb_capacity = pixel_count.saturating_mul(3);
+            for captured in frames.iter() {
+                let resized = if captured.image.width() != orig_width
+                    || captured.image.height() != orig_height
+                {
+                    image::imageops::resize(
+                        &captured.image,
+                        orig_width,
+                        orig_height,
+                        filter,
+                    )
+                } else {
+                    captured.image.clone()
+                };
 
-            if rgb_capacity > 64 * 1024 * 1024 {
-                return Err(anyhow!("Frame too large to encode"));
+                let rgba_data: Vec<u8> = resized.into_raw();
+                let pixel_count = (width as usize).saturating_mul(height as usize);
+                let rgb_capacity = pixel_count.saturating_mul(3);
+
+                if rgb_capacity > 64 * 1024 * 1024 {
+                    return Err(anyhow!("Frame too large to encode"));
+                }
+
+                let mut rgb_data: Vec<u8> = Vec::with_capacity(rgb_capacity);
+
+                for chunk in rgba_data.chunks_exact(4) {
+                    rgb_data.push(chunk[0]);
+                    rgb_data.push(chunk[1]);
+                    rgb_data.push(chunk[2]);
+                }
+
+                let mut frame = Frame::from_rgb(width, height, &rgb_data);
+                frame.delay = delay;
+                encoder.write_frame(&frame)?;
             }
-
-            let mut rgb_data: Vec<u8> = Vec::with_capacity(rgb_capacity);
-
-            for chunk in rgba_data.chunks_exact(4) {
-                rgb_data.push(chunk[0]);
-                rgb_data.push(chunk[1]);
-                rgb_data.push(chunk[2]);
-            }
-
-            let mut frame = Frame::from_rgb(width, height, &rgb_data);
-            frame.delay = delay;
-            encoder.write_frame(&frame)?;
-        }
+        } // encoder and file handle dropped here — all bytes flushed before size check
 
         if let Ok(metadata) = std::fs::metadata(path) {
             if metadata.len() > MAX_GIF_FILE_SIZE {

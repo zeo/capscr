@@ -282,12 +282,11 @@ function CapturePane(props: { c: AppConfig; patch: Patch }) {
               max={5000}
               step={100}
               value={c().capture.delay_ms}
-              onInput={(e) =>
-                props.patch("capture", {
-                  ...c().capture,
-                  delay_ms: parseInt(e.currentTarget.value || "0"),
-                })
-              }
+              onInput={(e) => {
+                const v = parseInt(e.currentTarget.value || "0");
+                if (!isNaN(v) && v >= 0 && v <= 5000)
+                  props.patch("capture", { ...c().capture, delay_ms: v });
+              }}
             />
             <span class="field-hint">ms before grabbing pixels — useful for tooltips / menus (0 = instant)</span>
           </div>
@@ -303,12 +302,11 @@ function CapturePane(props: { c: AppConfig; patch: Patch }) {
               min={1}
               max={60}
               value={c().capture.gif_fps}
-              onInput={(e) =>
-                props.patch("capture", {
-                  ...c().capture,
-                  gif_fps: parseInt(e.currentTarget.value || "15"),
-                })
-              }
+              onInput={(e) => {
+                const v = parseInt(e.currentTarget.value || "15");
+                if (!isNaN(v) && v >= 1 && v <= 60)
+                  props.patch("capture", { ...c().capture, gif_fps: v });
+              }}
             />
             <span class="field-hint">fps, 1-60</span>
           </div>
@@ -321,14 +319,11 @@ function CapturePane(props: { c: AppConfig; patch: Patch }) {
               min={1}
               max={300}
               value={c().capture.gif_max_duration_secs}
-              onInput={(e) =>
-                props.patch("capture", {
-                  ...c().capture,
-                  gif_max_duration_secs: parseInt(
-                    e.currentTarget.value || "30",
-                  ),
-                })
-              }
+              onInput={(e) => {
+                const v = parseInt(e.currentTarget.value || "30");
+                if (!isNaN(v) && v >= 1 && v <= 300)
+                  props.patch("capture", { ...c().capture, gif_max_duration_secs: v });
+              }}
             />
             <span class="field-hint">seconds, auto-stops</span>
           </div>

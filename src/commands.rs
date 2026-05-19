@@ -540,10 +540,22 @@ fn run_post_action(
             Ok(Some(path))
         }
         PostCaptureAction::CopyToClipboard => {
-            do_clipboard()?;
+            // treat clipboard contention as a soft failure — consistent with
+            // SaveAndCopy which already does this (the capture itself succeeded)
+            let clipboard_ok = do_clipboard().is_ok();
             Sound::Screenshot.play_if_enabled(config.post_capture.play_sound);
             if config.ui.show_notifications {
-                let _ = show_notification("Copied", "Capture on clipboard");
+                let title = if clipboard_ok {
+                    "Copied"
+                } else {
+                    "Clipboard busy"
+                };
+                let body = if clipboard_ok {
+                    "Capture on clipboard"
+                } else {
+                    "Capture ready but clipboard was occupied"
+                };
+                let _ = show_notification(title, body);
             }
             Ok(None)
         }
@@ -1215,11 +1227,15 @@ fn start_gif_recording(
 
 fn stop_gif_recording(app: &AppHandle) {
     let state = app.state::<AppState>();
-    *state.recording_task_id.lock().unwrap() = None;
-    let mut guard = state.gif_recorder.lock().unwrap();
-    if let Some(rec) = guard.as_mut() {
-        rec.stop();
+    // stop the capture thread first, then clear task_id so the monitor thread
+    // doesn't call finalize before the stop signal has been sent to the encoder
+    {
+        let mut guard = state.gif_recorder.lock().unwrap();
+        if let Some(rec) = guard.as_mut() {
+            rec.stop();
+        }
     }
+    *state.recording_task_id.lock().unwrap() = None;
 }
 
 fn finalize_gif_recording(task: &CaptureTask, app: &AppHandle) {

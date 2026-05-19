@@ -69,6 +69,15 @@ export function Tasks() {
   const save = async () => {
     const c = config();
     if (!c) return;
+
+    // Duplicate hotkey guard — two tasks sharing a hotkey means only one fires
+    const bound = c.capture_tasks.map((t) => t.hotkey).filter(Boolean);
+    const dupes = bound.filter((h, i) => bound.indexOf(h) !== i);
+    if (dupes.length > 0) {
+      setStatus({ tone: "err", msg: `duplicate hotkey: ${[...new Set(dupes)].join(", ")} — each task needs a unique key combo` });
+      return;
+    }
+
     setStatus({ tone: "", msg: "re-registering hotkeys..." });
     try {
       await api.setConfig(c);

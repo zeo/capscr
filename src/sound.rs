@@ -34,11 +34,14 @@ impl Sound {
         // suppresses the system "ding" if the data is invalid; SND_NOSTOP avoids
         // cutting off a currently-playing capscr cue.
         unsafe {
-            let _ = PlaySoundW(
+            let ok = PlaySoundW(
                 PCWSTR(data.as_ptr() as *const u16),
                 None,
                 SND_MEMORY | SND_ASYNC | SND_NODEFAULT | SND_NOSTOP,
             );
+            if !ok.as_bool() {
+                tracing::warn!("PlaySoundW failed for {:?}", self);
+            }
         }
     }
 

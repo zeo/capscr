@@ -3,7 +3,7 @@
 use anyhow::{anyhow, Result};
 use image::RgbaImage;
 use std::io::Cursor;
-use std::net::{IpAddr, ToSocketAddrs};
+use std::net::{IpAddr, Ipv4Addr, ToSocketAddrs};
 use std::sync::OnceLock;
 use std::time::Duration;
 
@@ -71,7 +71,37 @@ impl ImageUploader {
         let client = reqwest::blocking::Client::builder()
             .timeout(Duration::from_secs(UPLOAD_TIMEOUT_SECS))
             .user_agent("capscr/1.0")
-            .redirect(reqwest::redirect::Policy::limited(MAX_REDIRECTS))
+            // validate each redirect target so an attacker-controlled server
+            // can't redirect uploads to a private/internal IP (SSRF)
+            .redirect(reqwest::redirect::Policy::custom(|attempt| {
+                if attempt.previous().len() >= MAX_REDIRECTS {
+                    return attempt.error("too many redirects");
+                }
+                let url = attempt.url();
+                if url.scheme() != "https" {
+                    return attempt.error("redirect to non-https url blocked");
+                }
+                if let Some(host) = url.host_str() {
+                    let h = host.to_lowercase();
+                    let blocked = [
+                        "localhost", "127.0.0.1", "0.0.0.0",
+                        "metadata.google.internal", "metadata.google.com",
+                        "instance-data",
+                    ];
+                    if blocked.iter().any(|b| h == *b || h.ends_with(&format!(".{b}"))) {
+                        return attempt.error("redirect to blocked host");
+                    }
+                    if h.starts_with("169.254.") {
+                        return attempt.error("redirect to link-local/metadata ip blocked");
+                    }
+                    if ImageUploader::is_private_ip_string(&h) {
+                        return attempt.error("redirect to private ip blocked");
+                    }
+                } else {
+                    return attempt.error("redirect has no host");
+                }
+                attempt.follow()
+            }))
             .build()?;
         Ok(Self { client })
     }
@@ -88,7 +118,22 @@ impl ImageUploader {
                     || ipv4.octets()[0] == 100 && (ipv4.octets()[1] & 0xC0) == 64
                     || ipv4.octets() == [169, 254, 169, 254]
             }
-            IpAddr::V6(ipv6) => ipv6.is_loopback() || ipv6.is_unspecified(),
+            IpAddr::V6(ipv6) => {
+                if ipv6.is_loopback() || ipv6.is_unspecified() {
+                    return true;
+                }
+                let o = ipv6.octets();
+                // ULA: fc00::/7
+                if o[0] & 0xFE == 0xFC { return true; }
+                // link-local: fe80::/10
+                if o[0] == 0xFE && (o[1] & 0xC0) == 0x80 { return true; }
+                // IPv4-mapped: ::ffff:0:0/96 — check the embedded IPv4
+                if o[..10] == [0u8; 10] && o[10] == 0xFF && o[11] == 0xFF {
+                    let v4 = IpAddr::V4(Ipv4Addr::new(o[12], o[13], o[14], o[15]));
+                    return Self::is_private_ip(v4);
+                }
+                false
+            }
         }
     }
 
@@ -174,6 +219,8 @@ impl ImageUploader {
     }
 
     pub(crate) fn is_private_ip_string(host: &str) -> bool {
+        // url::Url::host_str() wraps IPv6 in brackets; strip before pattern matching
+        let host = host.trim_matches(|c| c == '[' || c == ']');
         if host.starts_with("10.") || host.starts_with("192.168.") {
             return true;
         }
@@ -354,6 +401,8 @@ impl ImageUploader {
             return Err(anyhow!("URL too long"));
         }
 
+        Self::validate_returned_url(link)?;
+
         let delete_hash = json
             .get("data")
             .and_then(|d| d.get("deletehash"))
@@ -503,15 +552,12 @@ pub fn shared_uploader() -> Result<&'static ImageUploader> {
 }
 
 pub fn copy_url_to_clipboard(url: &str) -> Result<()> {
-    use arboard::Clipboard;
-
     if url.len() > MAX_URL_LEN {
         return Err(anyhow!("URL too long"));
     }
-
-    let mut clipboard = Clipboard::new()?;
-    clipboard.set_text(url.to_string())?;
-    Ok(())
+    // use ClipboardManager's retry logic so clipboard contention doesn't drop
+    // the upload URL silently (direct arboard call fails immediately if busy)
+    crate::clipboard::ClipboardManager::new()?.copy_text(url)
 }
 
 fn generate_remote_filename() -> String {
@@ -716,7 +762,13 @@ pub fn upload_ftp(data: &[u8], file_name: &str, target: &FtpTarget) -> Result<Up
         );
     }
 
-    let url = build_url(&target.public_url_template, &filename)?;
+    let url = match build_url(&target.public_url_template, &filename) {
+        Ok(u) => u,
+        Err(e) => {
+            close_quietly(stream);
+            return Err(e);
+        }
+    };
     let result = UploadResult {
         url,
         delete_url: None,

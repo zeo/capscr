@@ -832,7 +832,11 @@ impl Config {
             fs::create_dir_all(&dir)?;
             if let Some(path) = Self::config_path() {
                 let content = toml::to_string_pretty(self)?;
-                fs::write(&path, content)?;
+                // atomic write: write to a temp file, then rename so a crash
+                // mid-write can't leave config.toml truncated/corrupted
+                let tmp = path.with_extension("toml.tmp");
+                fs::write(&tmp, &content)?;
+                fs::rename(&tmp, &path)?;
             }
         }
         Ok(())

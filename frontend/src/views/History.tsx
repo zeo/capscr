@@ -78,9 +78,14 @@ export function History() {
     });
   });
 
+  let armTimer: ReturnType<typeof setTimeout> | undefined;
+  let errorTimer: ReturnType<typeof setTimeout> | undefined;
+  onCleanup(() => { clearTimeout(armTimer); clearTimeout(errorTimer); });
+
   const armDelete = (path: string) => {
+    clearTimeout(armTimer);
     setConfirmDelete(path);
-    setTimeout(() => {
+    armTimer = setTimeout(() => {
       if (confirmDelete() === path) setConfirmDelete(null);
     }, 4000);
   };
@@ -94,7 +99,8 @@ export function History() {
     }).catch((e: unknown) => {
       setConfirmDelete(null);
       setDeleteError(String(e));
-      setTimeout(() => setDeleteError(null), 6000);
+      clearTimeout(errorTimer);
+      errorTimer = setTimeout(() => setDeleteError(null), 6000);
     });
   };
 

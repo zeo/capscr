@@ -72,11 +72,14 @@ function Hub() {
 
   let nextId = 1;
   const unlisteners: UnlistenFn[] = [];
+  const toastTimers: ReturnType<typeof setTimeout>[] = [];
 
   // Cap so error storms (network down, upload retry loops, etc.) can't pile
   // up unbounded DOM nodes — anything older than the cap is silently dropped.
   const MAX_TOASTS = 8;
   const MAX_UPLOADS = 6;
+
+  onCleanup(() => toastTimers.forEach(clearTimeout));
 
   const pushToast = (kind: string, msg: string) => {
     const id = nextId++;
@@ -84,9 +87,9 @@ function Hub() {
       const next = [...cur, { id, kind, msg }];
       return next.length > MAX_TOASTS ? next.slice(-MAX_TOASTS) : next;
     });
-    setTimeout(() => {
+    toastTimers.push(setTimeout(() => {
       setToasts((cur) => cur.filter((t) => t.id !== id));
-    }, 6000);
+    }, 6000));
   };
 
   const pushUpload = (url: string, deleteUrl: string | null) => {
