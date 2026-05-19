@@ -297,6 +297,7 @@ pub fn run_capture_pipeline(
         crate::clipboard::save_image(&image, &path, config.output.format, config.output.quality)?;
         maybe_write_hdr_sidecar(&path, &hdr_bitmap, &config);
         *state.last_save.lock().unwrap() = Some(path.clone());
+        let _ = app.emit("capscr://capture-saved", path.to_string_lossy().to_string());
         open_editor_window(app, &path.to_string_lossy())
             .map_err(|e| anyhow::anyhow!(e))?;
         Sound::Screenshot.play_if_enabled(config.post_capture.play_sound);
@@ -322,6 +323,9 @@ pub fn run_capture_pipeline(
     if let Ok(Some(sdr_path)) = &result {
         let cfg = state.config.lock().unwrap().clone();
         maybe_write_hdr_sidecar(sdr_path, &hdr_bitmap, &cfg);
+        // Notify the hub so the History tab live-refreshes — otherwise the
+        // user has to hit "reload" manually after every capture.
+        let _ = app.emit("capscr://capture-saved", sdr_path.to_string_lossy().to_string());
     }
     result.map(|_| ())
 }
@@ -1140,6 +1144,7 @@ fn finalize_gif_recording(task: &CaptureTask, app: &AppHandle) {
                 if cfg.ui.show_notifications {
                     let _ = show_notification("GIF saved", &path.to_string_lossy());
                 }
+                let _ = app.emit("capscr://capture-saved", path.to_string_lossy().to_string());
                 apply_gif_post_action(task, app, &path, &cfg);
             }
             Err(e) => {

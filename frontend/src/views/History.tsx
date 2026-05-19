@@ -1,4 +1,13 @@
-import { createMemo, createResource, createSignal, For, Show } from "solid-js";
+import {
+  createMemo,
+  createResource,
+  createSignal,
+  For,
+  onCleanup,
+  onMount,
+  Show,
+} from "solid-js";
+import { listen, UnlistenFn } from "@tauri-apps/api/event";
 import {
   Copy,
   RefreshCw,
@@ -36,6 +45,25 @@ export function History() {
   const [confirmDelete, setConfirmDelete] = createSignal<string | null>(null);
   const [search, setSearch] = createSignal("");
   const [filter, setFilter] = createSignal<FilterKind>("all");
+
+  // Live-refresh the grid when a new capture lands so the user doesn't
+  // have to click "reload" after every screenshot. Coalesce rapid bursts
+  // (e.g. a GIF + sidecar landing back-to-back) into one refetch.
+  let refreshTimer: ReturnType<typeof setTimeout> | null = null;
+  let unlisten: UnlistenFn | null = null;
+  onMount(async () => {
+    unlisten = await listen("capscr://capture-saved", () => {
+      if (refreshTimer) clearTimeout(refreshTimer);
+      refreshTimer = setTimeout(() => {
+        refetch();
+        refreshTimer = null;
+      }, 250);
+    });
+  });
+  onCleanup(() => {
+    if (refreshTimer) clearTimeout(refreshTimer);
+    unlisten?.();
+  });
 
   const filtered = createMemo(() => {
     const list = entries() ?? [];
