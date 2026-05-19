@@ -34,6 +34,8 @@ nothing pending. drop ideas in github issues.
 
 ### added (continued)
 - **History live-refreshes on capture** — new `capscr://capture-saved` event fires from the save path (including the OpenEditor and GIF-save branches). History.tsx subscribes and refetches with a 250ms coalesce so a rapid burst (e.g. PNG + HDR sidecar landing back-to-back) only triggers one re-read. No more hitting "reload" after every screenshot.
+- **editor dirty-state guard** — Escape and the titlebar X button now warn before discarding unsaved annotations. Same pattern the Settings tab already uses. Closes a real data-loss footgun: drawing 10 arrows then Esc-ing out used to silently throw them all away.
+- **`save_edited_image` writes atomically** — was overwriting the target in-place; a disk-full or permission-denied mid-write would truncate the original and lose the un-edited capture too. Now stages to `.<basename>.editing.tmp` and atomically renames, with cleanup on either failure path. Also fires `capscr://capture-saved` so the History tile picks up the new mtime.
 - silence a clippy `duplicated attribute` warning on `src/jumplist.rs` — the module is already gated `#[cfg(windows)]` at the use-site, so the inner `#![cfg(windows)]` was redundant.
 
 ## [0.3.30] — 2026-05-19

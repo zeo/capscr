@@ -858,6 +858,7 @@ pub fn open_editor(path: String, app: AppHandle, state: State<AppState>) -> Resu
 pub fn save_edited_image(
     bytes: Vec<u8>,
     target_path: String,
+    app: AppHandle,
     state: State<AppState>,
 ) -> Result<(), String> {
     let buf = PathBuf::from(&target_path);
@@ -874,7 +875,27 @@ pub fn save_edited_image(
     if bytes.len() > 100 * 1024 * 1024 {
         return Err("Image too large to save".into());
     }
-    std::fs::write(&buf, &bytes).map_err(|e| e.to_string())
+    // Atomic write: stage to a sibling temp file, then rename. A disk-full
+    // or permission-denied mid-write would otherwise truncate the original
+    // — the user would lose the un-edited capture too.
+    let mut tmp = buf.clone();
+    let stem = buf
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("edited");
+    tmp.set_file_name(format!(".{stem}.editing.tmp"));
+    if let Err(e) = std::fs::write(&tmp, &bytes) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(format!("write failed: {e}"));
+    }
+    if let Err(e) = std::fs::rename(&tmp, &buf) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(format!("rename failed: {e}"));
+    }
+    // Surface the edit to the History tab so its tile picks up the new
+    // modified time without a manual reload.
+    let _ = app.emit("capscr://capture-saved", buf.to_string_lossy().to_string());
+    Ok(())
 }
 
 #[tauri::command]

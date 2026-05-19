@@ -229,7 +229,7 @@ export function Editor() {
       e.preventDefault();
       setZoom(1.0);
     } else if (e.key === "Escape") {
-      void win.close();
+      void confirmCloseEditor();
     } else if (e.key === "1") setTool("arrow");
     else if (e.key === "2") setTool("rect");
     else if (e.key === "3") {
@@ -283,6 +283,24 @@ export function Editor() {
     }
   };
 
+  // Truthy when there's at least one committed edit (or a draft mid-drag).
+  // Used by the dirty-state guard so Escape / the close button warn before
+  // throwing away the user's work.
+  const isDirty = () => ops().length > 0 || draft() !== null;
+
+  const confirmCloseEditor = async () => {
+    if (!isDirty()) {
+      void win.close();
+      return;
+    }
+    const ok = window.confirm(
+      "Discard unsaved annotations? They aren't written back to disk until you press Save.",
+    );
+    if (ok) {
+      void win.close();
+    }
+  };
+
   onMount(() => {
     window.addEventListener("keydown", onKeydown);
     window.addEventListener("paste", onPaste);
@@ -291,6 +309,21 @@ export function Editor() {
     window.removeEventListener("keydown", onKeydown);
     window.removeEventListener("paste", onPaste);
   });
+
+  // Intercept the close button on the titlebar. Without this, clicking X
+  // discards unsaved annotations silently — the same data-loss footgun the
+  // Settings tab already guards against.
+  let closeUnlisten: (() => void) | null = null;
+  onMount(async () => {
+    closeUnlisten = await win.onCloseRequested(async (ev) => {
+      if (!isDirty()) return;
+      const ok = window.confirm(
+        "Discard unsaved annotations? They aren't written back to disk until you press Save.",
+      );
+      if (!ok) ev.preventDefault();
+    });
+  });
+  onCleanup(() => closeUnlisten?.());
 
   function pointFromEvent(e: MouseEvent): Point {
     const rect = canvasRef.getBoundingClientRect();
