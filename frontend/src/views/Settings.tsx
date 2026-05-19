@@ -201,7 +201,7 @@ function GeneralPane(props: { c: AppConfig; patch: Patch }) {
               })
             }
           />
-          <span class="field-hint">{`tokens: {date} {time} {seq} {ext}`}</span>
+          <span class="field-hint">chrono tokens: %Y year · %m month · %d day · %H hour · %M min · %S sec · extension added automatically</span>
         </div>
       </div>
       <div class="field">
@@ -231,12 +231,11 @@ function GeneralPane(props: { c: AppConfig; patch: Patch }) {
             min={1}
             max={100}
             value={c().output.quality}
-            onInput={(e) =>
-              props.patch("output", {
-                ...c().output,
-                quality: parseInt(e.currentTarget.value || "0"),
-              })
-            }
+            onInput={(e) => {
+              const v = parseInt(e.currentTarget.value);
+              if (!isNaN(v) && v >= 1 && v <= 100)
+                props.patch("output", { ...c().output, quality: v });
+            }}
           />
           <span class="field-hint">1-100, ignored for png/bmp</span>
         </div>
@@ -365,15 +364,14 @@ function HdrPane(props: { c: AppConfig; patch: Patch }) {
             min={1}
             max={10000}
             value={c().capture.hdr.brightness_nits}
-            onInput={(e) =>
-              props.patch("capture", {
-                ...c().capture,
-                hdr: {
-                  ...c().capture.hdr,
-                  brightness_nits: parseFloat(e.currentTarget.value || "80"),
-                },
-              })
-            }
+            onInput={(e) => {
+              const v = parseFloat(e.currentTarget.value);
+              if (!isNaN(v) && v >= 1 && v <= 10000)
+                props.patch("capture", {
+                  ...c().capture,
+                  hdr: { ...c().capture.hdr, brightness_nits: v },
+                });
+            }}
           />
           <span class="field-hint">paper-white target, nits</span>
         </div>
@@ -387,17 +385,14 @@ function HdrPane(props: { c: AppConfig; patch: Patch }) {
             max={100}
             step={0.05}
             value={c().capture.hdr.user_brightness_scale}
-            onInput={(e) =>
-              props.patch("capture", {
-                ...c().capture,
-                hdr: {
-                  ...c().capture.hdr,
-                  user_brightness_scale: parseFloat(
-                    e.currentTarget.value || "1",
-                  ),
-                },
-              })
-            }
+            onInput={(e) => {
+              const v = parseFloat(e.currentTarget.value);
+              if (!isNaN(v) && v > 0 && v <= 100)
+                props.patch("capture", {
+                  ...c().capture,
+                  hdr: { ...c().capture.hdr, user_brightness_scale: v },
+                });
+            }}
           />
           <span class="field-hint">multiply luminance before mapping (1.0 = identity)</span>
         </div>
