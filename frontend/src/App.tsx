@@ -476,7 +476,7 @@ function Hub() {
                   <button
                     class="btn"
                     data-size="xs"
-                    onClick={() => void writeText(u.url)}
+                    onClick={() => writeText(u.url).catch(() => pushToast("err", "clipboard busy — try again"))}
                   >
                     <Copy size={11} stroke-width={1.5} />
                     copy
@@ -496,7 +496,7 @@ function Hub() {
                       data-variant="ghost"
                       data-size="xs"
                       title={u.deleteUrl!}
-                      onClick={() => void writeText(u.deleteUrl!)}
+                      onClick={() => writeText(u.deleteUrl!).catch(() => pushToast("err", "clipboard busy — try again"))}
                     >
                       <Trash2 size={11} stroke-width={1.5} />
                       copy del url

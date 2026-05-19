@@ -307,11 +307,13 @@ fn run_capture_pipeline_inner(
         }
     }
 
-    if matches!(post, PostActionArg::OpenEditor) {
+    if matches!(post, PostActionArg::OpenEditor | PostActionArg::Prompt) {
         let config = state.config.lock().unwrap().clone();
         let base = config.output_path();
         let path = get_unique_filepath(&base);
-        std::fs::create_dir_all(&config.output.directory).ok();
+        if let Err(e) = std::fs::create_dir_all(&config.output.directory) {
+            tracing::warn!("failed to create output dir: {e}");
+        }
         crate::clipboard::save_image(&image, &path, config.output.format, config.output.quality)?;
         maybe_write_hdr_sidecar(&path, &hdr_bitmap, &config);
         *state.last_save.lock().unwrap() = Some(path.clone());
@@ -504,7 +506,9 @@ fn run_post_action(
     let do_save = || -> anyhow::Result<PathBuf> {
         let base = config.output_path();
         let path = get_unique_filepath(&base);
-        std::fs::create_dir_all(&config.output.directory).ok();
+        if let Err(e) = std::fs::create_dir_all(&config.output.directory) {
+            tracing::warn!("failed to create output dir: {e}");
+        }
         save_image(image, &path, config.output.format, config.output.quality)?;
         *state.last_save.lock().unwrap() = Some(path.clone());
         Ok(path)
@@ -829,6 +833,15 @@ pub async fn install_update(app: AppHandle) -> Result<(), String> {
         .download_and_install(|_chunk, _total| {}, || {})
         .await
         .map_err(|e| e.to_string())?;
+    // wait for any in-flight capture to finish so we don't restart mid-encode
+    {
+        let state = app.state::<AppState>();
+        let mut waited = 0u32;
+        while state.capture_in_progress.load(std::sync::atomic::Ordering::SeqCst) && waited < 50 {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            waited += 1;
+        }
+    }
     app.restart();
 }
 
@@ -1254,7 +1267,9 @@ fn finalize_gif_recording(task: &CaptureTask, app: &AppHandle) {
         let mut path = cfg.output_path();
         path.set_extension("gif");
         let path = get_unique_filepath(&path);
-        std::fs::create_dir_all(&cfg.output.directory).ok();
+        if let Err(e) = std::fs::create_dir_all(&cfg.output.directory) {
+            tracing::warn!("failed to create output dir: {e}");
+        }
 
         match rec.save(&path) {
             Ok(()) => {

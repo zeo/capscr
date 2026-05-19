@@ -219,7 +219,7 @@ export function History() {
               >
                 <img
                   class="tile-img"
-                  src={`asset://localhost/${encodeURIComponent(e.path)}`}
+                  src={`asset://localhost/${encodeURIComponent(e.path.replaceAll("\\", "/"))}`}
                   alt={e.filename}
                   onError={(ev) => {
                     (ev.currentTarget as HTMLImageElement).style.opacity =

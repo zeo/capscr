@@ -104,7 +104,20 @@ const WINDOWS_RESERVED_NAMES: &[&str] = &[
 ];
 
 pub fn get_unique_filepath(path: &Path) -> std::path::PathBuf {
-    if !path.exists() {
+    // use create_new to atomically claim the file slot, eliminating the TOCTOU
+    // race where two simultaneous captures both see "not exists" and write the
+    // same filename, with the second clobbering the first.
+    let try_claim = |p: &Path| -> bool {
+        match std::fs::OpenOptions::new().write(true).create_new(true).open(p) {
+            Ok(_) => true,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => false,
+            // parent dir not yet created — treat path as available; save_image
+            // creates the dir before writing
+            Err(_) => !p.exists(),
+        }
+    };
+
+    if try_claim(path) {
         return path.to_path_buf();
     }
 
@@ -119,7 +132,7 @@ pub fn get_unique_filepath(path: &Path) -> std::path::PathBuf {
             format!("{}_{}.{}", stem, i, ext)
         };
         let new_path = parent.join(&new_name);
-        if !new_path.exists() {
+        if try_claim(&new_path) {
             return new_path;
         }
     }

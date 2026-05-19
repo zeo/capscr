@@ -1,6 +1,7 @@
 import { createSignal, For, onCleanup, onMount, Show } from "solid-js";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { api } from "../api";
 import {
   ArrowRight,
@@ -141,16 +142,16 @@ export function Editor() {
 
   const win = getCurrentWindow();
 
-  onMount(async () => {
-    const path = await invoke<string | null>("get_editor_image_path");
-    if (!path) {
-      setStatus({ tone: "err", msg: "no image path received from backend" });
-      return;
-    }
+  const loadImage = async (path: string) => {
+    setLoaded(false);
+    setStatus(null);
+    setOps([]);
+    setRedoStack([]);
+    setDraft(null);
+    baseImage = null;
+    setIsHdrSource(false);
+    setHdrSidecarPath(null);
 
-    // Block GIF editing — canvas can only sample the first frame and we'd
-    // export PNG bytes over the .gif file, destroying the animation. Until
-    // we have a real frame-aware GIF editor, refuse to load.
     const ext = path.split(".").pop()?.toLowerCase();
     if (ext === "gif") {
       setImagePath(path);
@@ -163,15 +164,10 @@ export function Editor() {
 
     setImagePath(path);
 
-    // Probe for HDR before decoding. If the loaded PNG has a `cICP` chunk
-    // with PQ/HLG transfer, the canvas will tonemap to SDR for display and
-    // any save will lose HDR fidelity. Surface that to the user.
     try {
       const hdr = await api.isHdrCapture(path);
       setIsHdrSource(hdr);
       if (hdr) {
-        // Look for an `.hdr.png` sidecar (capscr writes this when preserve_hdr
-        // is on). If present, we'll preserve it on save by leaving it alone.
         const dot = path.lastIndexOf(".");
         const stem = dot > 0 ? path.slice(0, dot) : path;
         const sidecar = `${stem}.hdr.png`;
@@ -179,7 +175,7 @@ export function Editor() {
           const sidecarIsHdr = await api.isHdrCapture(sidecar);
           if (sidecarIsHdr) setHdrSidecarPath(sidecar);
         } catch {
-          // sidecar absent — file simply doesn't exist
+          // sidecar absent
         }
       }
     } catch {
@@ -187,7 +183,8 @@ export function Editor() {
     }
 
     const img = new Image();
-    img.src = `asset://localhost/${encodeURIComponent(path)}`;
+    // replace backslashes so Windows paths work under the asset:// protocol
+    img.src = `asset://localhost/${encodeURIComponent(path.replaceAll("\\", "/"))}`;
     try {
       await img.decode();
     } catch (e) {
@@ -199,6 +196,32 @@ export function Editor() {
     canvasRef.height = img.naturalHeight;
     setLoaded(true);
     redraw();
+  };
+
+  onMount(async () => {
+    const path = await invoke<string | null>("get_editor_image_path");
+    if (!path) {
+      setStatus({ tone: "err", msg: "no image path received from backend" });
+      return;
+    }
+    await loadImage(path);
+  });
+
+  // When the editor window is reused for a new image, the backend emits this
+  // event instead of opening a fresh window. Without a listener here the
+  // canvas would keep showing the previous image while imagePath() points to
+  // the new file — any save would overwrite the wrong file.
+  onMount(async () => {
+    const unlisten = await listen<string>("capscr://editor-load", async (e) => {
+      if (ops().length > 0 || draft() !== null) {
+        const ok = window.confirm(
+          "Discard unsaved annotations and open a new image?",
+        );
+        if (!ok) return;
+      }
+      await loadImage(e.payload);
+    });
+    onCleanup(unlisten);
   });
 
   const stepZoom = (dir: 1 | -1) => {
