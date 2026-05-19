@@ -6,6 +6,13 @@ format follows [keep-a-changelog](https://keepachangelog.com/en/1.1.0/) loosely.
 
 nothing pending. drop ideas in github issues.
 
+## [0.3.36] — 2026-05-19
+
+### fixed
+- **hotkeys stop working after settings save** — `HotkeyManager::unregister_all` was only clearing the in-memory id→task map but never calling `GlobalHotKeyManager::unregister_all` on the OS. kernel-level registrations survived across reloads, so re-registering the same key after a save failed silently and subsequent presses were swallowed. now correctly unregisters all hotkeys from the OS before re-registering.
+- **empty-hotkey tasks produced spurious error notifications** — tasks with no hotkey assigned (e.g. a freshly created task) were passed to `try_register("")`, which returned a parse error and could trigger a startup-conflict os notification. empty hotkey strings are now silently skipped.
+- **11 hotkey unit tests** covering parse roundtrip, PrintScreen, empty-string skip, and the empty-error-silent behavior.
+
 ## [0.3.35] — 2026-05-19
 
 ### changed

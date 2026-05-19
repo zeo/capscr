@@ -9,7 +9,10 @@ use std::collections::HashMap;
 
 pub struct HotkeyManager {
     manager: GlobalHotKeyManager,
-    registered: HashMap<u32, String>,
+    // map of hotkey_id → (hotkey, task_id) so unregister_all can hand the
+    // HotKey values back to the OS — clearing the map alone does not remove
+    // the kernel-level registration and causes re-registration to fail.
+    registered: HashMap<u32, (HotKey, String)>,
     registration_errors: Vec<HotkeyRegistrationError>,
 }
 
@@ -36,11 +39,16 @@ impl HotkeyManager {
         self.manager
             .register(hotkey)
             .map_err(|e| anyhow!("Failed to register hotkey: {}", e))?;
-        self.registered.insert(hotkey.id(), task_id.into());
+        self.registered.insert(hotkey.id(), (hotkey, task_id.into()));
         Ok(())
     }
 
     pub fn try_register(&mut self, task_id: impl Into<String>, hotkey_str: &str) {
+        // tasks with no hotkey assigned are valid — silently skip them rather
+        // than pushing an error that surfaces as a notification
+        if hotkey_str.is_empty() {
+            return;
+        }
         let task_id = task_id.into();
         match self.register(task_id.clone(), hotkey_str) {
             Ok(()) => {}
@@ -64,16 +72,20 @@ impl HotkeyManager {
 
     pub fn poll(&self) -> Option<String> {
         if let Ok(event) = GlobalHotKeyEvent::receiver().try_recv() {
-            return self.registered.get(&event.id).cloned();
+            return self.registered.get(&event.id).map(|(_, id)| id.clone());
         }
         None
     }
 
     pub fn task_for_event_id(&self, id: u32) -> Option<String> {
-        self.registered.get(&id).cloned()
+        self.registered.get(&id).map(|(_, task_id)| task_id.clone())
     }
 
     pub fn unregister_all(&mut self) {
+        let hotkeys: Vec<HotKey> = self.registered.values().map(|(hk, _)| *hk).collect();
+        if !hotkeys.is_empty() {
+            let _ = self.manager.unregister_all(&hotkeys);
+        }
         self.registered.clear();
     }
 }
@@ -364,5 +376,51 @@ mod tests {
         let hk = parse_hotkey("Ctrl+Shift+S").expect("parse");
         assert!(hk.mods.contains(Modifiers::CONTROL));
         assert!(hk.mods.contains(Modifiers::SHIFT));
+    }
+
+    #[test]
+    fn test_parse_printscreen() {
+        let hk = parse_hotkey("PrintScreen").expect("parse PrintScreen");
+        assert_eq!(hk.key, Code::PrintScreen);
+        assert_eq!(hk.mods, Modifiers::empty());
+    }
+
+    #[test]
+    fn test_parse_empty_is_err() {
+        assert!(parse_hotkey("").is_err(), "empty string must fail");
+    }
+
+    #[test]
+    fn test_empty_hotkey_skipped_silently() {
+        // try_register with "" must not push to registration_errors — tasks
+        // with no hotkey assigned are valid (user chose not to bind them)
+        // and must not trigger the startup-conflict notification.
+        let mut hm = HotkeyManager {
+            manager: GlobalHotKeyManager::new().expect("manager"),
+            registered: HashMap::new(),
+            registration_errors: Vec::new(),
+        };
+        hm.try_register("task-no-key", "");
+        assert!(hm.take_errors().is_empty(), "empty hotkey must not produce an error");
+    }
+
+    #[test]
+    fn test_parse_roundtrip() {
+        // verify that the format→parse round-trip is stable for common combos
+        let cases = &[
+            "PrintScreen",
+            "Ctrl+Shift+G",
+            "Ctrl+Shift+S",
+            "Pause",
+            "F12",
+            "Numpad5",
+        ];
+        for &s in cases {
+            let hk = parse_hotkey(s).unwrap_or_else(|e| panic!("parse '{s}' failed: {e}"));
+            let formatted = format_hotkey(hk.mods, hk.key);
+            let hk2 = parse_hotkey(&formatted)
+                .unwrap_or_else(|e| panic!("re-parse '{formatted}' failed: {e}"));
+            assert_eq!(hk.id(), hk2.id(), "roundtrip mismatch for '{s}'");
+        }
     }
 }
