@@ -564,7 +564,7 @@ function NotifyPane(props: { c: AppConfig; patch: Patch }) {
                   })
                 }
               />
-              <span class="check-label">close button hides window, doesn't exit</span>
+              <span class="check-label">close button minimizes to taskbar, doesn't exit</span>
             </label>
           </div>
         </div>

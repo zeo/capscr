@@ -110,7 +110,13 @@ fn main() {
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
         ))
-        .plugin(tauri_plugin_window_state::Builder::default().build())
+        // exclude VISIBLE — we manage hub visibility manually via prewarm + tray-click
+        .plugin(tauri_plugin_window_state::Builder::default()
+            .with_state_flags(
+                tauri_plugin_window_state::StateFlags::all()
+                    & !tauri_plugin_window_state::StateFlags::VISIBLE
+            )
+            .build())
         .manage(app_state)
         .setup(move |app| {
             build_tray(app)?;

@@ -167,8 +167,8 @@ export function History() {
               <span class="stick" />
               no captures yet
               <p>
-                press <kbd>Numpad 5</kbd> to drag a region capture to clipboard,
-                or <kbd>Pause</kbd> to record a GIF.
+                press <kbd>PrintScreen</kbd> to drag a region capture to clipboard,
+                or <kbd>Ctrl+Shift+G</kbd> to record a GIF.
               </p>
               <p class="muted" style="margin-top: 8px; font-size: 11px;">
                 rebind these in <strong>tasks</strong> · destinations live in <strong>destinations</strong>.

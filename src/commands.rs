@@ -579,10 +579,12 @@ pub fn list_captures(state: State<AppState>) -> Result<Vec<HistoryEntry>, String
 
     let mut entries: Vec<HistoryEntry> = Vec::new();
     for entry in &dir_entries {
-        let path = entry.path();
-        if !path.is_file() {
+        // use cached file_type to avoid an extra stat per entry
+        let Ok(ft) = entry.file_type() else { continue };
+        if !ft.is_file() {
             continue;
         }
+        let path = entry.path();
         let ext = path
             .extension()
             .and_then(|e| e.to_str())
@@ -802,7 +804,9 @@ fn intercept_hub_close(window: tauri::WebviewWindow) {
     window.clone().on_window_event(move |event| {
         if let tauri::WindowEvent::CloseRequested { api, .. } = event {
             api.prevent_close();
-            let _ = window.hide();
+            // minimize instead of hide — keeps the taskbar button visible so
+            // the jump list is accessible via taskbar right-click
+            let _ = window.minimize();
         }
     });
 }

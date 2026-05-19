@@ -6,6 +6,17 @@ format follows [keep-a-changelog](https://keepachangelog.com/en/1.1.0/) loosely.
 
 nothing pending. drop ideas in github issues.
 
+## [0.3.33] — 2026-05-19
+
+### changed
+- **taskbar jump list now accessible** — closing the hub via the X button now minimizes the window instead of hiding it completely. a minimized window keeps its taskbar button, so right-clicking it shows the jump list (Capture region / Capture window / Capture fullscreen / Open captures folder / Open hub). taskbar "Close window" still hides to tray; the setting label updated to match.
+- **window state plugin no longer restores hub visibility** — the `tauri-plugin-window-state` was configured with `StateFlags::all()` by default, which includes `VISIBLE`. if the hub was visible when the app last quit, it would reappear at the next launch instead of staying hidden until the user clicks the tray icon. now excludes `VISIBLE` from saved/restored state.
+
+### fixed
+- **loading screen during WebView2 cold start** — first time the hub opens (or after a system reboot / cache clear), WebView2 initialises asynchronously; the window was blank white during this period. the HTML now shows `capscr · loading...` before the js bundle executes, making the wait visible rather than looking like a hang.
+- **hardcoded hotkey labels updated** — history empty-state and F1 shortcuts overlay still advertised `Numpad 5` / `Pause` as the capture hotkeys. updated to `PrintScreen` / `Ctrl+Shift+G` to match the defaults shipped in 0.3.32.
+- **`list_captures` stat optimisation** — was calling `path.is_file()` (extra stat syscall) after already fetching the directory entry; now uses `entry.file_type()` (cached by the kernel for most filesystems). no behavioural change.
+
 ## [0.3.32] — 2026-05-19
 
 Driven by user testing feedback. Two real bugs that made the prior build feel "not ready to ship as a daily-driver":

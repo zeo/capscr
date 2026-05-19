@@ -5,8 +5,23 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>capscr</title>
     <link rel="stylesheet" href="/src/styles.css" />
+    <style>
+      /* shown only before solid mounts; replaced by the real app shell */
+      #boot {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        height: 100vh;
+        font-family: "Fira Code", ui-monospace, Consolas, monospace;
+        font-size: 11px;
+        color: #555;
+        background: #141414;
+        letter-spacing: 0.06em;
+      }
+    </style>
   </head>
   <body>
+    <div id="boot">capscr · loading...</div>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

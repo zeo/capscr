@@ -231,11 +231,11 @@ function Hub() {
     if (!confirmDiscardEdits()) return;
     setConfigDirty(false);
     const c = config();
-    // Default to hide-to-tray when config hasn't loaded yet — destroying the
-    // window on early X-clicks just forces a slow re-create on the next tray
-    // click and loses webview state.
+    // Minimize instead of hide so the taskbar button stays and the jump list
+    // is accessible via right-click. Fall back to minimize if config isn't
+    // loaded yet — destroying the window forces a slow cold re-create.
     if (!c || c.ui.minimize_to_tray) {
-      void win.hide();
+      void win.minimize();
     } else {
       void win.close();
     }
@@ -333,8 +333,8 @@ function Hub() {
               </div>
               <div class="shortcuts-group">
                 <span class="shortcuts-group-label">global (default — rebindable in tasks)</span>
-                <div class="shortcuts-row"><kbd>Numpad 5</kbd><span>region screenshot → clipboard</span></div>
-                <div class="shortcuts-row"><kbd>Pause</kbd><span>region GIF → save</span></div>
+                <div class="shortcuts-row"><kbd>PrintScreen</kbd><span>region screenshot → clipboard</span></div>
+                <div class="shortcuts-row"><kbd>Ctrl+Shift+G</kbd><span>region GIF → save</span></div>
               </div>
             </div>
             <div class="shortcuts-foot">
