@@ -798,6 +798,28 @@ pub fn open_in_explorer(path: String, state: State<AppState>) -> Result<(), Stri
 
 #[tauri::command]
 pub fn exit_app(app: AppHandle) {
+    // save any active gif recording before exiting so the user doesn't lose frames
+    let state = app.state::<AppState>();
+    let cfg = state.config.lock().unwrap().clone();
+    let mut recorder = state.gif_recorder.lock().unwrap().take();
+    if let Some(ref mut rec) = recorder {
+        rec.stop();
+        let mut path = cfg.output_path();
+        path.set_extension("gif");
+        let path = get_unique_filepath(&path);
+        if let Err(e) = std::fs::create_dir_all(&cfg.output.directory) {
+            tracing::warn!("failed to create output dir on exit: {e}");
+        }
+        match rec.save(&path) {
+            Ok(()) => {
+                let _ = app.emit("capscr://capture-saved", path.to_string_lossy().to_string());
+                if cfg.ui.show_notifications {
+                    let _ = show_notification("GIF saved", &path.to_string_lossy());
+                }
+            }
+            Err(e) => tracing::warn!("gif save on exit failed: {e}"),
+        }
+    }
     app.exit(0);
 }
 
