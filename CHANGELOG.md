@@ -6,6 +6,47 @@ format follows [keep-a-changelog](https://keepachangelog.com/en/1.1.0/) loosely.
 
 nothing pending. drop ideas in github issues.
 
+## [0.3.38] — 2026-05-20
+
+### security
+- **ssrf coverage extended to ipv6 ula, link-local, and ipv4-mapped addresses** — `is_private_ip` now matches `fc00::/7`, `fe80::/10`, and `::ffff:0:0/96`; `is_private_ip_string` strips brackets from `[fc00::1]`-style hosts so they're matched correctly. previously, an attacker who controlled a redirect or input host could route through these ranges and hit cloud-metadata / internal services.
+- **redirect chains now revalidate every hop** — replaced `reqwest::redirect::Policy::limited` with a custom policy that runs each redirect target through the same private-ip and blocked-host rules. closes ssrf via redirect on the custom uploader.
+- **imgur response url is now validated** — returned upload urls go through `validate_returned_url` before being surfaced to the user or copied to the clipboard.
+
+### fixed
+- **editor save no longer overwrites the wrong file when reopened** — `Editor.tsx` was reusing its previous image state when the window was reopened with a new path, so saving would write the new edits over the old file. `loadImage()` is now extracted and a `capscr://editor-load` listener reloads the canvas on every open. data-loss bug.
+- **windows backslashes break asset urls** — paths passed to `asset://` are now slash-normalised before `encodeURIComponent`, fixing blank thumbnails in editor + history. asset-side, `convertFileSrc()` is used everywhere so drive-letter colons aren't percent-encoded either.
+- **simultaneous captures could overwrite each other** — `get_unique_filepath` now uses `OpenOptions::create_new(true)` to atomically claim the file slot. previously a toctou window let two captures generating the same timestamp race for the same path.
+- **active gif recording is now saved on app exit** — tray "exit" calls `exit_app` (instead of immediately quitting), which finalises any in-flight gif recording before shutdown. prevents data loss when the user quits mid-recording.
+- **install_update waits for in-flight captures before restart** — up to 5s grace before `app.restart()` so an update that lands mid-capture doesn't truncate the screenshot.
+- **save_edited_image rejects empty bytes** — a serialiser glitch could send 0 bytes; the file was overwritten with nothing. now rejected with an error.
+- **finalize_gif_recording polls instead of sleeping 250ms** — short recordings stopped before the heuristic sleep elapsed produced "no frames captured" errors. now polls `RecordingState::Processing` with a 5s deadline.
+- **duplicate non-empty hotkeys rejected at config load** — `Config::validate` now catches them, matching the frontend duplicate-guard. previously, two tasks with the same hotkey silently broke registration of one of them.
+- **hotkey channel close is surfaced as an error** — was previously logged at debug, so the hub never told the user when the hotkey thread died.
+- **post-capture upload action shows a notification** — `show_notification` is called with the result url, so users without the hub open can see and copy it.
+- **reupload_capture sends raw bytes with correct mime** — was re-encoding every file as png, breaking gif / jpeg / webp reuploads. now reads raw bytes and picks mime from the file extension. reupload of gifs is rejected with a clear error (use the open-and-upload flow).
+- **history sort honours millisecond mtime precision** — captures created within the same second now sort in the right order. `History.tsx` updated to treat `modified_unix` as ms.
+- **gif recording task now acquires the capture gate before opening the selector** — previously, pressing a screenshot hotkey while the gif region selector was up opened a second overlay on top.
+- **hotkey reload conflicts emit an os notification** — matches the startup-time conflict path; previously only the in-hub toast fired, which the user often missed.
+- **history re-upload button shows a timed error flash on failure** — was silently failing.
+- **editor paste shows a status message when non-image content is pasted** — was silently ignored.
+- **editor paste contributes to dirty-state** — pasting an image then closing without save now prompts; close/escape confirm messages distinguish pasted vs annotated; `onSave` clears ops + paste flag so a double-save doesn't re-prompt.
+- **color picker plays the screenshot sound** — was the only post-capture path that was silent.
+- **overlay gdi init checks `CreateCompatibleDC` / `CreateCompatibleBitmap`** — null hdcs were stored and then dereferenced in `WM_PAINT` / color picker; now validated before use.
+- **marketplace buttons lock during any in-flight op** — disabled condition now uses `busyId() !== null` so install / uninstall / enable / disable can't race against each other.
+- **settings shows the correct filename template hint** — was advertising an old token. quality and hdr float inputs gain bounds guards in the `onInput` handler so out-of-range typed values are rejected.
+- **gif recorder file handle dropped before the post-write size check** — windows file locking + buffered writes were skewing the size metadata read.
+- **stop_gif_recording sequences correctly** — sends the stop signal to the encoder thread before clearing `recording_task_id`, eliminating the finalize-before-stop race.
+- **PlaySoundW return value is logged at warn** — was silently discarded.
+- **copy_url_to_clipboard uses retry logic** — direct `arboard` call failed instantly on clipboard contention; now goes through `ClipboardManager` retry path. `CopyToClipboard` post-action is also non-fatal on contention (shows "clipboard busy" notification), matching `SaveAndCopy`.
+- **config writes are atomic** — write to `.toml.tmp`, then rename. a crash mid-write can no longer leave the config file truncated.
+- **ftp stream closed on `build_url` failure after a successful put** — was leaking the connection, blocking next uploads on strict ftp servers.
+- **tasks save shows duplicate-hotkey validation errors** — instead of silently overwriting one task with the other.
+- **history + app toast timeouts cleared in `onCleanup`** — no more fire-after-unmount.
+
+### changed
+- **`PostActionArg::Prompt` now opens the editor** — was silently saving + copying. the "prompt" task action now shows the capture for review.
+
 ## [0.3.37] — 2026-05-19
 
 ### fixed

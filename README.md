@@ -10,7 +10,7 @@ Fast HDR-aware Windows screen capture, designed to replace ShareX without the bl
 ## Features
 
 - **HDR captures that look right.** Windows.Graphics.Capture FP16 → SKIV ICtCp luminance-only tonemap (per-frame MaxCLL via P99, chroma preservation) → SDR PNG. Per-monitor SDR-white detection.
-- **Per-hotkey task model.** Bind any hotkey to a capture mode + post-action: `Numpad5` → region → clipboard, `Pause` → region GIF → save, etc. No central "default action" — each hotkey is its own task.
+- **Per-hotkey task model.** Bind any hotkey to a capture mode + post-action: `PrintScreen` → region → save + clipboard, `Ctrl+Shift+G` → region GIF → save, etc. No central "default action" — each hotkey is its own task.
 - **Selection overlay.** Drag for region, click for window, Enter for fullscreen, **`Alt+click` for color picker** (pixel `#RRGGBB` → clipboard). Live `WxH @ X,Y` dimensions, 8× magnifier loupe, window-snap highlight.
 - **Upload destinations.** Imgur (anonymous), custom HTTPS POST, FTP. HTTP and FTP both go through SSRF protection (DNS double-resolve, private-IP / cloud-metadata rejection).
 - **Tray-first.** ~14 MB working set when idle. The hub window only allocates a webview when you open it.
@@ -36,8 +36,8 @@ Configurable in **hub → Tasks**.
 
 | Hotkey | Action |
 |---|---|
-| `Numpad5` | Region capture → clipboard |
-| `Pause` | Region GIF → save to file |
+| `PrintScreen` | Region capture → save + clipboard |
+| `Ctrl+Shift+G` | Region GIF → save to file |
 
 Hold `Alt` while the selection overlay is up and click any pixel to copy its `#RRGGBB` to clipboard.
 
