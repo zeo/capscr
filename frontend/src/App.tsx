@@ -50,8 +50,8 @@ export function App() {
 }
 
 function Hub() {
-  // Open to history by default — that's the ShareX-style "what just happened"
-  // view; settings is buried behind a tab click.
+  // Open to history by default — "what just happened" is the expected view;
+  // settings is buried behind a tab click.
   const historyTab = TABS.find((t) => t.id === "history") ?? TABS[0];
   const [tab, setTab] = createSignal<Tab>(historyTab);
   const [captures] = createResource(api.listCaptures);

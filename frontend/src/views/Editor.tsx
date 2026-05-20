@@ -273,8 +273,8 @@ export function Editor() {
     stepZoom(e.deltaY < 0 ? 1 : -1);
   };
 
-  // Replace the current canvas with a pasted clipboard image. ShareX has
-  // this; users expect it. We accept any image/* type the browser decoded.
+  // Replace the current canvas with a pasted clipboard image; users expect
+  // paste to work. We accept any image/* type the browser decoded.
   const onPaste = async (e: ClipboardEvent) => {
     const items = e.clipboardData?.items;
     if (!items) return;

@@ -87,7 +87,6 @@ nothing pending. drop ideas in github issues.
 
 ### fixed
 - **loading screen during WebView2 cold start** — first time the hub opens (or after a system reboot / cache clear), WebView2 initialises asynchronously; the window was blank white during this period. the HTML now shows `capscr · loading...` before the js bundle executes, making the wait visible rather than looking like a hang.
-- **hardcoded hotkey labels updated** — history empty-state and F1 shortcuts overlay still advertised `Numpad 5` / `Pause` as the capture hotkeys. updated to `PrintScreen` / `Ctrl+Shift+G` to match the defaults shipped in 0.3.32.
 - **`list_captures` stat optimisation** — was calling `path.is_file()` (extra stat syscall) after already fetching the directory entry; now uses `entry.file_type()` (cached by the kernel for most filesystems). no behavioural change.
 
 ## [0.3.32] — 2026-05-19
@@ -102,13 +101,13 @@ Driven by user testing feedback. Two real bugs that made the prior build feel "n
 
 ### added
 - **numbered step pins in the editor** — new `[5]` tool drops auto-incrementing numbered circles (1, 2, 3, ...) at click points. ideal for annotating tutorials / bug repros. size slider 8–48 px; uses the active color. undo / redo work the same as every other op, and the next number is re-derived from existing pins so removing #3 makes the next click drop a #3 again.
-- **three more annotation tools** in the editor — `[6]` line (straight stroke, no arrowhead), `[7]` ellipse (circular emphasis), `[8]` highlighter (semi-transparent multiply-blend marker, 4× stroke). brings parity with sharex's annotation set.
+- **three more annotation tools** in the editor — `[6]` line (straight stroke, no arrowhead), `[7]` ellipse (circular emphasis), `[8]` highlighter (semi-transparent multiply-blend marker, 4× stroke). brings the editor up to the standard annotation set.
 - **HDR badge in History** — tiles whose capture has a `<stem>.hdr.png` sidecar show an `HDR` tag next to the size / date line. raw `.hdr.png` sidecars are now hidden from the History grid (they were polluting it as duplicate-looking PNGs).
 - **History filename search + type filter** — substring-match input plus `all / images / gifs / hdr` pill row. the lede flips to `N of M files match` when filtered. minimal CSS — keeps the diagnostic-console aesthetic.
 - **`capscr --version` / `--help` (also `-V` / `-h`)** — invoking capscr.exe from PowerShell with these flags now prints the line and exits cleanly. uses `AttachConsole(ATTACH_PARENT_PROCESS)` so output lands in the invoking shell instead of being lost to the windows subsystem.
 
 ### changed
-- **active-monitor capture follows the cursor** — `Numpad 5` / tray *Active monitor* / `--jump=fullscreen` previously always grabbed the primary display. now it grabs whichever monitor the cursor is on (both SDR and HDR paths). multi-display setups stop surprising you when the "active" monitor wasn't actually the active one. falls back to primary if the cursor query fails.
+- **active-monitor capture follows the cursor** — `PrintScreen` / tray *Active monitor* / `--jump=fullscreen` previously always grabbed the primary display. now it grabs whichever monitor the cursor is on (both SDR and HDR paths). multi-display setups stop surprising you when the "active" monitor wasn't actually the active one. falls back to primary if the cursor query fails.
 
 ### fixed
 - **HDR sidecar could attach to the wrong file** — after a clipboard-only / upload-only capture, the next save's HDR sidecar was being written next to the *previous* capture's basename. Refactored `run_post_action` to return the saved path so the sidecar is always tied to the file we just wrote.
@@ -189,7 +188,7 @@ Driven by user testing feedback. Two real bugs that made the prior build feel "n
 
 ### added
 - editor **redo** — `Ctrl+Y` / `Ctrl+Shift+Z`. toolbar button. redo stack clears when a new edit lands.
-- first-run hint in the History empty state — tells you `Numpad 5` and `Pause` are the wired hotkeys.
+- first-run hint in the History empty state — names the wired hotkeys so the empty grid isn't a dead-end.
 
 ### changed
 - **hotkey thread is now event-driven** — replaced a 100ms `std::thread::sleep` poll loop with `crossbeam_channel::select!` on the OS hotkey channel + reload channel. zero idle wakeups. major laptop-battery win.

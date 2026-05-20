@@ -1,6 +1,6 @@
 # capscr
 
-Fast HDR-aware Windows screen capture, designed to replace ShareX without the bloat.
+Fast HDR-aware Windows screen capture — tray-first, signed updates, no telemetry.
 
 - **Homepage**: [rot.lt/work/capscr](https://rot.lt/work/capscr)
 - **Plugins**: [rot.lt/work/capscr/plugins](https://rot.lt/work/capscr/plugins) · publishing contract: [`docs/marketplace.md`](docs/marketplace.md) · source-of-truth registry: [`lintowe/capscr-plugins`](https://github.com/lintowe/capscr-plugins)
@@ -104,7 +104,7 @@ Work that did not make 0.3.1:
 ## Credits
 
 - HDR tonemap in `src/capture/tonemapping.rs` is a Rust port of the SKIV (Special K Image Viewer) ICtCp luminance-only tonemap by Andon "Kaldaien" Coleman, MIT-licensed: https://github.com/SpecialKO/SKIV
-- Per-frame MaxCLL / P99 logic follows the pattern from ShareX-HDR by GotoFinal (MIT): https://github.com/GotoFinal/ShareX-HDR
+- Per-frame MaxCLL / P99 logic adapted from GotoFinal's open-source HDR tonemap reference (MIT-licensed).
 
 ## License
 

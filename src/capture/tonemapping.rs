@@ -6,8 +6,8 @@
 //   https://github.com/SpecialKO/SKIV
 // Specifically: PostProcessingColor.hlsl, tone_mapping.hlsli, and
 // colorspaces.hlsli, together with the per-frame ImageInfo / MaxCLL
-// computation from ShareX-HDR by GotoFinal (MIT):
-//   https://github.com/GotoFinal/ShareX-HDR
+// computation adapted from GotoFinal's open-source HDR tonemap
+// reference (MIT-licensed).
 //
 // The Reinhard path below is kept only as a reference / fallback and is
 // unused by the runtime pipeline.
