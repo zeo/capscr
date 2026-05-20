@@ -28,7 +28,7 @@ Download from the [releases page](https://github.com/lintowe/capscr/releases/lat
 | `*.sig` | Updater signatures — leave alongside the installer if you run the auto-updater manually |
 | `latest.json` | Auto-updater manifest, not for manual install |
 
-Windows 10 1903+ for HDR capture; older builds and Linux X11 can still take SDR shots from source.
+Windows 10 1903+ required. HDR capture goes through Windows.Graphics.Capture FP16, which is Windows-only — there are no macOS or Linux builds. The Cargo target hooks for those platforms are vestigial scaffolding from earlier prototyping.
 
 ## Default hotkeys
 
