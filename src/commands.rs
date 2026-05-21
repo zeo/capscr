@@ -76,7 +76,15 @@ pub fn set_config(config: Config, app: AppHandle, state: State<AppState>) -> Res
     config.validate().map_err(|e| e.to_string())?;
     config.save().map_err(|e| e.to_string())?;
     crate::install_hdr_runtime_from_config(&config);
-    state.send_hotkey_reload(config.capture_tasks.clone());
+    // respect the tray's Disable-hotkeys toggle: when off, reload with an
+    // empty task list so the new config doesn't silently re-register hotkeys
+    use std::sync::atomic::Ordering;
+    let tasks_to_register = if state.hotkeys_disabled.load(Ordering::SeqCst) {
+        Vec::new()
+    } else {
+        config.capture_tasks.clone()
+    };
+    state.send_hotkey_reload(tasks_to_register);
     let want_autostart = config.ui.auto_start;
     let output_dir = config.output.directory.clone();
     *state.config.lock().unwrap() = config;
@@ -540,10 +548,11 @@ fn run_post_action(
         let uploader = crate::upload::shared_uploader()?;
         let service = build_upload_service_for_target(&config, upload_target);
         let result = uploader.upload(image, &service)?;
-        *state.last_upload.lock().unwrap() = Some(UploadRecord {
+        state.record_upload(UploadRecord {
             url: result.url.clone(),
             delete_url: result.delete_url.clone(),
         });
+        crate::rebuild_tray_menu(app);
         if config.upload.copy_url_to_clipboard {
             let _ = crate::upload::copy_url_to_clipboard(&result.url);
         }
@@ -787,10 +796,11 @@ pub fn reupload_capture(
     let uploader = crate::upload::shared_uploader().map_err(|e| e.to_string())?;
     let service = build_upload_service(&config);
     let result = uploader.upload_raw(&bytes, mime, &file_name, &service).map_err(|e| e.to_string())?;
-    *state.last_upload.lock().unwrap() = Some(UploadRecord {
+    state.record_upload(UploadRecord {
         url: result.url.clone(),
         delete_url: result.delete_url.clone(),
     });
+    crate::rebuild_tray_menu(&app);
     if config.upload.copy_url_to_clipboard {
         let _ = crate::upload::copy_url_to_clipboard(&result.url);
     }
@@ -1111,10 +1121,11 @@ pub fn upload_file(
         .upload_raw(&bytes, mime, &file_name, &service)
         .map_err(|e| e.to_string())?;
 
-    *state.last_upload.lock().unwrap() = Some(UploadRecord {
+    state.record_upload(UploadRecord {
         url: result.url.clone(),
         delete_url: result.delete_url.clone(),
     });
+    crate::rebuild_tray_menu(&app);
     if config.upload.copy_url_to_clipboard {
         let _ = crate::upload::copy_url_to_clipboard(&result.url);
     }
@@ -1138,10 +1149,11 @@ pub fn upload_edited_image(
     let uploader = crate::upload::shared_uploader().map_err(|e| e.to_string())?;
     let service = build_upload_service(&config);
     let result = uploader.upload(&rgba, &service).map_err(|e| e.to_string())?;
-    *state.last_upload.lock().unwrap() = Some(UploadRecord {
+    state.record_upload(UploadRecord {
         url: result.url.clone(),
         delete_url: result.delete_url.clone(),
     });
+    crate::rebuild_tray_menu(&app);
     if config.upload.copy_url_to_clipboard {
         let _ = crate::upload::copy_url_to_clipboard(&result.url);
     }
@@ -1423,10 +1435,11 @@ fn apply_gif_post_action(task: &CaptureTask, app: &AppHandle, path: &std::path::
                 match uploader.upload_raw(&bytes, "image/gif", file_name, &service) {
                     Ok(result) => {
                         let st = app2.state::<AppState>();
-                        *st.last_upload.lock().unwrap() = Some(UploadRecord {
+                        st.record_upload(UploadRecord {
                             url: result.url.clone(),
                             delete_url: result.delete_url.clone(),
                         });
+                        crate::rebuild_tray_menu(&app2);
                         if cfg.upload.copy_url_to_clipboard {
                             let _ = crate::upload::copy_url_to_clipboard(&result.url);
                         }

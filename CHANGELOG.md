@@ -6,6 +6,21 @@ format follows [keep-a-changelog](https://keepachangelog.com/en/1.1.0/) loosely.
 
 nothing pending. drop ideas in github issues.
 
+## [0.3.40] — 2026-05-21
+
+### added
+- tray menu: **Recent uploads** submenu (last 5 URLs, click to copy)
+- tray menu: **Upload destination** switcher submenu (●/○ marker on current choice)
+- tray menu: **Open hub →** submenu with direct entries for Settings / Tasks / History / Destinations / Plugins. tray fires `capscr://goto-tab` so the hub lands on the chosen tab
+- tray menu: **Disable / Enable all hotkeys** stateful toggle (replaces the panic unbind — disabling no longer clears bindings from config, just unregisters them with the OS)
+
+### changed
+- tray menu rebuilds on every state-changing event (upload landed, destination switched, hotkeys toggled) so the visible items always reflect current state
+- `set_config` respects the tray's hotkey-disabled toggle — saving the hub no longer silently re-registers hotkeys you turned off from the tray
+
+### fixed
+- `record_upload` ring (cap 5) replaces a single `last_upload` slot; back-compat with the existing Copy-last-URL tray path
+
 ## [0.3.39] — 2026-05-21
 
 ### fixed

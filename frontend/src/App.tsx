@@ -60,7 +60,7 @@ function Hub() {
   const [recording, setRecording] = createSignal(false);
   const [recordingSince, setRecordingSince] = createSignal<number | null>(null);
   const [recordingElapsed, setRecordingElapsed] = createSignal("00:00");
-  const [config] = createResource(api.getConfig);
+  const [config, { mutate: setConfig }] = createResource(api.getConfig);
   const [dragOver, setDragOver] = createSignal(false);
   const [updateInfo, setUpdateInfo] = createSignal<UpdateInfo | null>(null);
   const [updateDismissed, setUpdateDismissed] = createSignal(false);
@@ -127,6 +127,21 @@ function Hub() {
       await listen("capscr://recording-stopped", () => {
         setRecording(false);
         setRecordingSince(null);
+      }),
+      // tray "Open hub → <Tab>" fires this so the hub lands on the chosen tab
+      await listen<string>("capscr://goto-tab", (e) => {
+        const target = TABS.find((t) => t.id === e.payload);
+        if (target) tryChangeTab(target);
+      }),
+      // tray destination switcher mutates config — refetch so any visible
+      // dropdown stays in sync
+      await listen("capscr://config-updated", async () => {
+        try {
+          const fresh = await api.getConfig();
+          setConfig(fresh);
+        } catch {
+          /* config refetch best-effort */
+        }
       }),
     );
 

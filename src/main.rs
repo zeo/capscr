@@ -19,7 +19,7 @@ use std::time::Duration;
 use crossbeam_channel as cb;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::Manager;
+use tauri::{AppHandle, Emitter, Manager};
 use tracing_subscriber::EnvFilter;
 
 use state::HotkeyCommand;
@@ -224,7 +224,14 @@ fn sync_autostart(app: &tauri::App, desired: bool) {
     }
 }
 
-fn build_tray(app: &tauri::App) -> tauri::Result<()> {
+// build the full tray menu fresh from current AppState. Called once at
+// startup and again any time the state surfaces in the menu changes —
+// new upload, destination switched, hotkeys toggled.
+fn build_tray_menu<R: tauri::Runtime, M: tauri::Manager<R>>(
+    app: &M,
+) -> tauri::Result<Menu<R>> {
+    use std::sync::atomic::Ordering;
+
     // --- Capture submenu ---
     let cap_region =
         MenuItem::with_id(app, "cap_region", "Region", true, None::<&str>)?;
@@ -252,6 +259,55 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
     let record_submenu =
         Submenu::with_items(app, "Record", true, &[&rec_region_gif])?;
 
+    // --- Recent uploads submenu (dynamic) ---
+    let state = app.state::<state::AppState>();
+    let recent: Vec<state::UploadRecord> = state
+        .recent_uploads
+        .lock()
+        .unwrap()
+        .iter()
+        .cloned()
+        .collect();
+    let recent_items: Vec<MenuItem<R>> = recent
+        .iter()
+        .enumerate()
+        .map(|(i, rec)| {
+            // truncate long URLs so the menu doesn't sprawl
+            let label = if rec.url.len() > 56 {
+                format!("{}…", &rec.url[..55])
+            } else {
+                rec.url.clone()
+            };
+            MenuItem::with_id(
+                app,
+                format!("recent_upload_{i}"),
+                &label,
+                true,
+                None::<&str>,
+            )
+            .expect("recent upload item")
+        })
+        .collect();
+    let recent_refs: Vec<&dyn tauri::menu::IsMenuItem<R>> = if recent_items.is_empty() {
+        Vec::new()
+    } else {
+        recent_items
+            .iter()
+            .map(|m| m as &dyn tauri::menu::IsMenuItem<R>)
+            .collect()
+    };
+    let recent_submenu_enabled = !recent_items.is_empty();
+    let recent_submenu = if recent_submenu_enabled {
+        Submenu::with_items(app, "Recent uploads (click → copy)", true, &recent_refs)?
+    } else {
+        Submenu::with_items(
+            app,
+            "Recent uploads (none yet)",
+            false,
+            &[] as &[&dyn tauri::menu::IsMenuItem<R>],
+        )?
+    };
+
     // --- Upload / utility items ---
     let copy_last_url = MenuItem::with_id(
         app,
@@ -268,36 +324,127 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
         None::<&str>,
     )?;
 
+    // --- Destination switcher ---
+    let current_dest = state.config.lock().unwrap().upload.destination;
+    let mark = |is_current: bool, label: &str| -> String {
+        if is_current {
+            format!("● {label}")
+        } else {
+            format!("○ {label}")
+        }
+    };
+    let dest_imgur = MenuItem::with_id(
+        app,
+        "dest_imgur",
+        mark(current_dest == config::UploadDestination::Imgur, "Imgur"),
+        true,
+        None::<&str>,
+    )?;
+    let dest_custom = MenuItem::with_id(
+        app,
+        "dest_custom",
+        mark(current_dest == config::UploadDestination::Custom, "Custom HTTPS"),
+        true,
+        None::<&str>,
+    )?;
+    let dest_ftp = MenuItem::with_id(
+        app,
+        "dest_ftp",
+        mark(current_dest == config::UploadDestination::Ftp, "FTP"),
+        true,
+        None::<&str>,
+    )?;
+    let dest_submenu = Submenu::with_items(
+        app,
+        "Upload destination",
+        true,
+        &[&dest_imgur, &dest_custom, &dest_ftp],
+    )?;
+
+    // --- Open hub (with quick-tab submenu) ---
+    let open_hub = MenuItem::with_id(app, "tab_default", "Open hub", true, None::<&str>)?;
+    let tab_settings =
+        MenuItem::with_id(app, "tab_settings", "Settings", true, None::<&str>)?;
+    let tab_tasks = MenuItem::with_id(app, "tab_tasks", "Tasks", true, None::<&str>)?;
+    let tab_history = MenuItem::with_id(app, "tab_history", "History", true, None::<&str>)?;
+    let tab_destinations =
+        MenuItem::with_id(app, "tab_destinations", "Destinations", true, None::<&str>)?;
+    let tab_plugins =
+        MenuItem::with_id(app, "tab_plugins", "Plugins", true, None::<&str>)?;
+    let open_hub_submenu = Submenu::with_items(
+        app,
+        "Open hub →",
+        true,
+        &[
+            &open_hub,
+            &tab_settings,
+            &tab_tasks,
+            &tab_history,
+            &tab_destinations,
+            &tab_plugins,
+        ],
+    )?;
+
+    // --- Hotkey toggle (stateful) ---
+    let disabled = state.hotkeys_disabled.load(Ordering::SeqCst);
+    let hotkeys_toggle = MenuItem::with_id(
+        app,
+        "hotkeys_toggle",
+        if disabled {
+            "Enable all hotkeys"
+        } else {
+            "Disable all hotkeys"
+        },
+        true,
+        None::<&str>,
+    )?;
+
     let separator1 = PredefinedMenuItem::separator(app)?;
     let separator2 = PredefinedMenuItem::separator(app)?;
     let separator3 = PredefinedMenuItem::separator(app)?;
     let separator4 = PredefinedMenuItem::separator(app)?;
-    let settings_item = MenuItem::with_id(app, "settings", "Open hub", true, None::<&str>)?;
-    let unbind_hotkeys = MenuItem::with_id(
-        app,
-        "unbind_hotkeys",
-        "Unbind all hotkeys (panic)",
-        true,
-        None::<&str>,
-    )?;
+    let separator5 = PredefinedMenuItem::separator(app)?;
     let exit_item = MenuItem::with_id(app, "exit", "Exit", true, None::<&str>)?;
 
-    let menu = Menu::with_items(
+    Menu::with_items(
         app,
         &[
             &capture_submenu,
             &record_submenu,
             &separator1,
+            &recent_submenu,
             &copy_last_url,
             &open_captures,
+            &dest_submenu,
             &separator2,
-            &settings_item,
+            &open_hub_submenu,
             &separator3,
-            &unbind_hotkeys,
+            &hotkeys_toggle,
             &separator4,
             &exit_item,
+            &separator5,
         ],
-    )?;
+    )
+}
+
+/// rebuild the tray menu from current state and apply it to the running tray.
+/// safe to call from any thread. silently no-ops if the tray hasn't been built
+/// yet (startup race).
+pub fn rebuild_tray_menu(app: &AppHandle) {
+    if let Some(tray) = app.tray_by_id("capscr-tray") {
+        match build_tray_menu(app) {
+            Ok(menu) => {
+                if let Err(e) = tray.set_menu(Some(menu)) {
+                    tracing::warn!("tray set_menu failed: {e}");
+                }
+            }
+            Err(e) => tracing::warn!("rebuild_tray_menu construct failed: {e}"),
+        }
+    }
+}
+
+fn build_tray(app: &tauri::App) -> tauri::Result<()> {
+    let menu = build_tray_menu(app)?;
 
     let icon = app
         .default_window_icon()
@@ -321,6 +468,8 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
                     }
                 });
             };
+            // route by id. dynamic-id items (recent_upload_*) are matched by
+            // prefix below so the static-arm part stays compact.
             match id {
                 "cap_region" => spawn_capture(CaptureModeArg::Region, PostActionArg::Clipboard),
                 "cap_window" => spawn_capture(CaptureModeArg::Window, PostActionArg::Clipboard),
@@ -381,31 +530,86 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
                         .opener()
                         .open_path(dir.to_string_lossy().to_string(), None::<&str>);
                 }
-                "settings" => {
+                "tab_default" => {
                     let _ = commands::open_hub_window(app);
                 }
-                "unbind_hotkeys" => {
-                    // panic rescue — drop every task hotkey, persist, reload
-                    // so the user can recover from binding a key that locked
-                    // them out of typing it elsewhere
+                "tab_settings" | "tab_tasks" | "tab_history" | "tab_destinations"
+                | "tab_plugins" => {
+                    let _ = commands::open_hub_window(app);
+                    let target = id.trim_start_matches("tab_");
+                    let _ = app.emit("capscr://goto-tab", target);
+                }
+                "dest_imgur" | "dest_custom" | "dest_ftp" => {
                     let st = app.state::<state::AppState>();
-                    let cleared_tasks: Vec<config::CaptureTask> = {
-                        let mut cfg = st.config.lock().unwrap();
-                        for t in cfg.capture_tasks.iter_mut() {
-                            t.hotkey.clear();
-                        }
-                        if let Err(e) = cfg.save() {
-                            tracing::warn!("save after unbind-all failed: {e}");
-                        }
-                        cfg.capture_tasks.clone()
+                    let new_dest = match id {
+                        "dest_imgur" => config::UploadDestination::Imgur,
+                        "dest_custom" => config::UploadDestination::Custom,
+                        _ => config::UploadDestination::Ftp,
                     };
-                    st.send_hotkey_reload(cleared_tasks);
+                    {
+                        let mut cfg = st.config.lock().unwrap();
+                        if cfg.upload.destination != new_dest {
+                            cfg.upload.destination = new_dest;
+                            if let Err(e) = cfg.save() {
+                                tracing::warn!(
+                                    "save after destination switch failed: {e}"
+                                );
+                            }
+                        }
+                    }
+                    rebuild_tray_menu(app);
+                    let _ = app.emit("capscr://config-updated", ());
                     let _ = crate::clipboard::show_notification(
-                        "Hotkeys cleared",
-                        "Every task hotkey has been unbound. Rebind them in the hub.",
+                        "Upload destination",
+                        &format!("Switched to {:?}", new_dest),
+                    );
+                }
+                "hotkeys_toggle" => {
+                    use std::sync::atomic::Ordering;
+                    let st = app.state::<state::AppState>();
+                    let was_disabled = st.hotkeys_disabled.load(Ordering::SeqCst);
+                    st.hotkeys_disabled.store(!was_disabled, Ordering::SeqCst);
+                    let tasks = if was_disabled {
+                        // re-enabling — load tasks back from config
+                        st.config.lock().unwrap().capture_tasks.clone()
+                    } else {
+                        // disabling — pass an empty list so the hotkey thread
+                        // unregisters everything from the OS but config tasks
+                        // remain intact
+                        Vec::new()
+                    };
+                    st.send_hotkey_reload(tasks);
+                    rebuild_tray_menu(app);
+                    let _ = crate::clipboard::show_notification(
+                        if was_disabled { "Hotkeys enabled" } else { "Hotkeys disabled" },
+                        if was_disabled {
+                            "All task hotkeys are live again."
+                        } else {
+                            "All task hotkeys are off. Bindings stay in config — toggle back via the tray."
+                        },
                     );
                 }
                 "exit" => commands::exit_app(app.clone()),
+                other if other.starts_with("recent_upload_") => {
+                    let idx: usize = other
+                        .trim_start_matches("recent_upload_")
+                        .parse()
+                        .unwrap_or(usize::MAX);
+                    let st = app.state::<state::AppState>();
+                    let url = st
+                        .recent_uploads
+                        .lock()
+                        .unwrap()
+                        .get(idx)
+                        .map(|r| r.url.clone());
+                    if let Some(url) = url {
+                        if let Err(e) = crate::upload::copy_url_to_clipboard(&url) {
+                            tracing::warn!("copy recent url failed: {e}");
+                        } else if st.config.lock().unwrap().ui.show_notifications {
+                            let _ = crate::clipboard::show_notification("Copied", &url);
+                        }
+                    }
+                }
                 _ => {}
             }
         })
