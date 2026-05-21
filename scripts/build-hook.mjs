@@ -45,24 +45,26 @@ if (needs(ico)) {
     ["tauri", ["icon", source, "-o", resolve(root, "icons")]],
     ["cargo", ["tauri", "icon", source, "-o", resolve(root, "icons")]],
   ];
-  let last = null;
+  let lastSuccess = false;
+  let lastStatus = 1;
   for (const [bin, args] of candidates) {
     const r = spawnSync(bin, args, {
       cwd: root,
       stdio: "inherit",
       shell: true,
     });
-    last = r;
-    if (r.error?.code === "ENOENT") continue;
+    lastStatus = r.status ?? 1;
     if (r.status === 0) {
-      last = null;
+      lastSuccess = true;
       break;
     }
-    if (r.status !== null && r.status !== 101) break;
+    // any non-zero exit (incl. cmd's 9009 / "not recognized" / 101 for no-such-cargo-subcommand)
+    // → fall through to the next candidate; we only stop on success.
+    if (r.error?.code === "ENOENT") continue;
   }
-  if (last) {
-    console.error(`[capscr] icon generation failed (exit ${last.status})`);
-    process.exit(last.status ?? 1);
+  if (!lastSuccess) {
+    console.error(`[capscr] icon generation failed (exit ${lastStatus})`);
+    process.exit(lastStatus);
   }
 } else {
   console.log("[capscr] icons up-to-date, skipping regen");
@@ -85,13 +87,17 @@ function genBmp(target, vf) {
   }
 }
 
+// header (150×57): compact 32×32 icon flush-left with vertical centering, so
+// NSIS draws the page title text to the right at a normal 12–14px size.
 genBmp(
   headerBmp,
-  "scale=50:50:flags=lanczos+full_chroma_inp+full_chroma_int+accurate_rnd,pad=150:57:3:3:color=0x0d0d0d",
+  "scale=32:32:flags=lanczos+full_chroma_inp+full_chroma_int+accurate_rnd,pad=150:57:12:12:color=0x0d0d0d",
 );
+// sidebar (164×314): smaller 80×80 icon in the upper third, dark fill below.
+// Previously the icon spanned 164×164 which read as a stock-photo close-up.
 genBmp(
   sidebarBmp,
-  "scale=164:164:flags=lanczos+full_chroma_inp+full_chroma_int+accurate_rnd,pad=164:314:0:75:color=0x0d0d0d",
+  "scale=80:80:flags=lanczos+full_chroma_inp+full_chroma_int+accurate_rnd,pad=164:314:42:60:color=0x0d0d0d",
 );
 
 const frontendCmd = mode === "--dev" ? "dev" : "build";

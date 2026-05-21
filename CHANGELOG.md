@@ -6,6 +6,18 @@ format follows [keep-a-changelog](https://keepachangelog.com/en/1.1.0/) loosely.
 
 nothing pending. drop ideas in github issues.
 
+## [0.3.41] — 2026-05-22
+
+### changed
+- NSIS installer ships with a custom template (`installer/installer.nsi`) — patched from tauri-bundler 2.9.1's default
+- `Page custom PageReinstall PageLeaveReinstall` registration removed: manual reinstalls overwrite in place instead of prompting "uninstall current version before installing"
+- `MUI_BGCOLOR 0d0d0d` + `MUI_TEXTCOLOR c4c4c4` + `MUI_BRANDINGTEXT "capscr"` for a darker page chrome (MUI2 only — native list/edit controls still follow Windows theme)
+- installer sidebar BMP regenerated: 80×80 icon centred in upper third on a 164×314 dark fill (was a 164×164 close-up that read as a stock-photo camera-lens crop)
+- installer header BMP regenerated: 32×32 icon flush-left at y=12 on a 150×57 dark strip (was a 50×50 icon with a 3px corner gap)
+
+### fixed
+- `scripts/build-hook.mjs` candidate-loop now falls through on cmd.exe's "is not recognized" status as well as ENOENT — the `tauri`/`cargo tauri` resolution works under both PowerShell and `cmd /c` shells
+
 ## [0.3.40] — 2026-05-21
 
 ### added
