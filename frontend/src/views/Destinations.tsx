@@ -2,7 +2,7 @@ import { createResource, createSignal, Show } from "solid-js";
 import { Save } from "lucide-solid";
 import { Section } from "../components/Section";
 import { api, AppConfig } from "../api";
-import { setConfigDirty } from "../dirty";
+import { configDirty, setConfigDirty } from "../dirty";
 
 export function Destinations() {
   const [config, { mutate }] = createResource<AppConfig>(api.getConfig);
@@ -308,7 +308,13 @@ export function Destinations() {
                   {status()!.msg}
                 </span>
               </Show>
-              <button class="btn" onClick={save}>
+              <button
+                class="btn"
+                data-variant={configDirty() ? "primary" : undefined}
+                onClick={save}
+                disabled={!configDirty()}
+                title={configDirty() ? "commit pending changes" : "no changes to save"}
+              >
                 <Save size={12} stroke-width={1.5} />
                 save
               </button>

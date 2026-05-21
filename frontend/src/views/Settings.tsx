@@ -2,7 +2,7 @@ import { createResource, createSignal, For, Match, Show, Switch } from "solid-js
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { Section } from "../components/Section";
 import { api, AppConfig } from "../api";
-import { setConfigDirty } from "../dirty";
+import { configDirty, setConfigDirty } from "../dirty";
 import { FolderOpen, RotateCcw, Save } from "lucide-solid";
 
 type Pane = "general" | "capture" | "hdr" | "notify";
@@ -133,7 +133,13 @@ export function Settings() {
                 <RotateCcw size={12} stroke-width={1.5} />
                 reset
               </button>
-              <button class="btn" onClick={save} disabled={saving()}>
+              <button
+                class="btn"
+                data-variant={configDirty() ? "primary" : undefined}
+                onClick={save}
+                disabled={saving() || !configDirty()}
+                title={configDirty() ? "commit pending changes" : "no changes to save"}
+              >
                 <Save size={12} stroke-width={1.5} />
                 {saving() ? "saving..." : "save"}
               </button>

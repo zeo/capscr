@@ -51,9 +51,13 @@ export function HotkeyInput(props: Props) {
       if (!parsed) return; // pure modifier — keep listening
 
       if (isRiskyHotkey(parsed)) {
+        // bare letter/digit hotkeys steal that key system-wide and lock
+        // the user out of typing it anywhere else. refuse the bind and
+        // keep listening so they can press a combo with a modifier
         setWarning(
-          `${parsed.combined} has no modifier — it will steal that key from every other app.`,
+          `${parsed.combined} would steal that key from every app — add a modifier (Ctrl / Alt / Shift / Win).`,
         );
+        return;
       }
       props.onChange(parsed.combined);
       stop();

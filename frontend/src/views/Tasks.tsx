@@ -1,7 +1,7 @@
 import { createResource, createSignal, For, Show } from "solid-js";
 import { Plus, Save, Trash2 } from "lucide-solid";
 import { api, AppConfig, CaptureTask } from "../api";
-import { setConfigDirty } from "../dirty";
+import { configDirty, setConfigDirty } from "../dirty";
 import { HotkeyInput } from "../components/HotkeyInput";
 
 const CAPTURE_MODES: { id: CaptureTask["capture_mode"]; label: string }[] = [
@@ -119,7 +119,13 @@ export function Tasks() {
                   <Plus size={12} stroke-width={1.5} />
                   new
                 </button>
-                <button class="btn" data-variant="ghost" onClick={save}>
+                <button
+                  class="btn"
+                  data-variant={configDirty() ? "primary" : "ghost"}
+                  onClick={save}
+                  disabled={!configDirty()}
+                  title={configDirty() ? "commit pending changes" : "no changes to save"}
+                >
                   <Save size={12} stroke-width={1.5} />
                   save
                 </button>

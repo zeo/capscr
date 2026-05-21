@@ -35,6 +35,14 @@ impl HotkeyManager {
     }
 
     pub fn register(&mut self, task_id: impl Into<String>, hotkey_str: &str) -> Result<()> {
+        if is_risky_bare(hotkey_str) {
+            return Err(anyhow!(
+                "'{}' has no modifier — it would steal that key from every \
+                 app. Add Ctrl / Alt / Shift / Win or use an F-key / Numpad / \
+                 PrintScreen.",
+                hotkey_str
+            ));
+        }
         let hotkey = parse_hotkey(hotkey_str)?;
         self.manager
             .register(hotkey)
@@ -88,6 +96,33 @@ impl HotkeyManager {
         }
         self.registered.clear();
     }
+}
+
+/// bare letter or digit hotkeys (no modifier) steal that key system-wide
+/// and lock the user out of typing it anywhere else. Whitelist the keys
+/// that the frontend already marks safe-bare (F-keys, numpad, PrintScreen,
+/// Pause, ScrollLock) and reject the rest at registration time. Mirrors
+/// `isRiskyHotkey` in `frontend/src/keys.ts`.
+pub fn is_risky_bare(s: &str) -> bool {
+    if s.is_empty() {
+        return false;
+    }
+    if s.contains('+') {
+        return false;
+    }
+    let safe = matches!(
+        s,
+        "F1" | "F2" | "F3" | "F4" | "F5" | "F6" | "F7" | "F8"
+            | "F9" | "F10" | "F11" | "F12" | "F13" | "F14" | "F15"
+            | "F16" | "F17" | "F18" | "F19" | "F20" | "F21" | "F22"
+            | "F23" | "F24"
+            | "Pause" | "PrintScreen" | "ScrollLock"
+            | "Numpad0" | "Numpad1" | "Numpad2" | "Numpad3" | "Numpad4"
+            | "Numpad5" | "Numpad6" | "Numpad7" | "Numpad8" | "Numpad9"
+            | "NumpadAdd" | "NumpadSubtract" | "NumpadMultiply"
+            | "NumpadDivide" | "NumpadDecimal" | "NumpadEnter"
+    );
+    !safe
 }
 
 pub fn format_hotkey_string(s: &str) -> String {

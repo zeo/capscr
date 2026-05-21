@@ -118,29 +118,8 @@ textarea,
   border: 1px solid var(--rule-2);
 }
 
-/* Corner registration marks — cross-hair ticks at the four window
-   corners that read as measurement-instrument chrome. Pure CSS, no
-   extra DOM. .app gets the top two; .statusbar (which sits at the
-   bottom row) gets the bottom two. */
-.app::before,
-.app::after,
-.statusbar::before,
-.statusbar::after {
-  content: "";
-  position: absolute;
-  width: 9px;
-  height: 9px;
-  pointer-events: none;
-  z-index: 100;
-  background:
-    linear-gradient(var(--paper), var(--paper)) center / 1px 100% no-repeat,
-    linear-gradient(var(--paper), var(--paper)) center / 100% 1px no-repeat;
-  opacity: 0.55;
-}
-.app::before       { top: 3px;    left: 3px; }
-.app::after        { top: 3px;    right: 3px; }
-.statusbar::before { bottom: 3px; left: 3px; }
-.statusbar::after  { bottom: 3px; right: 3px; }
+/* no corner registration marks — kept the diagnostic-console rules
+   without the gimmicky cross-hair ticks */
 
 .titlebar {
   grid-area: titlebar;
@@ -349,10 +328,16 @@ textarea,
   gap: 0;
   background: var(--bg-status);
   border-top: 1px solid var(--rule);
-  padding: 0 22px;
+  padding: 0 16px;
   font-size: 11px;
   color: var(--mute);
   letter-spacing: var(--tracked);
+}
+
+/* keep the right edge of the statusbar comfortable so HELP F1 / version
+   never look pushed up against the window chrome */
+.statusbar > :last-child {
+  padding-right: 4px;
 }
 
 .statusbar .seg {
@@ -732,6 +717,25 @@ button.btn,
   border-color: var(--text);
   color: var(--text-2);
   background: transparent;
+}
+
+.btn[data-variant="primary"] {
+  background: var(--paper);
+  border-color: var(--paper);
+  color: var(--ink-0);
+}
+
+.btn[data-variant="primary"]:hover {
+  background: var(--text-2);
+  border-color: var(--text-2);
+  color: var(--ink-0);
+}
+
+.btn[data-variant="primary"]:disabled,
+.btn[data-variant="primary"]:disabled:hover {
+  background: var(--ink-3);
+  border-color: var(--rule);
+  color: var(--rule-2);
 }
 
 .btn[data-size="xs"] {

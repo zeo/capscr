@@ -6,6 +6,25 @@ format follows [keep-a-changelog](https://keepachangelog.com/en/1.1.0/) loosely.
 
 nothing pending. drop ideas in github issues.
 
+## [0.3.39] — 2026-05-21
+
+### fixed
+- save button now lights up (filled paper) when there are unsaved changes; greyed otherwise so you know when there's nothing to commit
+- bare letter/digit hotkeys are now rejected at registration (frontend + backend). previously, binding `T` stole the key globally and locked you out of typing it anywhere else
+- application-window capture retries once after 80 ms when xcap transiently misses the window during z-order shuffles
+- friendlier toast when the selected window vanishes before capture ("the selected window vanished before we could capture it…")
+
+### added
+- tray menu: **Unbind all hotkeys (panic)** — clears every task hotkey and persists, recovery path if a bound key ever traps you
+- save button gets a primary `paper` variant for any view with a configDirty signal (settings / tasks / destinations)
+
+### changed
+- dropped the decorative `+` corner registration marks. statusbar gets a touch more right-edge padding so help/version don't crowd the window chrome
+- `HotkeyInput` keeps capturing after a risky bind is rejected, with an inline warning explaining the modifier requirement
+
+### known
+- NSIS installer still uses Windows default light theme and shows the "Already Installed" page on manual reinstall — full installer redesign queued. Auto-updates (post 0.3.39) bypass the installer entirely so most upgrades won't see it.
+
 ## [0.3.38] — 2026-05-20
 
 ### security

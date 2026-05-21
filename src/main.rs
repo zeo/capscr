@@ -271,7 +271,15 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
     let separator1 = PredefinedMenuItem::separator(app)?;
     let separator2 = PredefinedMenuItem::separator(app)?;
     let separator3 = PredefinedMenuItem::separator(app)?;
+    let separator4 = PredefinedMenuItem::separator(app)?;
     let settings_item = MenuItem::with_id(app, "settings", "Open hub", true, None::<&str>)?;
+    let unbind_hotkeys = MenuItem::with_id(
+        app,
+        "unbind_hotkeys",
+        "Unbind all hotkeys (panic)",
+        true,
+        None::<&str>,
+    )?;
     let exit_item = MenuItem::with_id(app, "exit", "Exit", true, None::<&str>)?;
 
     let menu = Menu::with_items(
@@ -285,6 +293,8 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
             &separator2,
             &settings_item,
             &separator3,
+            &unbind_hotkeys,
+            &separator4,
             &exit_item,
         ],
     )?;
@@ -373,6 +383,27 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
                 }
                 "settings" => {
                     let _ = commands::open_hub_window(app);
+                }
+                "unbind_hotkeys" => {
+                    // panic rescue — drop every task hotkey, persist, reload
+                    // so the user can recover from binding a key that locked
+                    // them out of typing it elsewhere
+                    let st = app.state::<state::AppState>();
+                    let cleared_tasks: Vec<config::CaptureTask> = {
+                        let mut cfg = st.config.lock().unwrap();
+                        for t in cfg.capture_tasks.iter_mut() {
+                            t.hotkey.clear();
+                        }
+                        if let Err(e) = cfg.save() {
+                            tracing::warn!("save after unbind-all failed: {e}");
+                        }
+                        cfg.capture_tasks.clone()
+                    };
+                    st.send_hotkey_reload(cleared_tasks);
+                    let _ = crate::clipboard::show_notification(
+                        "Hotkeys cleared",
+                        "Every task hotkey has been unbound. Rebind them in the hub.",
+                    );
                 }
                 "exit" => commands::exit_app(app.clone()),
                 _ => {}

@@ -161,6 +161,8 @@ fn humanize_capture_error(e: &anyhow::Error) -> String {
         "Couldn't write to the clipboard. Another app may be holding it open — try the capture again.".into()
     } else if s.contains("region") && (s.contains("invalid") || s.contains("zero")) {
         "Selected region is too small or off-screen. Drag a larger area.".into()
+    } else if s.contains("window") && s.contains("not found") {
+        "The selected window vanished before we could capture it (minimised, closed, or moved off-screen). Try the selector again.".into()
     } else {
         raw
     }
@@ -247,7 +249,17 @@ fn run_capture_pipeline_inner(
             Some((rect.x, rect.y)),
         ),
         SelectionResult::Window(hwnd) => {
-            let img = WindowCapture::new(hwnd).capture()?;
+            // retry once after a short sleep — xcap can transiently miss
+            // windows during z-order shuffles right after the selector closes
+            // and focus jumps to the target window
+            let cap = WindowCapture::new(hwnd);
+            let img = match cap.capture() {
+                Ok(img) => img,
+                Err(_) => {
+                    std::thread::sleep(std::time::Duration::from_millis(80));
+                    cap.capture()?
+                }
+            };
             // look up the window's screen origin so the cursor composite can
             // land at the right offset within the captured pixels.
             let origin = window_screen_origin(hwnd);
