@@ -50,7 +50,7 @@ export function App() {
 }
 
 function Hub() {
-  // Open to history by default — "what just happened" is the expected view;
+  // open to history by default — "what just happened" is the expected view;
   // settings is buried behind a tab click.
   const historyTab = TABS.find((t) => t.id === "history") ?? TABS[0];
   const [tab, setTab] = createSignal<Tab>(historyTab);
@@ -74,7 +74,7 @@ function Hub() {
   const unlisteners: UnlistenFn[] = [];
   const toastTimers: ReturnType<typeof setTimeout>[] = [];
 
-  // Cap so error storms (network down, upload retry loops, etc.) can't pile
+  // cap so error storms (network down, upload retry loops, etc.) can't pile
   // up unbounded DOM nodes — anything older than the cap is silently dropped.
   const MAX_TOASTS = 8;
   const MAX_UPLOADS = 6;
@@ -114,7 +114,7 @@ function Hub() {
         setRecording(true);
         setRecordingSince(Date.now());
         setRecordingElapsed("00:00");
-        // Tell the user how to stop — re-pressing the task's hotkey toggles
+        // tell the user how to stop — re-pressing the task's hotkey toggles
         // the recording off, but that's not obvious. Look up the hotkey from
         // config so the toast is concrete.
         const taskId = e.payload;
@@ -130,9 +130,9 @@ function Hub() {
       }),
     );
 
-    // Background update check — delayed 4s so it doesn't compete with hub
+    // background update check — delayed 4s so it doesn't compete with hub
     // first-paint or block the network during the user's first capture.
-    // Skip entirely if the user has opted out in Settings.
+    // skip entirely if the user has opted out in Settings.
     setTimeout(() => {
       if (config()?.ui.check_updates_on_launch === false) return;
       void api
@@ -145,7 +145,7 @@ function Hub() {
         });
     }, 4000);
 
-    // While recording, refresh the elapsed counter once per second so the
+    // while recording, refresh the elapsed counter once per second so the
     // statusbar shows mm:ss live. Cheap: a single setInterval that no-ops
     // when not recording.
     const tickHandle = setInterval(() => {
@@ -166,15 +166,15 @@ function Hub() {
         setShowShortcuts((v) => !v);
         return;
       }
-      // Escape — close the cheatsheet if it's open.
+      // escape — close the cheatsheet if it's open.
       if (ev.key === "Escape" && showShortcuts()) {
         ev.preventDefault();
         setShowShortcuts(false);
         return;
       }
-      // Alt+S/T/H/D/M for tab switching — sidebar titles advertise these so
+      // alt+S/T/H/D/M for tab switching — sidebar titles advertise these so
       // the keybind has to actually work. We respect the dirty-state guard so
-      // Alt-jumping out of unsaved edits still prompts.
+      // alt-jumping out of unsaved edits still prompts.
       if (!ev.altKey || ev.ctrlKey || ev.metaKey || ev.shiftKey) return;
       const k = ev.key.toLowerCase();
       const target = TABS.find((t) => t.key === k);
@@ -193,7 +193,7 @@ function Hub() {
         setDragOver(false);
       } else if (payload.type === "drop") {
         setDragOver(false);
-        // Cap concurrent uploads so dragging 50 files onto the window doesn't
+        // cap concurrent uploads so dragging 50 files onto the window doesn't
         // melt the UI thread. Anything over the cap is rejected with a single
         // explanatory toast — the user can re-drop the remainder.
         const MAX_BATCH = 5;
@@ -234,7 +234,7 @@ function Hub() {
     if (!confirmDiscardEdits()) return;
     setConfigDirty(false);
     const c = config();
-    // Minimize instead of hide so the taskbar button stays and the jump list
+    // minimize instead of hide so the taskbar button stays and the jump list
     // is accessible via right-click. Fall back to minimize if config isn't
     // loaded yet — destroying the window forces a slow cold re-create.
     if (!c || c.ui.minimize_to_tray) {

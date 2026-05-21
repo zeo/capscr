@@ -9,7 +9,7 @@
 // BEFORE IDAT, so we add it via `Writer::write_chunk` between header and
 // image data.
 //
-// Scope right now: HDR10 source (R16G16B16A16 native PQ from D3D11 swapchain
+// scope right now: HDR10 source (R16G16B16A16 native PQ from D3D11 swapchain
 // scanout). ScRgb (float linear) needs a per-pixel matrix + PQ-encode pass
 // before quantising to u16 — that path is in TODO state at the bottom.
 
@@ -26,7 +26,7 @@ pub struct HdrBitmap {
     pub width: u32,
     pub height: u32,
     pub format: HdrFormat,
-    /// Raw bytes straight from the DXGI swapchain. Layout depends on `format`:
+    /// raw bytes straight from the DXGI swapchain. Layout depends on `format`:
     /// - `Hdr10`: R16G16B16A16, 8 bytes per pixel, little-endian.
     /// - `ScRgb`: R32G32B32A32 float, 16 bytes per pixel, little-endian.
     /// - `Hlg`:   4 bytes per pixel (HLG-encoded BT.2020 8-bit per channel).
@@ -41,8 +41,8 @@ impl HdrBitmap {
     }
 }
 
-/// Write `bitmap` to `path` as a 16-bit RGBA PNG with a `cICP` chunk.
-/// Currently only `HdrFormat::Hdr10` is fully supported; other formats
+/// write `bitmap` to `path` as a 16-bit RGBA PNG with a `cICP` chunk.
+/// currently only `HdrFormat::Hdr10` is fully supported; other formats
 /// return an explanatory error so the caller can fall back to the SDR-only
 /// path without surprises.
 pub fn encode_hdr_png(path: &Path, bitmap: &HdrBitmap) -> Result<()> {
@@ -91,7 +91,7 @@ fn encode_hdr10_png(path: &Path, bitmap: &HdrBitmap) -> Result<()> {
     let cicp: [u8; 4] = [9, 16, 0, 1];
     writer.write_chunk(ChunkType(*b"cICP"), &cicp)?;
 
-    // Convert little-endian u16s to big-endian for PNG. Allocates once.
+    // convert little-endian u16s to big-endian for PNG. Allocates once.
     let mut be_data = Vec::with_capacity(bitmap.data.len());
     for chunk in bitmap.data.chunks_exact(2) {
         // chunk[0] is low byte (LE); flip to high-first.
@@ -103,7 +103,7 @@ fn encode_hdr10_png(path: &Path, bitmap: &HdrBitmap) -> Result<()> {
     Ok(())
 }
 
-/// Probe a PNG for a `cICP` chunk that signals HDR. Used by the editor to
+/// probe a PNG for a `cICP` chunk that signals HDR. Used by the editor to
 /// detect HDR captures it shouldn't quietly downgrade to SDR on save.
 pub fn read_cicp(path: &Path) -> Option<CicpInfo> {
     let bytes = std::fs::read(path).ok()?;
@@ -186,7 +186,7 @@ mod tests {
     #[test]
     fn cicp_absent_returns_none() {
         let tmp = std::env::temp_dir().join("capscr-sdr-test.png");
-        // Write a plain SDR PNG via the image crate.
+        // write a plain SDR PNG via the image crate.
         let img = image::RgbaImage::from_pixel(4, 4, image::Rgba([128, 64, 200, 255]));
         img.save(&tmp).unwrap();
         assert!(read_cicp(&tmp).is_none());

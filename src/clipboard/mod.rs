@@ -270,7 +270,7 @@ pub fn show_notification(title: &str, body: &str) -> Result<()> {
         .body(&safe_body)
         .timeout(notify_rust::Timeout::Milliseconds(3000));
 
-    // Anchor the toast to our explicit AUMID so Windows Action Center groups
+    // anchor the toast to our explicit AUMID so Windows Action Center groups
     // notifications under "capscr" with our icon, not under the PowerShell
     // fallback (the generic blue icon).
     #[cfg(windows)]

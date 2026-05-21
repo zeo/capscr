@@ -22,7 +22,7 @@ pub struct AppState {
     pub last_save: Mutex<Option<PathBuf>>,
     pub last_upload: Mutex<Option<UploadRecord>>,
     pub editor_image_path: Mutex<Option<String>>,
-    // True while a capture pipeline is in flight. Gates new triggers so a
+    // true while a capture pipeline is in flight. Gates new triggers so a
     // user mashing the hotkey while a previous capture is hung doesn't
     // accumulate stalled worker threads.
     pub capture_in_progress: AtomicBool,

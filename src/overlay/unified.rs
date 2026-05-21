@@ -75,7 +75,7 @@ mod windows_impl {
 
     static SCREEN_BITMAP: Mutex<Option<isize>> = Mutex::new(None);
     static SCREEN_DC: Mutex<Option<isize>> = Mutex::new(None);
-    // Persistent back buffer for double-buffered WM_PAINT. Without this, every
+    // persistent back buffer for double-buffered WM_PAINT. Without this, every
     // mouse move allocated/freed a screen-size GDI bitmap (~32 MB on a 4K
     // display × ~100 mouse-events/sec = visible flicker / stutter).
     static BACK_BITMAP: Mutex<Option<isize>> = Mutex::new(None);
@@ -168,7 +168,7 @@ mod windows_impl {
     }
 
     pub fn select() -> SelectionResult {
-        // Single-flight: the windows_impl module backs the entire selector with
+        // single-flight: the windows_impl module backs the entire selector with
         // process-wide statics (START_X / SCREEN_BITMAP / etc.). A second
         // simultaneous select() call from e.g. tray-click while a hotkey-bound
         // capture is mid-drag would scramble those, so we reject overlap and
@@ -364,7 +364,7 @@ mod windows_impl {
                 let width = SCREEN_WIDTH.load(Ordering::SeqCst);
                 let height = SCREEN_HEIGHT.load(Ordering::SeqCst);
 
-                // Compose the whole frame into a back buffer, then BitBlt once
+                // compose the whole frame into a back buffer, then BitBlt once
                 // to the window. The back buffer is cached for the life of the
                 // selector — recreating it every paint allocated ~32 MB of GDI
                 // memory per frame on 4K displays and caused visible flicker
@@ -477,8 +477,8 @@ mod windows_impl {
                             let right = cached.right - virt_x;
                             let bottom = cached.bottom - virt_y;
 
-                            // Subtle dimming inside the hovered window's bounds + 1px white outline.
-                            // Replaces the previous 3px lime-green rectangle that looked like a debug overlay.
+                            // subtle dimming inside the hovered window's bounds + 1px white outline.
+                            // replaces the previous 3px lime-green rectangle that looked like a debug overlay.
                             let dim_brush = CreateSolidBrush(windows::Win32::Foundation::COLORREF(0x00FFFFFF));
                             let rect = RECT { left, top, right, bottom };
 
@@ -587,7 +587,7 @@ mod windows_impl {
                     }
                 }
 
-                // Single blit of the composited frame.
+                // single blit of the composited frame.
                 let _ = BitBlt(hdc, 0, 0, width, height, back_dc, 0, 0, SRCCOPY);
 
                 // back_dc / back_bmp are cached for the life of the selector
@@ -692,7 +692,7 @@ mod windows_impl {
                 LRESULT(0)
             }
             WM_DESTROY => {
-                // Release the cached back buffer that WM_PAINT created on
+                // release the cached back buffer that WM_PAINT created on
                 // demand — leaks ~32 MB of GDI memory per selector invocation
                 // otherwise.
                 if let Some(dc) = BACK_DC.lock().unwrap().take() {

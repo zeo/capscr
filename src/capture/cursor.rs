@@ -1,11 +1,11 @@
-// Cursor overlay — fetches the current system cursor from Win32 and alpha-
+// cursor overlay — fetches the current system cursor from Win32 and alpha-
 // composites it onto a captured RgbaImage at the right screen-relative
 // position. Used by run_capture_pipeline when `config.capture.show_cursor`
 // is enabled. Linux falls back to a no-op.
 
 use image::RgbaImage;
 
-/// Composite the system cursor onto `image` at its screen-relative position.
+/// composite the system cursor onto `image` at its screen-relative position.
 /// `screen_origin` is the (x, y) of the image's top-left pixel in virtual
 /// desktop coordinates. Quietly no-ops if the cursor isn't showing, the
 /// cursor handle is unresolvable, or any Win32 call fails — we never want
@@ -31,7 +31,7 @@ fn composite_at(dst: &mut RgbaImage, src: &RgbaImage, x: i32, y: i32) {
     let dst_h = dst.height() as i32;
     let src_w = src.width() as i32;
     let src_h = src.height() as i32;
-    // Trim to destination bounds — handles cursors hanging off the capture edge.
+    // trim to destination bounds — handles cursors hanging off the capture edge.
     let x0 = x.max(0);
     let y0 = y.max(0);
     let x1 = (x + src_w).min(dst_w);
@@ -108,7 +108,7 @@ mod windows_impl {
             if GetIconInfo(hicon, &mut icon_info).is_err() {
                 return None;
             }
-            // Both bitmaps need cleanup regardless of which one we use to size.
+            // both bitmaps need cleanup regardless of which one we use to size.
             struct BmpGuard(HBITMAP);
             impl Drop for BmpGuard {
                 fn drop(&mut self) {
@@ -120,7 +120,7 @@ mod windows_impl {
             let _color_guard = BmpGuard(icon_info.hbmColor);
             let _mask_guard = BmpGuard(icon_info.hbmMask);
 
-            // Cursor dimensions: when hbmColor is set the cursor is a true
+            // cursor dimensions: when hbmColor is set the cursor is a true
             // 32-bit icon; when only hbmMask is set the cursor is a 1-bit
             // AND/XOR mask stacked vertically (so height is doubled).
             let (width, height) = {
@@ -145,7 +145,7 @@ mod windows_impl {
                     h /= 2;
                 }
                 let w = bmp.bmWidth.unsigned_abs();
-                // Cap pathological sizes so we never allocate a runaway buffer
+                // cap pathological sizes so we never allocate a runaway buffer
                 // on a custom-driver cursor.
                 if w == 0 || h == 0 || w > 256 || h > 256 {
                     return None;
@@ -153,7 +153,7 @@ mod windows_impl {
                 (w, h)
             };
 
-            // Create a 32-bit DIB section, draw the cursor into it via
+            // create a 32-bit DIB section, draw the cursor into it via
             // DrawIconEx (which handles AND-mask + XOR for arrow cursors and
             // alpha for modern Aero ones), then read the bits out.
             let screen_dc = GetDC(HWND::default());
@@ -183,7 +183,7 @@ mod windows_impl {
             let mut bmi = BITMAPINFO::default();
             bmi.bmiHeader.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
             bmi.bmiHeader.biWidth = width as i32;
-            // Negative height → top-down DIB so the byte order matches RgbaImage.
+            // negative height → top-down DIB so the byte order matches RgbaImage.
             bmi.bmiHeader.biHeight = -(height as i32);
             bmi.bmiHeader.biPlanes = 1;
             bmi.bmiHeader.biBitCount = 32;
@@ -209,7 +209,7 @@ mod windows_impl {
                 return None;
             }
 
-            // Zero the buffer ourselves — CreateDIBSection initialises to zero
+            // zero the buffer ourselves — CreateDIBSection initialises to zero
             // on Windows, but DrawIconEx only writes the visible portion of an
             // alpha cursor, so untouched pixels stay alpha=0 (transparent).
 
@@ -231,7 +231,7 @@ mod windows_impl {
             }
             SelectObject(mem_dc, old);
 
-            // Read the DIB pixels into an owned Vec. They're in BGRA order;
+            // read the DIB pixels into an owned Vec. They're in BGRA order;
             // convert to RGBA for the RgbaImage.
             let stride = (width as usize) * 4;
             let total = stride * (height as usize);
@@ -244,7 +244,7 @@ mod windows_impl {
                 rgba.push(chunk[3]); // A
             }
 
-            // For non-alpha cursors (the classic black-and-white arrow on
+            // for non-alpha cursors (the classic black-and-white arrow on
             // pre-Aero apps) DrawIconEx leaves alpha=0 everywhere despite
             // having drawn opaque pixels. Detect that and force alpha=255 on
             // any non-black pixel as a heuristic recovery — better than an
@@ -259,7 +259,7 @@ mod windows_impl {
             }
 
             let img = RgbaImage::from_raw(width, height, rgba)?;
-            // Subtract the hotspot so the rendered cursor lines up with the
+            // subtract the hotspot so the rendered cursor lines up with the
             // tip / hot pixel rather than the bitmap's top-left corner.
             let screen_x = info.ptScreenPos.x - icon_info.xHotspot as i32;
             let screen_y = info.ptScreenPos.y - icon_info.yHotspot as i32;

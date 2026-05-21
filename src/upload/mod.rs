@@ -291,7 +291,7 @@ impl ImageUploader {
         if data.len() > MAX_UPLOAD_SIZE {
             return Err(anyhow!("Upload too large ({} bytes)", data.len()));
         }
-        // Retry transient network failures up to 3 times with exponential
+        // retry transient network failures up to 3 times with exponential
         // backoff (300ms, 600ms). HTTP-status errors and parser errors are
         // NOT retried — those indicate a real problem at the destination,
         // not a flaky link.
@@ -619,8 +619,8 @@ const BLOCKED_HOSTS: &[&str] = &[
     "oastify.com",
 ];
 
-/// Reject hosts that resolve to private / loopback / cloud-metadata IP ranges.
-/// Resolves DNS twice (with a small sleep between) so a malicious resolver
+/// reject hosts that resolve to private / loopback / cloud-metadata IP ranges.
+/// resolves DNS twice (with a small sleep between) so a malicious resolver
 /// can't pass the check and then return a private IP on the real connect call.
 pub(crate) fn validate_resolved_host(host: &str, port: u16) -> Result<()> {
     let host_lower = host.to_lowercase();
@@ -666,7 +666,7 @@ pub(crate) fn validate_resolved_host(host: &str, port: u16) -> Result<()> {
     Ok(())
 }
 
-// Classify whether an upload error is worth retrying. We retry on
+// classify whether an upload error is worth retrying. We retry on
 // timeouts, connection resets, dropped DNS, and 5xx-shaped server errors —
 // not on auth failures or 4xx (retrying those would just hammer a server
 // telling us "no"). Heuristic matches against the anyhow chain text, so we
@@ -703,7 +703,7 @@ pub fn upload_ftp(data: &[u8], file_name: &str, target: &FtpTarget) -> Result<Up
         return Err(anyhow!("FTPS not yet implemented; disable use_tls or use SFTP"));
     }
 
-    // Sanitize and uniquify the remote filename so callers can't smuggle path
+    // sanitize and uniquify the remote filename so callers can't smuggle path
     // traversal and so two captures at the same second don't collide.
     let safe = sanitize_remote_filename(file_name);
     let filename = uniquify_remote_filename(&safe);
@@ -712,7 +712,7 @@ pub fn upload_ftp(data: &[u8], file_name: &str, target: &FtpTarget) -> Result<Up
     let mut stream = FtpStream::connect(&address)
         .map_err(|e| anyhow!("FTP connect to {} failed: {}", address, e))?;
 
-    // Helper to log out and tear down the socket no matter which step below
+    // helper to log out and tear down the socket no matter which step below
     // failed — without this the connection lingered until the OS GC'd it,
     // which on some servers blocked the next upload while the slot expired.
     let close_quietly = |mut s: FtpStream| {
@@ -721,7 +721,7 @@ pub fn upload_ftp(data: &[u8], file_name: &str, target: &FtpTarget) -> Result<Up
     let with_cleanup = |res: Result<UploadResult>, s: FtpStream, partial: Option<&str>| {
         if res.is_err() {
             if let Some(name) = partial {
-                // Best-effort: remove the half-written remote file so the
+                // best-effort: remove the half-written remote file so the
                 // server doesn't accumulate corrupt artefacts from retries.
                 let mut s = s;
                 let _ = s.rm(name);

@@ -262,7 +262,7 @@ impl GifRecorder {
             }
         }
 
-        // Scope the encoder so it's dropped (and its file handle closed/flushed)
+        // scope the encoder so it's dropped (and its file handle closed/flushed)
         // before we check the file size with metadata(). On Windows, an open
         // file handle prevents accurate metadata reads and may block deletion.
         {

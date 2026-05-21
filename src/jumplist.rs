@@ -3,7 +3,7 @@
 // `--jump=<kind>` arg; tauri-plugin-single-instance forwards that to the
 // already-running process (see main.rs).
 //
-// The COM calls here are all best-effort: if any step fails, the jump list
+// the COM calls here are all best-effort: if any step fails, the jump list
 // silently stays as Windows' default. We never want this to block startup.
 
 use std::ffi::OsStr;
@@ -105,10 +105,10 @@ pub fn register() -> windows::core::Result<()> {
             let desc = wide(t.desc);
             link.SetDescription(PCWSTR(desc.as_ptr()))?;
 
-            // Use the exe itself as the icon source (index 0 = first icon).
+            // use the exe itself as the icon source (index 0 = first icon).
             link.SetIconLocation(PCWSTR(exe_wide.as_ptr()), 0)?;
 
-            // The visible label in the jump list comes from PKEY_Title on the
+            // the visible label in the jump list comes from PKEY_Title on the
             // shell link's property store, not from SetDescription.
             let store: IPropertyStore = link.cast()?;
             let title = wide(t.title);

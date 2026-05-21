@@ -51,7 +51,7 @@ impl Sound {
     }
 }
 
-/// Warm up the Windows audio subsystem so the first real `Sound::play` cue
+/// warm up the Windows audio subsystem so the first real `Sound::play` cue
 /// doesn't have a 200-500 ms startup lag (the user reported the first
 /// screenshot beep being noticeably late). PlaySoundW with SND_PURGE and a
 /// null pointer kicks waveOut initialisation without actually emitting

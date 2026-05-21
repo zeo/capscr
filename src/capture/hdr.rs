@@ -61,20 +61,20 @@ impl HdrCapture {
             .unwrap_or(false)
     }
 
-    /// Capture HDR content and automatically tonemap to SDR.
+    /// capture HDR content and automatically tonemap to SDR.
     pub fn capture(&self) -> Result<RgbaImage> {
         let (img, _hdr) = self.capture_with_hdr_at(None)?;
         Ok(img)
     }
 
-    /// Same capture as `capture()`, but also returns the raw HDR bitmap when
+    /// same capture as `capture()`, but also returns the raw HDR bitmap when
     /// the source was HDR. Used by the save path to write a sidecar HDR PNG
     /// alongside the tonemapped SDR PNG.
     pub fn capture_with_hdr(&self) -> Result<(RgbaImage, Option<crate::capture::HdrBitmap>)> {
         self.capture_with_hdr_at(None)
     }
 
-    /// Variant that targets the monitor containing the given desktop point.
+    /// variant that targets the monitor containing the given desktop point.
     /// `None` falls back to the first DXGI output (legacy behaviour).
     pub fn capture_with_hdr_at(
         &self,
@@ -187,7 +187,7 @@ impl HdrCapture {
                 hlg_to_sdr_skiv(raw_data, width, height, params)
             }
             HdrFormat::Sdr => {
-                // Already SDR, just copy
+                // already SDR, just copy
                 let expected_bytes = pixel_count.saturating_mul(4);
                 if raw_data.len() < expected_bytes {
                     return RgbaImage::new(width, height);
@@ -354,7 +354,7 @@ mod windows_hdr {
                         break;
                     }
                     Err(e) if e.code() == DXGI_ERROR_ACCESS_LOST && attempt < 9 => {
-                        // Display config changed (monitor unplug, sleep/wake,
+                        // display config changed (monitor unplug, sleep/wake,
                         // resolution switch). The duplication object is dead;
                         // re-acquire by recreating it from the same output.
                         if let Ok(fresh) = output1.DuplicateOutput(&device) {
@@ -363,7 +363,7 @@ mod windows_hdr {
                         std::thread::sleep(std::time::Duration::from_millis(100));
                     }
                     Err(e) if e.code() == DXGI_ERROR_WAIT_TIMEOUT => {
-                        // Compositor produced no new frame within 100ms —
+                        // compositor produced no new frame within 100ms —
                         // common on idle desktops. Just keep waiting.
                         std::thread::sleep(std::time::Duration::from_millis(50));
                     }
@@ -437,7 +437,7 @@ mod windows_hdr {
             let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
             context.Map(&staging_texture, 0, D3D11_MAP_READ, 0, Some(&mut mapped))?;
 
-            // Guard pattern: every Map call needs a matching Unmap, even on
+            // guard pattern: every Map call needs a matching Unmap, even on
             // panic or early return. Without this an OOM on Vec::with_capacity
             // below could leave the staging texture locked and any subsequent
             // capture would fail until capscr restarted.

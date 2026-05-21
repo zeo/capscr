@@ -1,15 +1,15 @@
 // HDR -> SDR tonemap pipeline.
 //
-// The `*_skiv` functions and the supporting ICtCp / PQ / tonemap-rolloff
+// the `*_skiv` functions and the supporting ICtCp / PQ / tonemap-rolloff
 // helpers are a Rust port of the SKIV (Special K Image Viewer) tonemap by
-// Andon "Kaldaien" Coleman, MIT-licensed:
+// andon "Kaldaien" Coleman, MIT-licensed:
 //   https://github.com/SpecialKO/SKIV
-// Specifically: PostProcessingColor.hlsl, tone_mapping.hlsli, and
+// specifically: PostProcessingColor.hlsl, tone_mapping.hlsli, and
 // colorspaces.hlsli, together with the per-frame ImageInfo / MaxCLL
 // computation adapted from GotoFinal's open-source HDR tonemap
 // reference (MIT-licensed).
 //
-// The Reinhard path below is kept only as a reference / fallback and is
+// the Reinhard path below is kept only as a reference / fallback and is
 // unused by the runtime pipeline.
 
 use image::{Rgba, RgbaImage};

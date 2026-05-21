@@ -210,7 +210,7 @@ export function Editor() {
     await loadImage(path);
   });
 
-  // When the editor window is reused for a new image, the backend emits this
+  // when the editor window is reused for a new image, the backend emits this
   // event instead of opening a fresh window. Without a listener here the
   // canvas would keep showing the previous image while imagePath() points to
   // the new file — any save would overwrite the wrong file.
@@ -273,7 +273,7 @@ export function Editor() {
     stepZoom(e.deltaY < 0 ? 1 : -1);
   };
 
-  // Replace the current canvas with a pasted clipboard image; users expect
+  // replace the current canvas with a pasted clipboard image; users expect
   // paste to work. We accept any image/* type the browser decoded.
   const onPaste = async (e: ClipboardEvent) => {
     const items = e.clipboardData?.items;
@@ -311,8 +311,8 @@ export function Editor() {
     setStatus({ tone: "", msg: "paste: only images are accepted here — use the text tool to add text" });
   };
 
-  // Truthy when there's at least one committed edit (or a draft mid-drag).
-  // Used by the dirty-state guard so Escape / the close button warn before
+  // truthy when there's at least one committed edit (or a draft mid-drag).
+  // used by the dirty-state guard so Escape / the close button warn before
   // throwing away the user's work.
   const isDirty = () => ops().length > 0 || draft() !== null || hasPastedContent();
 
@@ -339,7 +339,7 @@ export function Editor() {
     window.removeEventListener("paste", onPaste);
   });
 
-  // Intercept the close button on the titlebar. Without this, clicking X
+  // intercept the close button on the titlebar. Without this, clicking X
   // discards unsaved annotations silently — the same data-loss footgun the
   // Settings tab already guards against.
   let closeUnlisten: (() => void) | null = null;
@@ -513,7 +513,7 @@ export function Editor() {
     const h = Math.max(1, Math.min(Math.floor(op.size.h), canvasH - y));
     if (w <= 0 || h <= 0) return;
 
-    // Use a pixelate-style mosaic — it's faster and more privacy-safe than a true blur.
+    // use a pixelate-style mosaic — it's faster and more privacy-safe than a true blur.
     const cell = Math.max(4, op.radius);
     const cols = Math.ceil(w / cell);
     const rows = Math.ceil(h / cell);
@@ -577,7 +577,7 @@ export function Editor() {
         el?.focus();
       }, 0);
     } else if (t === "step") {
-      // Click-to-drop, not drag. Auto-increment from the highest existing
+      // click-to-drop, not drag. Auto-increment from the highest existing
       // step number so undo/redo stays consistent.
       const next = nextStepNumber();
       const op: StepOp = {
@@ -717,7 +717,7 @@ export function Editor() {
     setBusy("save");
     setStatus({ tone: "", msg: "writing..." });
     try {
-      // Encode in the source file's format so we don't write PNG bytes to a
+      // encode in the source file's format so we don't write PNG bytes to a
       // .jpg path (which would silently corrupt the file for downstream
       // consumers that trust the extension).
       const bytes = await exportBytes(targetMime());
@@ -740,7 +740,7 @@ export function Editor() {
     setBusy("copy");
     setStatus({ tone: "", msg: "copying..." });
     try {
-      // Clipboard always wants PNG — that's what the Rust ClipboardManager
+      // clipboard always wants PNG — that's what the Rust ClipboardManager
       // expects to decode.
       const bytes = await exportBytes("image/png");
       await invoke<void>("copy_edited_image_to_clipboard", {
@@ -758,7 +758,7 @@ export function Editor() {
     setBusy("upload");
     setStatus({ tone: "", msg: "uploading..." });
     try {
-      // Upload path also expects PNG — the existing ImageUploader.upload
+      // upload path also expects PNG — the existing ImageUploader.upload
       // re-encodes, so we feed it canonical bytes.
       const bytes = await exportBytes("image/png");
       const result = await invoke<{ url: string; delete_url: string | null }>(

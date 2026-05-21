@@ -1,10 +1,10 @@
 // Marketplace client. Fetches a JSON registry, downloads + verifies + extracts
 // plugin zips into the per-user plugins directory.
 //
-// Default registry: https://rot.lt/capscr/registry.json (overridable via the
+// default registry: https://rot.lt/capscr/registry.json (overridable via the
 // `marketplace.registry_url` config field).
 //
-// Wire-format contract — what the registry endpoint MUST serve. Documented
+// wire-format contract — what the registry endpoint MUST serve. Documented
 // here so the server side and the client stay in sync. Bump `version` when
 // the shape changes incompatibly.
 //
@@ -31,7 +31,7 @@
 // }
 // ```
 //
-// Each `id` must match `^[a-z0-9][a-z0-9_-]{0,63}$` — used as the on-disk
+// each `id` must match `^[a-z0-9][a-z0-9_-]{0,63}$` — used as the on-disk
 // folder name, so we reject anything that could escape the plugins dir.
 
 use anyhow::{anyhow, bail, Result};
@@ -144,7 +144,7 @@ pub fn install_plugin(plugins_dir: &Path, entry: &RegistryEntry) -> Result<()> {
         }
     }
 
-    // Stream-read to enforce the cap and compute sha256 in one pass.
+    // stream-read to enforce the cap and compute sha256 in one pass.
     let mut reader = resp.take(MAX_PLUGIN_ZIP_BYTES + 1);
     let mut buf = Vec::new();
     reader.read_to_end(&mut buf)?;
@@ -164,7 +164,7 @@ pub fn install_plugin(plugins_dir: &Path, entry: &RegistryEntry) -> Result<()> {
         );
     }
 
-    // Stage into a temp dir, then atomic-rename into place. If anything
+    // stage into a temp dir, then atomic-rename into place. If anything
     // fails we leave the existing install untouched.
     std::fs::create_dir_all(plugins_dir)?;
     let final_dir = plugins_dir.join(&entry.id);
@@ -196,7 +196,7 @@ pub fn install_plugin(plugins_dir: &Path, entry: &RegistryEntry) -> Result<()> {
                 bail!("zip entry has unsafe path: {}", file.name());
             }
         };
-        // Defense-in-depth on top of enclosed_name (which already rejects
+        // defense-in-depth on top of enclosed_name (which already rejects
         // `..` traversal): reject absolute paths and component-level `..`.
         if raw_name.is_absolute()
             || raw_name
@@ -235,7 +235,7 @@ pub fn install_plugin(plugins_dir: &Path, entry: &RegistryEntry) -> Result<()> {
         std::io::copy(&mut file, &mut out)?;
     }
 
-    // Manifest must exist. Without it the listing path won't see the plugin
+    // manifest must exist. Without it the listing path won't see the plugin
     // and we'd have a silently broken install.
     if !staging.join("plugin.toml").exists() {
         let _ = std::fs::remove_dir_all(&staging);

@@ -41,13 +41,13 @@ function formatDate(unix: number): string {
 
 export function History() {
   const [entries, { refetch }] = createResource(api.listCaptures);
-  // Track which path is in the "confirm delete" state. Second click on the
+  // track which path is in the "confirm delete" state. Second click on the
   // trash icon within 4s commits; otherwise the prompt resets.
   const [confirmDelete, setConfirmDelete] = createSignal<string | null>(null);
   const [search, setSearch] = createSignal("");
   const [filter, setFilter] = createSignal<FilterKind>("all");
 
-  // Live-refresh the grid when a new capture lands so the user doesn't
+  // live-refresh the grid when a new capture lands so the user doesn't
   // have to click "reload" after every screenshot. Coalesce rapid bursts
   // (e.g. a GIF + sidecar landing back-to-back) into one refetch.
   let refreshTimer: ReturnType<typeof setTimeout> | null = null;
@@ -226,7 +226,7 @@ export function History() {
               <div
                 class="tile"
                 onClick={(ev) => {
-                  // Don't open the editor when the click landed on an
+                  // don't open the editor when the click landed on an
                   // overlay button.
                   if ((ev.target as HTMLElement).closest(".tile-actions")) return;
                   void api.openEditor(e.path);

@@ -133,7 +133,7 @@ pub struct OutputConfig {
     pub format: ImageFormat,
     pub quality: u8,
     pub filename_template: String,
-    /// When true and the source is HDR (HDR10 currently — scRGB / HLG arrive
+    /// when true and the source is HDR (HDR10 currently — scRGB / HLG arrive
     /// in Phase 2), capscr writes a `<basename>.hdr.png` sidecar alongside
     /// the normal SDR file. The sidecar is a 16-bit BT.2020 + PQ PNG with a
     /// `cICP` chunk so HDR-aware viewers display it as real HDR.
@@ -405,7 +405,7 @@ fn default_marketplace_registry_url() -> String {
 }
 
 fn default_imgur_client_id() -> String {
-    // Built-in bot Client-ID. Power users who hit Imgur's per-app rate limit
+    // built-in bot Client-ID. Power users who hit Imgur's per-app rate limit
     // (or want their own analytics) can paste a personal Client-ID over this.
     "546c25a59c58ad7".to_string()
 }
@@ -793,7 +793,7 @@ impl Config {
                     Ok(mut config) => {
                         config.sanitize();
                         if let Err(e) = config.validate() {
-                            // Keep the validated-default fallback but preserve the
+                            // keep the validated-default fallback but preserve the
                             // user's file by renaming it — they get a clean state
                             // without losing the data they hand-edited.
                             Self::backup_corrupt_config(&path, &content);
@@ -826,7 +826,7 @@ impl Config {
             "config.bad.{stamp}.toml"
         );
         backup.set_file_name(new_name);
-        // Write-then-replace: never delete the user's broken config until
+        // write-then-replace: never delete the user's broken config until
         // the backup has been written successfully.
         if let Err(e) = fs::write(&backup, content) {
             tracing::error!("could not back up corrupt config to {backup:?}: {e}");

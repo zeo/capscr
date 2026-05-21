@@ -60,7 +60,7 @@ pub fn get_default_config() -> Config {
     Config::default()
 }
 
-/// Cheap-ish probe: reads PNG chunks until the `cICP` chunk or `IDAT`. The
+/// cheap-ish probe: reads PNG chunks until the `cICP` chunk or `IDAT`. The
 /// editor calls this on load to know whether to warn the user that edits
 /// will flatten HDR to SDR. Returns false on any read error.
 #[tauri::command]
@@ -80,7 +80,7 @@ pub fn set_config(config: Config, app: AppHandle, state: State<AppState>) -> Res
     let want_autostart = config.ui.auto_start;
     let output_dir = config.output.directory.clone();
     *state.config.lock().unwrap() = config;
-    // Sync asset:// scope with the new output dir so History thumbnails keep
+    // sync asset:// scope with the new output dir so History thumbnails keep
     // loading after the user changes the path mid-session.
     if let Err(e) = app.asset_protocol_scope().allow_directory(&output_dir, true) {
         tracing::warn!("asset scope allow_directory({:?}) failed: {e}", output_dir);
@@ -141,8 +141,8 @@ pub fn take_screenshot(
     Ok(())
 }
 
-// Translate the raw anyhow chain into something a non-engineer can act on.
-// We keep the original text as a suffix when none of the patterns match so
+// translate the raw anyhow chain into something a non-engineer can act on.
+// we keep the original text as a suffix when none of the patterns match so
 // debugging info isn't lost.
 fn humanize_capture_error(e: &anyhow::Error) -> String {
     let raw = format!("{:#}", e);
@@ -191,7 +191,7 @@ fn run_capture_pipeline_inner(
 ) -> anyhow::Result<()> {
     use std::sync::atomic::Ordering;
     let gate_state = app.state::<AppState>();
-    // Drop the trigger when a previous capture is still in flight (likely
+    // drop the trigger when a previous capture is still in flight (likely
     // hung on a stuck D3D11 device or held selector). Without this gate a
     // user repeatedly mashing the hotkey accumulates stalled worker threads.
     if gate_state
@@ -202,7 +202,7 @@ fn run_capture_pipeline_inner(
         tracing::info!("capture already in progress; dropping new trigger");
         return Ok(());
     }
-    // Reset the gate on every exit (success, error, panic) so the user never
+    // reset the gate on every exit (success, error, panic) so the user never
     // has to restart capscr to unstick the trigger.
     struct CaptureGate<'a>(&'a std::sync::atomic::AtomicBool);
     impl<'a> Drop for CaptureGate<'a> {
@@ -219,7 +219,7 @@ fn run_capture_pipeline_inner(
         CaptureModeArg::ActiveMonitor => SelectionResult::FullScreen,
     };
 
-    // Honour the configured pre-capture delay (used to set up menus / hover
+    // honour the configured pre-capture delay (used to set up menus / hover
     // states between picking the region and the actual grab). Skip when the
     // selection was cancelled or a color was picked — neither produces a
     // pixel capture.
@@ -248,7 +248,7 @@ fn run_capture_pipeline_inner(
         ),
         SelectionResult::Window(hwnd) => {
             let img = WindowCapture::new(hwnd).capture()?;
-            // Look up the window's screen origin so the cursor composite can
+            // look up the window's screen origin so the cursor composite can
             // land at the right offset within the captured pixels.
             let origin = window_screen_origin(hwnd);
             (img, None, origin)
@@ -277,7 +277,7 @@ fn run_capture_pipeline_inner(
 
     let state = app.state::<AppState>();
 
-    // Honour the show_cursor toggle by painting the live cursor into the
+    // honour the show_cursor toggle by painting the live cursor into the
     // captured pixels at its screen-relative position. Skipped if the
     // capture didn't expose a screen origin (e.g. an unknown selection
     // variant). Failures inside composite_system_cursor are silent — they
@@ -341,13 +341,13 @@ fn run_capture_pipeline_inner(
     };
 
     let result = run_post_action(app, &state, &image, post_action, upload_target);
-    // Drop the HDR sidecar next to the file we just wrote — never against
+    // drop the HDR sidecar next to the file we just wrote — never against
     // a previous capture's path, which is what reading state.last_save
     // would surface for clipboard-only / upload-only actions.
     if let Ok(Some(sdr_path)) = &result {
         let cfg = state.config.lock().unwrap().clone();
         maybe_write_hdr_sidecar(sdr_path, &hdr_bitmap, &cfg);
-        // Notify the hub so the History tab live-refreshes — otherwise the
+        // notify the hub so the History tab live-refreshes — otherwise the
         // user has to hit "reload" manually after every capture.
         let _ = app.emit("capscr://capture-saved", sdr_path.to_string_lossy().to_string());
     }
@@ -375,7 +375,7 @@ fn build_imgur_service(config: &Config) -> UploadService {
     }
 }
 
-// Build an upload service, optionally overriding the global destination with a
+// build an upload service, optionally overriding the global destination with a
 // per-task target. `target_override = None` uses the global config destination.
 fn build_upload_service(config: &Config) -> UploadService {
     build_upload_service_for_target(config, None)
@@ -408,10 +408,10 @@ fn build_upload_service_for_target(
     }
 }
 
-// Returns the tonemapped SDR image alongside the raw HDR bitmap when the
+// returns the tonemapped SDR image alongside the raw HDR bitmap when the
 // source display is HDR. Region / Window captures go through GDI BitBlt and
 // can't produce HDR data, so only ActiveMonitor / Fullscreen call this.
-// Targets the monitor under the cursor; the primary monitor was previously
+// targets the monitor under the cursor; the primary monitor was previously
 // hardcoded and surprised multi-display users.
 fn capture_active_monitor_with_hdr(
 ) -> anyhow::Result<(RgbaImage, Option<crate::capture::HdrBitmap>)> {
@@ -460,7 +460,7 @@ fn active_monitor_origin() -> Option<(i32, i32)> {
         .ok()
         .map(|m| (m.x(), m.y()))
         .or_else(|| {
-            // Fallback to primary if the cursor lookup failed.
+            // fallback to primary if the cursor lookup failed.
             xcap::Monitor::all()
                 .ok()?
                 .into_iter()
@@ -469,7 +469,7 @@ fn active_monitor_origin() -> Option<(i32, i32)> {
         })
 }
 
-// If the user opted into HDR preservation and the source produced an HDR
+// if the user opted into HDR preservation and the source produced an HDR
 // bitmap, write a `<basename>.hdr.png` sidecar next to the SDR file. Failures
 // are reported via tracing but never fail the overall capture — the SDR file
 // is the source of truth.
@@ -494,7 +494,7 @@ fn maybe_write_hdr_sidecar(
     }
 }
 
-// Returns Some(path) when a fresh file was written *this call*. Callers
+// returns Some(path) when a fresh file was written *this call*. Callers
 // rely on this to tie the HDR sidecar to the right basename — reading
 // `state.last_save` would surface a previous capture's path when this
 // action was clipboard-only.
@@ -569,7 +569,7 @@ fn run_post_action(
         }
         PostCaptureAction::SaveAndCopy => {
             let path = do_save()?;
-            // Don't claim "+ copied" if the clipboard step actually failed —
+            // don't claim "+ copied" if the clipboard step actually failed —
             // surface the partial success honestly. Save is the source of
             // truth; clipboard is best-effort because another app could be
             // holding it open.
@@ -634,7 +634,7 @@ pub fn list_captures(state: State<AppState>) -> Result<Vec<HistoryEntry>, String
         return Ok(Vec::new());
     }
 
-    // First pass: collect every present filename so we can mark each SDR
+    // first pass: collect every present filename so we can mark each SDR
     // entry's `has_hdr` by looking up a `<stem>.hdr.png` sidecar.
     let mut filenames: std::collections::HashSet<String> = std::collections::HashSet::new();
     let read = std::fs::read_dir(&dir).map_err(|e| e.to_string())?;
@@ -666,7 +666,7 @@ pub fn list_captures(state: State<AppState>) -> Result<Vec<HistoryEntry>, String
             .and_then(|f| f.to_str())
             .unwrap_or("")
             .to_string();
-        // Hide raw HDR sidecars from the History grid — they're paired with
+        // hide raw HDR sidecars from the History grid — they're paired with
         // an SDR file and surface via the `has_hdr` badge on that entry.
         if filename.ends_with(".hdr.png") {
             continue;
@@ -711,7 +711,7 @@ pub fn delete_capture(path: String, state: State<AppState>) -> Result<(), String
     if !canonical.starts_with(&dir_canonical) {
         return Err("Path is outside the configured output directory".into());
     }
-    // Also remove the `<stem>.hdr.png` sidecar if present, so deleting a
+    // also remove the `<stem>.hdr.png` sidecar if present, so deleting a
     // capture from History doesn't leave orphan HDR data on disk.
     if let Some(stem) = canonical.file_stem().and_then(|s| s.to_str()) {
         let sidecar = canonical.with_file_name(format!("{stem}.hdr.png"));
@@ -753,7 +753,7 @@ pub fn reupload_capture(
         return Err("Path is outside the configured output directory".into());
     }
     // GIF files contain animation data that image::open drops to the first frame.
-    // Upload the raw file bytes via a dedicated path instead of re-encoding.
+    // upload the raw file bytes via a dedicated path instead of re-encoding.
     let ext = canonical.extension()
         .and_then(|e| e.to_str())
         .map(|s| s.to_lowercase())
@@ -894,7 +894,7 @@ pub async fn install_update(app: AppHandle) -> Result<(), String> {
 
 const HUB_LABEL: &str = "hub";
 
-// Called in setup() so the WebView2 instance is warm before the user opens
+// called in setup() so the WebView2 instance is warm before the user opens
 // the tray. Without this, the first tray click pays the full WebView2 cold-
 // boot cost (multi-second on most machines, >1min on some).
 pub fn prewarm_hub_window(app: &tauri::App) -> tauri::Result<()> {
@@ -910,7 +910,7 @@ pub fn prewarm_hub_window(app: &tauri::App) -> tauri::Result<()> {
         .decorations(false)
         .visible(false)
         .build()?;
-    // Intercept the close button so the WebView2 process stays alive for the
+    // intercept the close button so the WebView2 process stays alive for the
     // next tray-click. Without this we pay multi-second cold-boot every time
     // the user closes and re-opens the hub, even after the startup prewarm.
     intercept_hub_close(window);
@@ -1014,7 +1014,7 @@ pub fn save_edited_image(
     if bytes.len() > 100 * 1024 * 1024 {
         return Err("Image too large to save".into());
     }
-    // Atomic write: stage to a sibling temp file, then rename. A disk-full
+    // atomic write: stage to a sibling temp file, then rename. A disk-full
     // or permission-denied mid-write would otherwise truncate the original
     // — the user would lose the un-edited capture too.
     let mut tmp = buf.clone();
@@ -1194,8 +1194,8 @@ fn run_gif_task(task: &CaptureTask, app: &AppHandle) -> anyhow::Result<()> {
     let active_id = state.recording_task_id.lock().unwrap().clone();
 
     if matches!(current, RecordingState::Recording) {
-        // Same task hotkey re-pressed → user wants to stop.
-        // Different task hotkey while recording → reject and tell the user.
+        // same task hotkey re-pressed → user wants to stop.
+        // different task hotkey while recording → reject and tell the user.
         if active_id.as_deref() == Some(task.id.as_str()) {
             stop_gif_recording(app);
         } else {
@@ -1219,7 +1219,7 @@ fn run_gif_task(task: &CaptureTask, app: &AppHandle) -> anyhow::Result<()> {
     }
 
     if matches!(current, RecordingState::Processing) {
-        // Mid-save from a previous run; skip.
+        // mid-save from a previous run; skip.
         return Ok(());
     }
 
@@ -1374,8 +1374,8 @@ fn set_tray_tooltip(app: &AppHandle, tooltip: &str) {
 fn apply_gif_post_action(task: &CaptureTask, app: &AppHandle, path: &std::path::Path, cfg: &Config) {
     match task.post_action {
         TaskPostAction::Clipboard | TaskPostAction::SaveAndClipboard => {
-            // Clipboard support for animated GIF varies wildly across OSes/apps.
-            // For now: copy the file path text so the user can paste into anything path-aware.
+            // clipboard support for animated GIF varies wildly across OSes/apps.
+            // for now: copy the file path text so the user can paste into anything path-aware.
             if let Ok(mut cb) = ClipboardManager::new() {
                 let _ = cb.copy_text(&path.to_string_lossy());
             }
@@ -1426,7 +1426,7 @@ fn apply_gif_post_action(task: &CaptureTask, app: &AppHandle, path: &std::path::
             });
         }
         TaskPostAction::SaveFile | TaskPostAction::Prompt => {
-            // Already saved to disk; nothing further.
+            // already saved to disk; nothing further.
         }
     }
 }
@@ -1537,7 +1537,7 @@ fn plugins_dir() -> Result<PathBuf, String> {
     Ok(project.data_dir().to_path_buf().join("plugins"))
 }
 
-// Wrapper exported for setup-time pre-creation in main.rs.
+// wrapper exported for setup-time pre-creation in main.rs.
 pub fn resolve_plugins_dir() -> Result<PathBuf, String> {
     plugins_dir()
 }

@@ -54,7 +54,7 @@ fn set_dpi_awareness() {
 fn set_dpi_awareness() {}
 
 fn main() {
-    // Early exit for --version / --help so capscr.exe behaves like a normal
+    // early exit for --version / --help so capscr.exe behaves like a normal
     // CLI when invoked from PowerShell. Done before tracing / DPI / Tauri
     // setup so the process is genuinely transient in those modes.
     if handle_cli_short_circuit(std::env::args()) {
@@ -70,7 +70,7 @@ fn main() {
 
     let config = config::Config::load().unwrap_or_default();
     if let Err(e) = config.ensure_output_dir() {
-        // The hub UI isn't up yet — surface this through the OS notification
+        // the hub UI isn't up yet — surface this through the OS notification
         // channel so the user knows captures will fail until they fix it.
         let _ = clipboard::show_notification(
             "capscr: captures folder unreachable",
@@ -80,7 +80,7 @@ fn main() {
     }
     install_hdr_runtime_from_config(&config);
 
-    // Pre-warm the Win32 audio subsystem in the background so the first
+    // pre-warm the Win32 audio subsystem in the background so the first
     // capture cue isn't delayed by waveOut initialisation. Fire-and-forget;
     // the actual user-triggered Sound::play won't race because it serialises
     // through PlaySoundW.
@@ -125,9 +125,9 @@ fn main() {
             if let Err(e) = jumplist::register() {
                 tracing::warn!("jumplist register failed: {e}");
             }
-            // Make sure the asset:// protocol can reach the user's configured
+            // make sure the asset:// protocol can reach the user's configured
             // output dir even if they moved it off the default $PICTURE/capscr.
-            // The static scope in tauri.conf.json is the fallback; this widens
+            // the static scope in tauri.conf.json is the fallback; this widens
             // it dynamically based on actual config.
             {
                 let st = app.state::<state::AppState>();
@@ -136,7 +136,7 @@ fn main() {
                     tracing::warn!("asset scope allow_directory({:?}) failed: {e}", dir);
                 }
             }
-            // Pre-create the plugins folder so 'Open folder' from the
+            // pre-create the plugins folder so 'Open folder' from the
             // Marketplace tab succeeds on a fresh install without round-
             // tripping through the open_plugins_folder fallback create.
             if let Ok(dirs) = commands::resolve_plugins_dir() {
@@ -148,12 +148,12 @@ fn main() {
                 *st.hotkey_tx.lock().unwrap() = Some(tx);
             }
             spawn_hotkey_thread(app.handle().clone(), rx, initial_tasks.clone());
-            // Warm the hub WebView2 ahead of the first tray click so it shows
+            // warm the hub WebView2 ahead of the first tray click so it shows
             // instantly instead of paying cold-boot cost on demand.
             if let Err(e) = commands::prewarm_hub_window(app) {
                 tracing::warn!("hub pre-warm failed: {e}");
             }
-            // First-launch jump-list dispatch: if capscr.exe was launched with
+            // first-launch jump-list dispatch: if capscr.exe was launched with
             // --jump=<kind>, run that action now. We delay slightly so the tray
             // and webview are fully ready before any capture pipeline fires.
             if let Some(kind) = initial_jump.clone() {
@@ -321,7 +321,7 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
                     spawn_capture(CaptureModeArg::ActiveMonitor, PostActionArg::Clipboard)
                 }
                 "rec_region_gif" => {
-                    // Synthesize a tray-driven gif task so run_gif_task's start/stop
+                    // synthesize a tray-driven gif task so run_gif_task's start/stop
                     // toggle (keyed off the task id in AppState) works the same as
                     // a real hotkey-bound task.
                     let app = app.clone();
@@ -418,7 +418,7 @@ fn spawn_hotkey_thread(
                 err.reason
             );
         }
-        // Surface startup hotkey errors via OS notification — the hub window
+        // surface startup hotkey errors via OS notification — the hub window
         // may not be open yet, so emit_error toasts would be lost.
         if !startup_errors.is_empty() {
             let summary = startup_errors
@@ -429,7 +429,7 @@ fn spawn_hotkey_thread(
             let _ = clipboard::show_notification("capscr: hotkey conflicts", &summary);
         }
 
-        // Event-driven loop — blocks on the OS until a hotkey event arrives or
+        // event-driven loop — blocks on the OS until a hotkey event arrives or
         // a reload command is sent. Replaces a 100ms busy-poll that ate laptop
         // batteries (10 wakeups/sec for the lifetime of the app).
         let hotkey_rx = global_hotkey::GlobalHotKeyEvent::receiver().clone();
@@ -480,7 +480,7 @@ fn parse_jump_arg<I: IntoIterator<Item = String>>(args: I) -> Option<String> {
         .find_map(|a| a.strip_prefix("--jump=").map(String::from))
 }
 
-/// Returns true when the process should exit immediately after writing to the
+/// returns true when the process should exit immediately after writing to the
 /// parent console (--version / --help). Tauri normally builds the GUI window
 /// subsystem with no attached console, so on Windows we hop onto the parent's
 /// console via AttachConsole before printing.
@@ -541,7 +541,7 @@ fn attach_parent_console() {}
 fn dispatch_jump(app: &tauri::AppHandle, kind: Option<&str>) {
     use commands::{CaptureModeArg, PostActionArg};
     let Some(kind) = kind else {
-        // Bare second launch (no --jump=) — just surface the hub.
+        // bare second launch (no --jump=) — just surface the hub.
         let _ = commands::open_hub_window(app);
         return;
     };

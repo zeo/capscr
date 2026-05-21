@@ -70,7 +70,7 @@ export function Tasks() {
     const c = config();
     if (!c) return;
 
-    // Duplicate hotkey guard — two tasks sharing a hotkey means only one fires
+    // duplicate hotkey guard — two tasks sharing a hotkey means only one fires
     const bound = c.capture_tasks.map((t) => t.hotkey).filter(Boolean);
     const dupes = bound.filter((h, i) => bound.indexOf(h) !== i);
     if (dupes.length > 0) {
