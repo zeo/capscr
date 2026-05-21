@@ -38,14 +38,31 @@ const needs = (target) => !existsSync(target) || sourceMtime > statSync(target).
 if (needs(ico)) {
   console.log(`[capscr] regenerating platform icons from ${source}`);
   mkdirSync(resolve(root, "icons"), { recursive: true });
-  const r = spawnSync(
-    "cargo",
-    ["tauri", "icon", source, "-o", resolve(root, "icons")],
-    { cwd: root, stdio: "inherit", shell: true },
-  );
-  if (r.status !== 0) {
-    console.error(`[capscr] icon generation failed (exit ${r.status})`);
-    process.exit(r.status ?? 1);
+  // prefer the npm-global `tauri` binary (what tauri-action installs in CI);
+  // fall back to `cargo tauri` which is what local `cargo install tauri-cli`
+  // provides
+  const candidates = [
+    ["tauri", ["icon", source, "-o", resolve(root, "icons")]],
+    ["cargo", ["tauri", "icon", source, "-o", resolve(root, "icons")]],
+  ];
+  let last = null;
+  for (const [bin, args] of candidates) {
+    const r = spawnSync(bin, args, {
+      cwd: root,
+      stdio: "inherit",
+      shell: true,
+    });
+    last = r;
+    if (r.error?.code === "ENOENT") continue;
+    if (r.status === 0) {
+      last = null;
+      break;
+    }
+    if (r.status !== null && r.status !== 101) break;
+  }
+  if (last) {
+    console.error(`[capscr] icon generation failed (exit ${last.status})`);
+    process.exit(last.status ?? 1);
   }
 } else {
   console.log("[capscr] icons up-to-date, skipping regen");
