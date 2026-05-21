@@ -1,7 +1,13 @@
 #![allow(dead_code, clippy::enum_variant_names)]
 
+mod manifest;
+#[cfg(feature = "plugin-runtime")]
+mod wasm;
+
+pub use manifest::PluginManifest;
+
 use image::RgbaImage;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 #[derive(Debug, Clone)]
@@ -16,6 +22,28 @@ pub enum PluginEvent {
     PostUpload {
         url: String,
     },
+}
+
+impl PluginEvent {
+    /// the hook name plugins must export to subscribe to this event
+    fn hook_name(&self) -> &'static str {
+        match self {
+            PluginEvent::PostCapture { .. } => "on_capture",
+            PluginEvent::PostSave { .. } => "on_capture_saved",
+            PluginEvent::PostUpload { .. } => "on_upload_success",
+        }
+    }
+
+    /// UTF-8 payload written into the plugin's linear memory before the hook
+    /// is invoked. PostCapture currently passes mode only (image bytes will
+    /// follow when we settle on the host blob API).
+    fn payload(&self) -> String {
+        match self {
+            PluginEvent::PostCapture { mode, .. } => format!("{:?}", mode),
+            PluginEvent::PostSave { path } => path.to_string_lossy().to_string(),
+            PluginEvent::PostUpload { url } => url.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -37,21 +65,103 @@ pub enum PluginResponse {
 
 pub struct PluginManager {
     lazy_loading: bool,
+    plugins_dir: Option<PathBuf>,
+    #[cfg(feature = "plugin-runtime")]
+    host: Option<wasm::SharedWasmHost>,
+    #[cfg(feature = "plugin-runtime")]
+    loaded: Vec<wasm::WasmPlugin>,
 }
 
 impl PluginManager {
     pub fn new() -> Self {
-        Self { lazy_loading: true }
+        Self {
+            lazy_loading: true,
+            plugins_dir: default_plugins_dir(),
+            #[cfg(feature = "plugin-runtime")]
+            host: None,
+            #[cfg(feature = "plugin-runtime")]
+            loaded: Vec::new(),
+        }
     }
 
     pub fn set_lazy_loading(&mut self, lazy: bool) {
         self.lazy_loading = lazy;
     }
 
+    /// scan the plugins dir, parse every plugin.toml, and (under the
+    /// `plugin-runtime` feature) instantiate WASM plugins. Returns a list
+    /// of human-readable load errors so the caller can surface them.
     pub fn load_all(&mut self) -> Vec<String> {
-        Vec::new()
+        let dir = match &self.plugins_dir {
+            Some(d) => d.clone(),
+            None => return Vec::new(),
+        };
+        if !dir.exists() {
+            return Vec::new();
+        }
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(e) => e,
+            Err(e) => return vec![format!("read plugins dir: {e}")],
+        };
+        let mut errors = Vec::new();
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            if let Err(e) = self.load_one(&path) {
+                errors.push(format!(
+                    "{}: {}",
+                    path.file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("<bad name>"),
+                    e
+                ));
+            }
+        }
+        errors
     }
 
+    #[cfg(not(feature = "plugin-runtime"))]
+    fn load_one(&mut self, dir: &Path) -> Result<(), anyhow::Error> {
+        // metadata-only: confirm the manifest parses so the marketplace tab
+        // can list the plugin, but don't try to execute anything
+        let _ = PluginManifest::load(dir)?;
+        Ok(())
+    }
+
+    #[cfg(feature = "plugin-runtime")]
+    fn load_one(&mut self, dir: &Path) -> Result<(), anyhow::Error> {
+        let manifest = PluginManifest::load(dir)?;
+        if !manifest.is_wasm() {
+            return Ok(()); // metadata-only plugin, listed but not executed
+        }
+        let host = match &self.host {
+            Some(h) => h.clone(),
+            None => {
+                let h = std::sync::Arc::new(wasm::WasmHost::new()?);
+                self.host = Some(h.clone());
+                h
+            }
+        };
+        let plugin = host.load(dir, &manifest)?;
+        self.loaded.push(plugin);
+        Ok(())
+    }
+
+    #[cfg(feature = "plugin-runtime")]
+    pub fn dispatch(&mut self, event: &PluginEvent) -> PluginResponse {
+        let hook_name = event.hook_name();
+        let payload = event.payload();
+        for plugin in &self.loaded {
+            if let Err(e) = plugin.call_hook(hook_name, &payload) {
+                tracing::warn!("plugin '{}' hook '{}' failed: {e}", plugin.id, hook_name);
+            }
+        }
+        PluginResponse::Continue
+    }
+
+    #[cfg(not(feature = "plugin-runtime"))]
     pub fn dispatch(&mut self, _event: &PluginEvent) -> PluginResponse {
         PluginResponse::Continue
     }
@@ -61,4 +171,9 @@ impl Default for PluginManager {
     fn default() -> Self {
         Self::new()
     }
+}
+
+fn default_plugins_dir() -> Option<PathBuf> {
+    let pd = directories::ProjectDirs::from("com", "capscr", "capscr")?;
+    Some(pd.data_dir().join("plugins"))
 }

@@ -6,6 +6,19 @@ format follows [keep-a-changelog](https://keepachangelog.com/en/1.1.0/) loosely.
 
 nothing pending. drop ideas in github issues.
 
+## [0.3.42] — 2026-05-22
+
+### added
+- 0.4 WASM plugin runtime foundation, behind `plugin-runtime` cargo feature (default build unchanged)
+- `src/plugin/manifest.rs`: serde-backed `plugin.toml` schema (id, name, version, runtime{type/file/memory_max/time_slice_ms}, hooks{}, capabilities{})
+- `src/plugin/wasm.rs`: wasmtime-backed host. exposes `capscr.log(level, ptr, len)`; loads `plugin.wasm`, resolves manifest-declared hooks, owns the Store + Memory + capscr_alloc handle
+- `PluginManager::load_all` scans `%APPDATA%/com.capscr.capscr/data/plugins/<id>/`, parses each manifest, instantiates WASM plugins under the feature flag
+- `docs/plugin-runtime.md`: full author guide — manifest schema, hook signatures, host imports, minimal Rust cdylib example
+
+### changed
+- `wasmtime 29` back as an optional dep (was removed in 0.3.1 — security-advisory liability with no consumer; now consumed by the host)
+- existing metadata-only plugins keep working: a plugin without a `[runtime]` section is listed but never instantiated
+
 ## [0.3.41] — 2026-05-22
 
 ### changed

@@ -1,6 +1,6 @@
 [package]
 name = "capscr"
-version = "0.3.41"
+version = "0.3.42"
 edition = "2021"
 description = "Fast HDR-aware Windows screen capture — tray-first, signed updates, no telemetry."
 authors = ["rot <96458554+rotlove@users.noreply.github.com>"]
@@ -10,6 +10,10 @@ homepage = "https://rot.lt/work/capscr"
 
 [features]
 default = []
+# WASM plugin runtime host. When enabled, src/plugin/wasm.rs is compiled
+# and PluginManager::load_all instantiates plugins with `runtime = "wasm"`
+# in their plugin.toml. Off by default until the host API surface stabilises.
+plugin-runtime = ["dep:wasmtime"]
 
 [dependencies]
 # GUI shell. tauri-runtime-wry 2.9.x has a Send+Sync mismatch with current wry
@@ -79,10 +83,12 @@ notify-rust = "4.11"
 # UUID for unique identifiers
 uuid = { version = "1.0", features = ["v4"] }
 
-# Plugin system (manifest + zip extraction). wasmtime returns when the WASM
-# host re-lands; until then it's a security-advisory liability with no consumer.
+# Plugin system: zip extraction (marketplace) + wasmtime (0.4 plugin runtime
+# host). wasmtime is opt-in via the `plugin-runtime` feature so the default
+# build stays small while we iterate on the host API.
 zip = "2.2"
 semver = "1.0"
+wasmtime = { version = "29", default-features = false, features = ["cranelift", "runtime"], optional = true }
 
 # Marketplace integrity — sha256 of plugin payload + hex en/decode for the
 # manifest entry. Both already transitive; pinning them as direct deps so the
