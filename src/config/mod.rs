@@ -261,6 +261,11 @@ pub struct HotkeyConfig {
     pub screenshot: String,
     #[serde(default)]
     pub record_gif: String,
+    // user-controlled global kill switch toggled from the tray or Settings.
+    // when true, the LL keyboard hook is installed but its match table is
+    // empty, so no chord can fire a task. preserved across restarts.
+    #[serde(default)]
+    pub disabled_globally: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -785,6 +790,7 @@ impl Default for Config {
             hotkeys: HotkeyConfig {
                 screenshot: "Ctrl+Shift+S".to_string(),
                 record_gif: "Ctrl+Shift+G".to_string(),
+                disabled_globally: false,
             },
             ui: UiConfig {
                 theme: Theme::Dark,

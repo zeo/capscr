@@ -194,6 +194,8 @@ fn main() {
             commands::copy_edited_image_to_clipboard,
             commands::upload_edited_image,
             commands::upload_file,
+            commands::hotkey_diagnostics,
+            commands::set_hotkeys_disabled,
         ])
         .build(tauri::generate_context!())
         .expect("error while building capscr")
@@ -569,24 +571,20 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
                     use std::sync::atomic::Ordering;
                     let st = app.state::<state::AppState>();
                     let was_disabled = st.hotkeys_disabled.load(Ordering::SeqCst);
-                    st.hotkeys_disabled.store(!was_disabled, Ordering::SeqCst);
-                    let tasks = if was_disabled {
-                        // re-enabling — load tasks back from config
-                        st.config.lock().unwrap().capture_tasks.clone()
-                    } else {
-                        // disabling — pass an empty list so the hotkey thread
-                        // unregisters everything from the OS but config tasks
-                        // remain intact
-                        Vec::new()
-                    };
-                    st.send_hotkey_reload(tasks);
-                    rebuild_tray_menu(app);
+                    let next = !was_disabled;
+                    if let Err(e) = commands::set_hotkeys_disabled(
+                        next,
+                        app.clone(),
+                        st,
+                    ) {
+                        tracing::warn!("tray hotkey toggle failed: {e}");
+                    }
                     let _ = crate::clipboard::show_notification(
-                        if was_disabled { "Hotkeys enabled" } else { "Hotkeys disabled" },
-                        if was_disabled {
-                            "All task hotkeys are live again."
+                        if next { "Hotkeys disabled" } else { "Hotkeys enabled" },
+                        if next {
+                            "All capscr hotkeys are off. Re-enable from the tray or Settings → Hotkeys."
                         } else {
-                            "All task hotkeys are off. Bindings stay in config — toggle back via the tray."
+                            "All task hotkeys are live again."
                         },
                     );
                 }
@@ -634,6 +632,50 @@ fn spawn_hotkey_thread(
     rx: cb::Receiver<HotkeyCommand>,
     initial_tasks: Vec<config::CaptureTask>,
 ) {
+    #[cfg(windows)]
+    {
+        use crate::hotkeys::ll_hook;
+        let (hook_tx, hook_rx) = cb::unbounded::<ll_hook::HookEvent>();
+        ll_hook::init(hook_tx);
+        if let Err(e) = ll_hook::spawn_hook_thread() {
+            tracing::error!("LL keyboard hook thread spawn failed: {e}");
+        }
+
+        // dispatcher: consumes HookEvents off the LL hook channel and turns
+        // them into task triggers. lives on its own thread so the hook
+        // callback returns instantly (Windows kills LL hooks that exceed
+        // LowLevelHooksTimeout, default 300ms).
+        let app_dispatch = app.clone();
+        std::thread::Builder::new()
+            .name("capscr-hotkey-dispatch".into())
+            .spawn(move || {
+                let mut last_fire: std::collections::HashMap<String, std::time::Instant> =
+                    std::collections::HashMap::new();
+                while let Ok(ev) = hook_rx.recv() {
+                    match ev {
+                        ll_hook::HookEvent::Fire { task_id } => {
+                            // dedupe auto-repeat: ignore repeats within 250ms of
+                            // the previous fire for the same task. WH_KEYBOARD_LL
+                            // forwards held-key auto-repeat presses; users only
+                            // expect one capture per press-release cycle.
+                            let now = std::time::Instant::now();
+                            let last = last_fire.get(&task_id).copied();
+                            let allow = match last {
+                                None => true,
+                                Some(t) => now.duration_since(t).as_millis() > 250,
+                            };
+                            if !allow {
+                                continue;
+                            }
+                            last_fire.insert(task_id.clone(), now);
+                            commands::trigger_task(&app_dispatch, &task_id);
+                        }
+                    }
+                }
+            })
+            .ok();
+    }
+
     std::thread::spawn(move || {
         let mut hm = match hotkeys::HotkeyManager::new() {
             Ok(h) => h,
@@ -642,9 +684,19 @@ fn spawn_hotkey_thread(
                 return;
             }
         };
+        // honour the persisted kill switch when present — restored from config
+        // at startup via the AppState constructor.
+        #[cfg(windows)]
+        {
+            use std::sync::atomic::Ordering;
+            let st = app.state::<state::AppState>();
+            let disabled = st.hotkeys_disabled.load(Ordering::SeqCst);
+            crate::hotkeys::ll_hook::set_enabled(!disabled);
+        }
         for task in &initial_tasks {
             hm.try_register(task.id.clone(), &task.hotkey);
         }
+        hm.flush_to_hook();
         let startup_errors = hm.take_errors();
         for err in &startup_errors {
             tracing::warn!(
@@ -654,8 +706,9 @@ fn spawn_hotkey_thread(
                 err.reason
             );
         }
-        // surface startup hotkey errors via OS notification — the hub window
-        // may not be open yet, so emit_error toasts would be lost.
+        // record startup registration outcomes so the hub Tasks view can show
+        // a per-task status chip even before the user has opened it.
+        commands::record_hotkey_status(&app, &hm.registered_task_ids(), &startup_errors);
         if !startup_errors.is_empty() {
             let summary = startup_errors
                 .iter()
@@ -665,47 +718,30 @@ fn spawn_hotkey_thread(
             let _ = clipboard::show_notification("capscr: hotkey conflicts", &summary);
         }
 
-        // event-driven loop — blocks on the OS until a hotkey event arrives or
-        // a reload command is sent. Replaces a 100ms busy-poll that ate laptop
-        // batteries (10 wakeups/sec for the lifetime of the app).
-        let hotkey_rx = global_hotkey::GlobalHotKeyEvent::receiver().clone();
+        // reload loop: hotkey re-registration is driven by the Reload command
+        // channel, which is sent on config save, tray toggle, and any other
+        // path that mutates the binding set.
         loop {
-            cb::select! {
-                recv(hotkey_rx) -> ev => {
-                    let Ok(ev) = ev else {
-                        // global-hotkey channel closed — this should not happen
-                        // during normal operation. if it does, hotkeys are dead
-                        // until restart.
-                        tracing::error!("global hotkey channel closed unexpectedly; all hotkeys disabled");
-                        commands::emit_error(&app, "hotkey", "hotkey listener stopped — restart capscr to restore hotkeys");
-                        break;
-                    };
-                    if ev.state != global_hotkey::HotKeyState::Pressed {
-                        continue;
-                    }
-                    if let Some(task_id) = hm.task_for_event_id(ev.id) {
-                        commands::trigger_task(&app, &task_id);
-                    }
-                }
-                recv(rx) -> cmd => {
-                    let Ok(HotkeyCommand::Reload { tasks }) = cmd else { break };
-                    hm.unregister_all();
-                    for task in &tasks {
-                        hm.try_register(task.id.clone(), &task.hotkey);
-                    }
-                    for err in hm.take_errors() {
-                        tracing::warn!(
-                            "hotkey '{}' for task '{}' failed: {}",
-                            err.hotkey,
-                            err.task_id,
-                            err.reason
-                        );
-                        let msg = format!("'{}' ({}) — {}", err.hotkey, err.task_id, err.reason);
-                        commands::emit_error(&app, "hotkey", &msg);
-                        // also send an OS notification since the hub may be hidden
-                        let _ = crate::clipboard::show_notification("Hotkey conflict", &msg);
-                    }
-                }
+            let Ok(HotkeyCommand::Reload { tasks }) = rx.recv() else {
+                break;
+            };
+            hm.unregister_all();
+            for task in &tasks {
+                hm.try_register(task.id.clone(), &task.hotkey);
+            }
+            hm.flush_to_hook();
+            let errs = hm.take_errors();
+            commands::record_hotkey_status(&app, &hm.registered_task_ids(), &errs);
+            for err in &errs {
+                tracing::warn!(
+                    "hotkey '{}' for task '{}' failed: {}",
+                    err.hotkey,
+                    err.task_id,
+                    err.reason
+                );
+                let msg = format!("'{}' ({}) — {}", err.hotkey, err.task_id, err.reason);
+                commands::emit_error(&app, "hotkey", &msg);
+                let _ = crate::clipboard::show_notification("Hotkey conflict", &msg);
             }
         }
     });

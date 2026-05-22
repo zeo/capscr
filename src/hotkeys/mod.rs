@@ -1,18 +1,85 @@
 #![allow(dead_code)]
 
+#[cfg(windows)]
+pub mod ll_hook;
+
 use anyhow::{anyhow, Result};
-use global_hotkey::{
-    hotkey::{Code, HotKey, Modifiers},
-    GlobalHotKeyEvent, GlobalHotKeyManager,
-};
+use global_hotkey::hotkey::{Code, HotKey, Modifiers};
 use std::collections::HashMap;
 
+#[cfg(windows)]
+pub fn hotkey_to_hook_binding(hk: &HotKey) -> Option<ll_hook::HookBinding> {
+    let vk = code_to_vk(hk.key)?;
+    let mut mods = 0u8;
+    if hk.mods.contains(Modifiers::CONTROL) {
+        mods |= ll_hook::MOD_CTRL;
+    }
+    if hk.mods.contains(Modifiers::ALT) {
+        mods |= ll_hook::MOD_ALT;
+    }
+    if hk.mods.contains(Modifiers::SHIFT) {
+        mods |= ll_hook::MOD_SHIFT;
+    }
+    if hk.mods.contains(Modifiers::SUPER) {
+        mods |= ll_hook::MOD_WIN;
+    }
+    Some(ll_hook::HookBinding { vk, mods })
+}
+
+#[cfg(windows)]
+fn code_to_vk(c: Code) -> Option<u32> {
+    let vk: u32 = match c {
+        Code::KeyA => 0x41, Code::KeyB => 0x42, Code::KeyC => 0x43, Code::KeyD => 0x44,
+        Code::KeyE => 0x45, Code::KeyF => 0x46, Code::KeyG => 0x47, Code::KeyH => 0x48,
+        Code::KeyI => 0x49, Code::KeyJ => 0x4A, Code::KeyK => 0x4B, Code::KeyL => 0x4C,
+        Code::KeyM => 0x4D, Code::KeyN => 0x4E, Code::KeyO => 0x4F, Code::KeyP => 0x50,
+        Code::KeyQ => 0x51, Code::KeyR => 0x52, Code::KeyS => 0x53, Code::KeyT => 0x54,
+        Code::KeyU => 0x55, Code::KeyV => 0x56, Code::KeyW => 0x57, Code::KeyX => 0x58,
+        Code::KeyY => 0x59, Code::KeyZ => 0x5A,
+        Code::Digit0 => 0x30, Code::Digit1 => 0x31, Code::Digit2 => 0x32, Code::Digit3 => 0x33,
+        Code::Digit4 => 0x34, Code::Digit5 => 0x35, Code::Digit6 => 0x36, Code::Digit7 => 0x37,
+        Code::Digit8 => 0x38, Code::Digit9 => 0x39,
+        Code::F1 => 0x70, Code::F2 => 0x71, Code::F3 => 0x72, Code::F4 => 0x73,
+        Code::F5 => 0x74, Code::F6 => 0x75, Code::F7 => 0x76, Code::F8 => 0x77,
+        Code::F9 => 0x78, Code::F10 => 0x79, Code::F11 => 0x7A, Code::F12 => 0x7B,
+        Code::F13 => 0x7C, Code::F14 => 0x7D, Code::F15 => 0x7E, Code::F16 => 0x7F,
+        Code::F17 => 0x80, Code::F18 => 0x81, Code::F19 => 0x82, Code::F20 => 0x83,
+        Code::F21 => 0x84, Code::F22 => 0x85, Code::F23 => 0x86, Code::F24 => 0x87,
+        Code::Space => 0x20,
+        Code::Enter => 0x0D,
+        Code::Tab => 0x09,
+        Code::Escape => 0x1B,
+        Code::Backspace => 0x08,
+        Code::Delete => 0x2E,
+        Code::Insert => 0x2D,
+        Code::Home => 0x24,
+        Code::End => 0x23,
+        Code::PageUp => 0x21,
+        Code::PageDown => 0x22,
+        Code::ArrowUp => 0x26,
+        Code::ArrowDown => 0x28,
+        Code::ArrowLeft => 0x25,
+        Code::ArrowRight => 0x27,
+        Code::PrintScreen => 0x2C,
+        Code::Pause => 0x13,
+        Code::ScrollLock => 0x91,
+        Code::Numpad0 => 0x60, Code::Numpad1 => 0x61, Code::Numpad2 => 0x62, Code::Numpad3 => 0x63,
+        Code::Numpad4 => 0x64, Code::Numpad5 => 0x65, Code::Numpad6 => 0x66, Code::Numpad7 => 0x67,
+        Code::Numpad8 => 0x68, Code::Numpad9 => 0x69,
+        Code::NumpadAdd => 0x6B,
+        Code::NumpadSubtract => 0x6D,
+        Code::NumpadMultiply => 0x6A,
+        Code::NumpadDivide => 0x6F,
+        Code::NumpadDecimal => 0x6E,
+        Code::NumpadEnter => 0x0D, // shares VK with main Enter under WH_KEYBOARD_LL
+        _ => return None,
+    };
+    Some(vk)
+}
+
 pub struct HotkeyManager {
-    manager: GlobalHotKeyManager,
-    // map of hotkey_id → (hotkey, task_id) so unregister_all can hand the
-    // HotKey values back to the OS — clearing the map alone does not remove
-    // the kernel-level registration and causes re-registration to fail.
-    registered: HashMap<u32, (HotKey, String)>,
+    // task_id → (parsed hotkey, original string)
+    registered: HashMap<String, (HotKey, String)>,
     registration_errors: Vec<HotkeyRegistrationError>,
 }
 
@@ -25,10 +92,7 @@ pub struct HotkeyRegistrationError {
 
 impl HotkeyManager {
     pub fn new() -> Result<Self> {
-        let manager = GlobalHotKeyManager::new()
-            .map_err(|e| anyhow!("Failed to create hotkey manager: {}", e))?;
         Ok(Self {
-            manager,
             registered: HashMap::new(),
             registration_errors: Vec::new(),
         })
@@ -44,16 +108,19 @@ impl HotkeyManager {
             ));
         }
         let hotkey = parse_hotkey(hotkey_str)?;
-        self.manager
-            .register(hotkey)
-            .map_err(|e| anyhow!("Failed to register hotkey: {}", e))?;
-        self.registered.insert(hotkey.id(), (hotkey, task_id.into()));
+        #[cfg(windows)]
+        if hotkey_to_hook_binding(&hotkey).is_none() {
+            return Err(anyhow!(
+                "'{}' can't be bound on Windows — that key has no virtual-key mapping",
+                hotkey_str
+            ));
+        }
+        self.registered
+            .insert(task_id.into(), (hotkey, hotkey_str.to_string()));
         Ok(())
     }
 
     pub fn try_register(&mut self, task_id: impl Into<String>, hotkey_str: &str) {
-        // tasks with no hotkey assigned are valid — silently skip them rather
-        // than pushing an error that surfaces as a notification
         if hotkey_str.is_empty() {
             return;
         }
@@ -78,24 +145,30 @@ impl HotkeyManager {
         !self.registration_errors.is_empty()
     }
 
-    pub fn poll(&self) -> Option<String> {
-        if let Ok(event) = GlobalHotKeyEvent::receiver().try_recv() {
-            return self.registered.get(&event.id).map(|(_, id)| id.clone());
-        }
-        None
-    }
-
-    pub fn task_for_event_id(&self, id: u32) -> Option<String> {
-        self.registered.get(&id).map(|(_, task_id)| task_id.clone())
+    pub fn registered_task_ids(&self) -> Vec<String> {
+        self.registered.keys().cloned().collect()
     }
 
     pub fn unregister_all(&mut self) {
-        let hotkeys: Vec<HotKey> = self.registered.values().map(|(hk, _)| *hk).collect();
-        if !hotkeys.is_empty() {
-            let _ = self.manager.unregister_all(&hotkeys);
-        }
         self.registered.clear();
     }
+
+    // push the current set of bindings into the LL hook so the keyboard hook
+    // callback can match incoming key presses against them. call after every
+    // batch of register/unregister to keep the hook table in sync.
+    #[cfg(windows)]
+    pub fn flush_to_hook(&self) {
+        let mut table: HashMap<ll_hook::HookBinding, String> = HashMap::new();
+        for (task_id, (hotkey, _str)) in &self.registered {
+            if let Some(binding) = hotkey_to_hook_binding(hotkey) {
+                table.insert(binding, task_id.clone());
+            }
+        }
+        ll_hook::set_bindings(table);
+    }
+
+    #[cfg(not(windows))]
+    pub fn flush_to_hook(&self) {}
 }
 
 /// bare letter or digit hotkeys (no modifier) steal that key system-wide
@@ -430,11 +503,7 @@ mod tests {
         // try_register with "" must not push to registration_errors — tasks
         // with no hotkey assigned are valid (user chose not to bind them)
         // and must not trigger the startup-conflict notification.
-        let mut hm = HotkeyManager {
-            manager: GlobalHotKeyManager::new().expect("manager"),
-            registered: HashMap::new(),
-            registration_errors: Vec::new(),
-        };
+        let mut hm = HotkeyManager::new().expect("manager");
         hm.try_register("task-no-key", "");
         assert!(hm.take_errors().is_empty(), "empty hotkey must not produce an error");
     }

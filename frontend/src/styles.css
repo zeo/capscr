@@ -393,6 +393,63 @@ textarea,
   animation: rec-pulse 1.6s steps(2, end) infinite;
 }
 
+.statusbar .seg-btn.is-err .seg-k,
+.statusbar .seg-btn.is-err .seg-v {
+  color: var(--paper);
+}
+
+.statusbar .seg-btn.is-err .seg-v {
+  animation: rec-pulse 1.6s steps(2, end) infinite;
+}
+
+.diag-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.diag-table th,
+.diag-table td {
+  text-align: left;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--rule);
+  vertical-align: middle;
+}
+
+.diag-table th {
+  font-weight: normal;
+  color: var(--mute);
+  text-transform: lowercase;
+  letter-spacing: var(--tracked);
+  font-size: 10px;
+}
+
+.diag-table tr:last-child td {
+  border-bottom: none;
+}
+
+.chip-live,
+.chip-fail {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  padding: 1px 6px;
+  border: 1px solid var(--rule-2);
+  margin-left: 6px;
+}
+
+.chip-live {
+  color: var(--text-2);
+}
+
+.chip-fail {
+  color: var(--paper);
+  border-color: var(--paper);
+  cursor: help;
+}
+
 @keyframes rec-pulse {
   from { opacity: 1; }
   to   { opacity: 0.3; }

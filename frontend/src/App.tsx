@@ -5,7 +5,7 @@ import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { Copy, ExternalLink, Trash2, X, Download } from "lucide-solid";
 import { Titlebar } from "./components/Titlebar";
-import { api, UpdateInfo } from "./api";
+import { api, HotkeyDiagnostics, UpdateInfo } from "./api";
 import { configDirty, setConfigDirty } from "./dirty";
 import { Settings } from "./views/Settings";
 import { History } from "./views/History";
@@ -66,6 +66,9 @@ function Hub() {
   const [updateDismissed, setUpdateDismissed] = createSignal(false);
   const [updating, setUpdating] = createSignal(false);
   const [showShortcuts, setShowShortcuts] = createSignal(false);
+  const [hotkeyDiag, { refetch: refetchHotkeyDiag }] = createResource<HotkeyDiagnostics>(
+    api.hotkeyDiagnostics,
+  );
 
   const win = getCurrentWindow();
   const active = () => tab().id;
@@ -142,6 +145,11 @@ function Hub() {
         } catch {
           /* config refetch best-effort */
         }
+      }),
+      // backend pushes this after every hotkey registration pass — chip + Tasks
+      // view both refetch so per-task status is current without polling
+      await listen("capscr://hotkey-status", () => {
+        refetchHotkeyDiag();
       }),
     );
 
@@ -438,6 +446,25 @@ function Hub() {
             <span class="seg-k">edit</span>
             <span class="seg-v">unsaved</span>
           </span>
+        </Show>
+        <Show when={hotkeyDiag()?.disabled_globally}>
+          <span class="seg-sep">│</span>
+          <button
+            type="button"
+            class="seg seg-btn is-err"
+            onClick={async () => {
+              try {
+                await api.setHotkeysDisabled(false);
+                refetchHotkeyDiag();
+              } catch (e) {
+                pushToast("err", `couldn't re-enable hotkeys: ${e}`);
+              }
+            }}
+            title="hotkeys are off — click to re-enable"
+          >
+            <span class="seg-k">keys</span>
+            <span class="seg-v">off</span>
+          </button>
         </Show>
         <span class="grow" />
         <button

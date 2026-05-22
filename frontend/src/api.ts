@@ -85,7 +85,7 @@ export interface CaptureTask {
 export interface AppConfig {
   output: OutputConfig;
   capture: CaptureConfig;
-  hotkeys: { screenshot: string; record_gif: string };
+  hotkeys: { screenshot: string; record_gif: string; disabled_globally: boolean };
   ui: UiConfig;
   post_capture: {
     action: PostAction;
@@ -134,6 +134,17 @@ export interface UpdateInfo {
   notes: string | null;
 }
 
+export interface HotkeyStatusEntry {
+  task_id: string;
+  status: "live" | "failed";
+  reason: string | null;
+}
+
+export interface HotkeyDiagnostics {
+  disabled_globally: boolean;
+  statuses: HotkeyStatusEntry[];
+}
+
 export const api = {
   getConfig: () => invoke<AppConfig>("get_config"),
   getDefaultConfig: () => invoke<AppConfig>("get_default_config"),
@@ -164,4 +175,7 @@ export const api = {
   marketplaceUninstall: (id: string) => invoke<void>("marketplace_uninstall", { id }),
   togglePluginEnabled: (id: string, enabled: boolean) =>
     invoke<void>("toggle_plugin_enabled", { id, enabled }),
+  hotkeyDiagnostics: () => invoke<HotkeyDiagnostics>("hotkey_diagnostics"),
+  setHotkeysDisabled: (disabled: boolean) =>
+    invoke<void>("set_hotkeys_disabled", { disabled }),
 };

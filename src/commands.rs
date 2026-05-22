@@ -9,7 +9,7 @@ use crate::overlay::{RecordingOverlay, SelectionResult, UnifiedSelector};
 use crate::plugin::{CaptureType, PluginEvent, PluginResponse};
 use crate::recording::{GifRecorder, RecordingSettings, RecordingState};
 use crate::sound::Sound;
-use crate::state::{AppState, UploadRecord};
+use crate::state::{AppState, HotkeyStatus, UploadRecord};
 use crate::upload::{CustomUploader, FtpTarget, UploadService};
 use image::RgbaImage;
 use serde::{Deserialize, Serialize};
@@ -1689,5 +1689,104 @@ pub fn toggle_plugin_enabled(id: String, enabled: bool) -> Result<(), String> {
     table.insert("enabled".to_string(), toml::Value::Boolean(enabled));
     let new_body = toml::to_string(&table).map_err(|e| e.to_string())?;
     std::fs::write(&manifest_path, new_body).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct HotkeyStatusEntry {
+    pub task_id: String,
+    pub status: String, // "live" or "failed"
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct HotkeyDiagnostics {
+    pub disabled_globally: bool,
+    pub statuses: Vec<HotkeyStatusEntry>,
+}
+
+// called from the hotkey thread after every register/reload to push per-task
+// status into AppState. the hub Tasks view + Settings panel surface this so
+// silent registration failures (risky-bare, parse fail) don't hide.
+pub fn record_hotkey_status(
+    app: &AppHandle,
+    live_ids: &[String],
+    errors: &[crate::hotkeys::HotkeyRegistrationError],
+) {
+    let state = app.state::<AppState>();
+    let mut status = state.hotkey_status.lock().unwrap();
+    status.clear();
+    for id in live_ids {
+        status.insert(id.clone(), HotkeyStatus::Live);
+    }
+    for err in errors {
+        status.insert(
+            err.task_id.clone(),
+            HotkeyStatus::Failed {
+                reason: err.reason.clone(),
+            },
+        );
+    }
+    drop(status);
+    let _ = app.emit("capscr://hotkey-status", ());
+}
+
+#[tauri::command]
+pub fn hotkey_diagnostics(state: State<AppState>) -> HotkeyDiagnostics {
+    use std::sync::atomic::Ordering;
+    let disabled = state.hotkeys_disabled.load(Ordering::SeqCst);
+    let status = state.hotkey_status.lock().unwrap();
+    let statuses = status
+        .iter()
+        .map(|(task_id, st)| match st {
+            HotkeyStatus::Live => HotkeyStatusEntry {
+                task_id: task_id.clone(),
+                status: "live".to_string(),
+                reason: None,
+            },
+            HotkeyStatus::Failed { reason } => HotkeyStatusEntry {
+                task_id: task_id.clone(),
+                status: "failed".to_string(),
+                reason: Some(reason.clone()),
+            },
+        })
+        .collect();
+    HotkeyDiagnostics {
+        disabled_globally: disabled,
+        statuses,
+    }
+}
+
+#[tauri::command]
+pub fn set_hotkeys_disabled(
+    disabled: bool,
+    app: AppHandle,
+    state: State<AppState>,
+) -> Result<(), String> {
+    use std::sync::atomic::Ordering;
+    let was = state.hotkeys_disabled.swap(disabled, Ordering::SeqCst);
+    if was == disabled {
+        return Ok(());
+    }
+    // persist into config so the toggle survives restart
+    {
+        let mut cfg = state.config.lock().unwrap();
+        cfg.hotkeys.disabled_globally = disabled;
+        if let Err(e) = cfg.save() {
+            tracing::warn!("hotkeys_disabled persist failed: {e}");
+        }
+    }
+    #[cfg(windows)]
+    crate::hotkeys::ll_hook::set_enabled(!disabled);
+    // re-emit reload so the manager status reflects the new state. when
+    // disabled we send an empty Vec; when re-enabled we send the live tasks.
+    let tasks = if disabled {
+        Vec::new()
+    } else {
+        state.config.lock().unwrap().capture_tasks.clone()
+    };
+    state.send_hotkey_reload(tasks);
+    crate::rebuild_tray_menu(&app);
+    let _ = app.emit("capscr://hotkey-status", ());
     Ok(())
 }

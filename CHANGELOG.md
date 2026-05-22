@@ -6,6 +6,26 @@ format follows [keep-a-changelog](https://keepachangelog.com/en/1.1.0/) loosely.
 
 nothing pending. drop ideas in github issues.
 
+## [0.3.44] — 2026-05-22
+
+### fixed
+- global hotkeys now win against other screen-capture tools that may have registered the same chord. previously `RegisterHotKey` lost the race silently when another app had already claimed the binding (notably `PrintScreen`), and capscr offered no signal that registration had failed
+- replaced the `RegisterHotKey` dispatch path with a `WH_KEYBOARD_LL` low-level keyboard hook on a dedicated thread (`src/hotkeys/ll_hook.rs`). LL hooks fire ahead of `RegisterHotKey` for any process, so capscr wins universally against competing tools that take the legacy path. matched key presses are consumed (`LRESULT(1)`) so the loser tool also doesn't double-fire
+- per-hook dispatcher thread debounces key auto-repeat (250ms window) — holding the chord no longer queues multiple captures
+- `capscr-llkeyboard` thread runs a `GetMessage` pump as required by Windows for LL hook callbacks
+
+### added
+- `disabled_globally` field on `HotkeyConfig` — the tray "Disable all hotkeys" toggle now persists across restarts (previously reset to enabled every cold start, contributing to the "hotkeys appear broken" reports)
+- statusbar `keys off` chip in the hub when the kill switch is active — click to re-enable in one tap (`App.tsx`)
+- per-task hotkey status (`● live` / `● rejected`) inline in the Tasks view, sourced from a new `capscr://hotkey-status` event the backend emits after every registration pass — silent rejections (risky-bare, parse fail) are now visible without digging through logs
+- new `hotkey_diagnostics` invoke + Settings → Hotkeys panel: kill-switch button + per-binding status table with rejection reasons
+- new `set_hotkeys_disabled` invoke (the hub statusbar + Settings panel call this; tray toggle now routes through it too for a single source of truth)
+
+### changed
+- `HotkeyManager` is now a pure binding registry (no `GlobalHotKeyManager` field) — the LL hook is the only event source. `try_register` still validates chords + records errors as before; the live binding set is flushed to the hook via `HotkeyManager::flush_to_hook`
+- tray toggle handler reuses `commands::set_hotkeys_disabled` instead of mutating `AtomicBool` directly, so config persistence + LL hook state stay in sync
+- LL hook test coverage: modifier-vk recognition, binding insertion/readback, enabled toggle (3 new unit tests in `hotkeys::ll_hook::tests`)
+
 ## [0.3.43] — 2026-05-22
 
 ### security

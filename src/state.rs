@@ -4,7 +4,7 @@ use crate::config::{CaptureTask, Config};
 use crate::plugin::PluginManager;
 use crate::recording::{GifRecorder, RecordingState};
 use crossbeam_channel::Sender;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::Mutex;
@@ -13,6 +13,15 @@ const RECENT_UPLOADS_CAP: usize = 5;
 
 pub enum HotkeyCommand {
     Reload { tasks: Vec<CaptureTask> },
+}
+
+// per-task hotkey registration status, surfaced in the hub Tasks view + the
+// hotkey_diagnostics command. populated by record_hotkey_status() each time
+// the hotkey thread flushes a new binding set.
+#[derive(Debug, Clone)]
+pub enum HotkeyStatus {
+    Live,
+    Failed { reason: String },
 }
 
 pub struct AppState {
@@ -24,18 +33,16 @@ pub struct AppState {
     pub recording_task_id: Mutex<Option<String>>,
     pub last_save: Mutex<Option<PathBuf>>,
     pub last_upload: Mutex<Option<UploadRecord>>,
-    // most-recent first, cap RECENT_UPLOADS_CAP. populated by record_upload.
-    // surfaced in the tray's Recent uploads submenu
     pub recent_uploads: Mutex<VecDeque<UploadRecord>>,
     pub editor_image_path: Mutex<Option<String>>,
-    // true while a capture pipeline is in flight. Gates new triggers so a
-    // user mashing the hotkey while a previous capture is hung doesn't
-    // accumulate stalled worker threads.
     pub capture_in_progress: AtomicBool,
-    // set true when the user toggles "Disable hotkeys" from the tray. Survives
-    // until they toggle back on. Config tasks stay intact; we just unregister
-    // them with the OS.
+    // user-toggled global kill switch. mirrors config.hotkeys.disabled_globally
+    // for in-memory speed; AppState::new restores it from disk so the toggle
+    // survives restart.
     pub hotkeys_disabled: AtomicBool,
+    // task_id → live/failed status. updated by the hotkey thread after every
+    // register/reload pass.
+    pub hotkey_status: Mutex<HashMap<String, HotkeyStatus>>,
 }
 
 #[derive(Clone, Debug)]
@@ -52,6 +59,7 @@ impl AppState {
             tracing::warn!("Plugin load error: {}", err);
         }
 
+        let disabled = config.hotkeys.disabled_globally;
         Self {
             config: Mutex::new(config),
             plugin_manager: Mutex::new(plugin_manager),
@@ -64,7 +72,8 @@ impl AppState {
             recent_uploads: Mutex::new(VecDeque::with_capacity(RECENT_UPLOADS_CAP)),
             editor_image_path: Mutex::new(None),
             capture_in_progress: AtomicBool::new(false),
-            hotkeys_disabled: AtomicBool::new(false),
+            hotkeys_disabled: AtomicBool::new(disabled),
+            hotkey_status: Mutex::new(HashMap::new()),
         }
     }
 

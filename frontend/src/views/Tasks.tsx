@@ -1,6 +1,7 @@
-import { createResource, createSignal, For, Show } from "solid-js";
+import { createResource, createSignal, For, onCleanup, Show } from "solid-js";
+import { listen } from "@tauri-apps/api/event";
 import { Plus, Save, Trash2 } from "lucide-solid";
-import { api, AppConfig, CaptureTask } from "../api";
+import { api, AppConfig, CaptureTask, HotkeyDiagnostics } from "../api";
 import { configDirty, setConfigDirty } from "../dirty";
 import { HotkeyInput } from "../components/HotkeyInput";
 
@@ -32,6 +33,21 @@ export function Tasks() {
   const [status, setStatus] = createSignal<{ tone: string; msg: string } | null>(
     null,
   );
+  const [diag, { refetch: refetchDiag }] = createResource<HotkeyDiagnostics>(
+    api.hotkeyDiagnostics,
+  );
+  const unlistenPromise = listen("capscr://hotkey-status", () => {
+    refetchDiag();
+  });
+  onCleanup(() => {
+    unlistenPromise.then((u) => u());
+  });
+
+  const statusFor = (taskId: string) => {
+    const d = diag();
+    if (!d) return null;
+    return d.statuses.find((s) => s.task_id === taskId) ?? null;
+  };
 
   const updateTask = (index: number, partial: Partial<CaptureTask>) => {
     const c = config();
@@ -177,6 +193,22 @@ export function Tasks() {
                               <span class="k">key </span>
                               <span class="v">{task.hotkey}</span>
                             </span>
+                            <Show when={statusFor(task.id)}>
+                              {(s) => (
+                                <span
+                                  class={
+                                    s().status === "live"
+                                      ? "chip-live"
+                                      : "chip-fail"
+                                  }
+                                  title={s().reason ?? "registered with the keyboard hook"}
+                                >
+                                  ● {s().status === "live"
+                                    ? "live"
+                                    : "rejected"}
+                                </span>
+                              )}
+                            </Show>
                           </Show>
                           <Show when={!task.name.trim()}>
                             <span class="warn">

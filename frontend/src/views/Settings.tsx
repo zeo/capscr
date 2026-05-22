@@ -1,16 +1,18 @@
-import { createResource, createSignal, For, Match, Show, Switch } from "solid-js";
+import { createResource, createSignal, For, Match, onCleanup, Show, Switch } from "solid-js";
+import { listen } from "@tauri-apps/api/event";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { Section } from "../components/Section";
-import { api, AppConfig } from "../api";
+import { api, AppConfig, HotkeyDiagnostics } from "../api";
 import { configDirty, setConfigDirty } from "../dirty";
 import { FolderOpen, RotateCcw, Save } from "lucide-solid";
 
-type Pane = "general" | "capture" | "hdr" | "notify";
+type Pane = "general" | "capture" | "hdr" | "hotkeys" | "notify";
 
 const PANES: { id: Pane; label: string }[] = [
   { id: "general", label: "general" },
   { id: "capture", label: "capture" },
   { id: "hdr", label: "hdr" },
+  { id: "hotkeys", label: "hotkeys" },
   { id: "notify", label: "notify" },
 ];
 
@@ -110,6 +112,9 @@ export function Settings() {
               </Match>
               <Match when={pane() === "hdr"}>
                 <HdrPane c={c()} patch={patch} />
+              </Match>
+              <Match when={pane() === "hotkeys"}>
+                <HotkeysPane c={c()} />
               </Match>
               <Match when={pane() === "notify"}>
                 <NotifyPane c={c()} patch={patch} />
@@ -458,6 +463,116 @@ function HdrPane(props: { c: AppConfig; patch: Patch }) {
   );
 }
 
+
+function HotkeysPane(props: { c: AppConfig }) {
+  const [diag, { refetch }] = createResource<HotkeyDiagnostics>(api.hotkeyDiagnostics);
+  const [busy, setBusy] = createSignal(false);
+  const [err, setErr] = createSignal<string | null>(null);
+
+  const unlistenPromise = listen("capscr://hotkey-status", () => refetch());
+  onCleanup(() => {
+    unlistenPromise.then((u) => u());
+  });
+
+  const toggle = async () => {
+    const d = diag();
+    if (!d) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      await api.setHotkeysDisabled(!d.disabled_globally);
+      await refetch();
+    } catch (e) {
+      setErr(String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const tasks = () => props.c.capture_tasks;
+
+  return (
+    <>
+      <Section title="global">
+        <div class="field">
+          <label class="field-label">all hotkeys</label>
+          <div class="field-control">
+            <button
+              class="btn"
+              data-variant={diag()?.disabled_globally ? "primary" : "ghost"}
+              disabled={busy()}
+              onClick={toggle}
+            >
+              {diag()?.disabled_globally ? "re-enable" : "disable all"}
+            </button>
+            <span class="field-hint">
+              kill switch toggled from the tray menu too. survives restart.
+            </span>
+          </div>
+        </div>
+        <Show when={err()}>
+          <p class="flash" data-tone="err">{err()}</p>
+        </Show>
+      </Section>
+
+      <Section title="per-binding status">
+        <div class="field-control" style="flex-direction: column; align-items: stretch;">
+          <Show when={tasks().length > 0} fallback={<p class="lede">no tasks defined.</p>}>
+            <table class="diag-table">
+              <thead>
+                <tr>
+                  <th>task</th>
+                  <th>hotkey</th>
+                  <th>status</th>
+                  <th>reason</th>
+                </tr>
+              </thead>
+              <tbody>
+                <For each={tasks()}>
+                  {(task) => {
+                    const entry = () =>
+                      diag()?.statuses.find((s) => s.task_id === task.id) ?? null;
+                    const e = entry();
+                    return (
+                      <tr>
+                        <td>{task.name || task.id}</td>
+                        <td>{task.hotkey || <span class="warn">unbound</span>}</td>
+                        <td>
+                          <Show
+                            when={task.hotkey}
+                            fallback={<span class="lede">—</span>}
+                          >
+                            <Show
+                              when={e}
+                              fallback={<span class="lede">unknown</span>}
+                            >
+                              <span
+                                class={
+                                  entry()?.status === "live"
+                                    ? "chip-live"
+                                    : "chip-fail"
+                                }
+                              >
+                                ● {entry()?.status}
+                              </span>
+                            </Show>
+                          </Show>
+                        </td>
+                        <td>
+                          <span class="lede">{entry()?.reason ?? ""}</span>
+                        </td>
+                      </tr>
+                    );
+                  }}
+                </For>
+              </tbody>
+            </table>
+          </Show>
+        </div>
+      </Section>
+    </>
+  );
+}
 
 function NotifyPane(props: { c: AppConfig; patch: Patch }) {
   const c = () => props.c;
