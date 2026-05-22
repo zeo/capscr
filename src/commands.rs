@@ -961,9 +961,10 @@ fn intercept_hub_close(window: tauri::WebviewWindow) {
     window.clone().on_window_event(move |event| {
         if let tauri::WindowEvent::CloseRequested { api, .. } = event {
             api.prevent_close();
-            // minimize instead of hide — keeps the taskbar button visible so
-            // the jump list is accessible via taskbar right-click
-            let _ = window.minimize();
+            // hide to tray — pressing [X] should never exit capscr; the tray
+            // is the only true exit. left-click on the tray icon brings the
+            // hub back via open_hub_window's show + unminimize + set_focus.
+            let _ = window.hide();
         }
     });
 }

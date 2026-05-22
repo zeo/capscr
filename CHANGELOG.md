@@ -6,6 +6,16 @@ format follows [keep-a-changelog](https://keepachangelog.com/en/1.1.0/) loosely.
 
 nothing pending. drop ideas in github issues.
 
+## [0.3.45] — 2026-05-22
+
+### fixed
+- pressing [X] on the hub now hides to the tray instead of minimising to the taskbar. the tray (left-click) brings it back; tray → Exit remains the only true process exit. `intercept_hub_close` calls `window.hide()` instead of `window.minimize()`
+- tray menu and any other native Win32 context menu now render in Windows 11's dark theme to match the hub aesthetic. previously the menu was light-on-grey with white submenu fly-outs that clashed with the dark monospace UI
+
+### added
+- `src/win_darkmode.rs` — opt-in via `uxtheme.dll!SetPreferredAppMode(AllowDark)` (ordinal 135). same approach used by Edge, Notepad, Visual Studio. resolved at runtime via `LoadLibraryW + GetProcAddress`, so Win10 builds older than 1903 silently fall back to light menus instead of crashing
+- `FlushMenuThemes` follow-up call so menus painted before the toggle pick up the new mode
+
 ## [0.3.44] — 2026-05-22
 
 ### fixed

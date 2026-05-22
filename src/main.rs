@@ -15,6 +15,8 @@ mod secret;
 mod sound;
 mod state;
 mod upload;
+#[cfg(windows)]
+mod win_darkmode;
 
 use std::time::Duration;
 use crossbeam_channel as cb;
@@ -65,6 +67,8 @@ fn main() {
     set_dpi_awareness();
     #[cfg(windows)]
     jumplist::set_app_user_model_id();
+    #[cfg(windows)]
+    win_darkmode::enable_dark_menus();
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::from_default_env())
         .init();
