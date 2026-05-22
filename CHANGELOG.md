@@ -6,6 +6,22 @@ format follows [keep-a-changelog](https://keepachangelog.com/en/1.1.0/) loosely.
 
 nothing pending. drop ideas in github issues.
 
+## [0.3.47] — 2026-05-22
+
+### security
+- SFTP no longer accepts any server key blindly. trust-on-first-use (TOFU) host-key store closes the MITM gap noted in 0.3.46's changelog: first connect to a host:port records the SHA256 fingerprint, every subsequent connect refuses to upload on mismatch with a structured "stored X, server now offering Y — forget the host in Settings → SSH if this is intentional rotation" error message
+- store lives at `<config_dir>/ssh_known_hosts.toml`, written atomically via temp-rename so a crash mid-save can't truncate it; corrupt files fall back to an empty in-memory map and tracing::warn instead of crashing the upload pipeline
+
+### added
+- new `src/upload/known_hosts.rs` module (HashMap of "host:port" → { fingerprint, first_seen_unix }, TOML on disk)
+- `sftp_known_hosts` and `sftp_forget_host` invokes
+- Settings → SSH panel: lists every trusted host:port with its fingerprint + first-seen date, "forget" button per row to clear so legitimate key rotation isn't a dead-end
+- 4 new unit tests in `upload::known_hosts::tests` (roundtrip, missing-file-as-empty, forget, corrupt-fallback)
+
+### changed
+- `upload_sftp`'s `check_server_key` handler is now `VerifyHostKey` instead of `AcceptAny`. host-key mismatch surfaces through an `Arc<Mutex<Option<String>>>` captured from the async closure so the structured message reaches the user instead of getting buried under russh's generic "connection aborted by handler" error
+- `tempfile` added as a dev-dependency (used only by the new known_hosts tests)
+
 ## [0.3.46] — 2026-05-22
 
 ### added

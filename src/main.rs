@@ -200,6 +200,8 @@ fn main() {
             commands::upload_file,
             commands::hotkey_diagnostics,
             commands::set_hotkeys_disabled,
+            commands::sftp_known_hosts,
+            commands::sftp_forget_host,
         ])
         .build(tauri::generate_context!())
         .expect("error while building capscr")

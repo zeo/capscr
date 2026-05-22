@@ -2,17 +2,18 @@ import { createResource, createSignal, For, Match, onCleanup, Show, Switch } fro
 import { listen } from "@tauri-apps/api/event";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { Section } from "../components/Section";
-import { api, AppConfig, HotkeyDiagnostics } from "../api";
+import { api, AppConfig, HotkeyDiagnostics, SftpKnownHost } from "../api";
 import { configDirty, setConfigDirty } from "../dirty";
 import { FolderOpen, RotateCcw, Save } from "lucide-solid";
 
-type Pane = "general" | "capture" | "hdr" | "hotkeys" | "notify";
+type Pane = "general" | "capture" | "hdr" | "hotkeys" | "ssh" | "notify";
 
 const PANES: { id: Pane; label: string }[] = [
   { id: "general", label: "general" },
   { id: "capture", label: "capture" },
   { id: "hdr", label: "hdr" },
   { id: "hotkeys", label: "hotkeys" },
+  { id: "ssh", label: "ssh" },
   { id: "notify", label: "notify" },
 ];
 
@@ -115,6 +116,9 @@ export function Settings() {
               </Match>
               <Match when={pane() === "hotkeys"}>
                 <HotkeysPane c={c()} />
+              </Match>
+              <Match when={pane() === "ssh"}>
+                <SshPane />
               </Match>
               <Match when={pane() === "notify"}>
                 <NotifyPane c={c()} patch={patch} />
@@ -571,6 +575,81 @@ function HotkeysPane(props: { c: AppConfig }) {
         </div>
       </Section>
     </>
+  );
+}
+
+function SshPane() {
+  const [hosts, { refetch }] = createResource<SftpKnownHost[]>(api.sftpKnownHosts);
+  const [busy, setBusy] = createSignal<string | null>(null);
+  const [err, setErr] = createSignal<string | null>(null);
+
+  const forget = async (hostPort: string) => {
+    setBusy(hostPort);
+    setErr(null);
+    try {
+      await api.sftpForgetHost(hostPort);
+      await refetch();
+    } catch (e) {
+      setErr(String(e));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const formatDate = (unix: number) => {
+    if (!unix) return "—";
+    return new Date(unix * 1000).toISOString().slice(0, 10);
+  };
+
+  return (
+    <Section title="known sftp hosts">
+      <p class="lede">
+        capscr remembers each sftp server's public-key fingerprint on first
+        connect and refuses to upload on a later mismatch. forget a host to
+        re-trust a rotated key.
+      </p>
+      <Show when={err()}>
+        <p class="flash" data-tone="err">{err()}</p>
+      </Show>
+      <div class="field-control" style="flex-direction: column; align-items: stretch;">
+        <Show when={hosts() && hosts()!.length > 0} fallback={
+          <p class="lede">no hosts trusted yet. upload via sftp to populate this list.</p>
+        }>
+          <table class="diag-table">
+            <thead>
+              <tr>
+                <th>host:port</th>
+                <th>fingerprint</th>
+                <th>first seen</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              <For each={hosts()}>
+                {(h) => (
+                  <tr>
+                    <td>{h.host_port}</td>
+                    <td style="word-break: break-all;">{h.fingerprint}</td>
+                    <td>{formatDate(h.first_seen_unix)}</td>
+                    <td>
+                      <button
+                        class="btn"
+                        data-variant="ghost"
+                        data-size="xs"
+                        disabled={busy() === h.host_port}
+                        onClick={() => forget(h.host_port)}
+                      >
+                        forget
+                      </button>
+                    </td>
+                  </tr>
+                )}
+              </For>
+            </tbody>
+          </table>
+        </Show>
+      </div>
+    </Section>
   );
 }
 

@@ -648,7 +648,7 @@ dependencies = [
 
 [[package]]
 name = "capscr"
-version = "0.3.46"
+version = "0.3.47"
 dependencies = [
  "anyhow",
  "arboard",
@@ -683,6 +683,7 @@ dependencies = [
  "tauri-plugin-single-instance",
  "tauri-plugin-updater",
  "tauri-plugin-window-state",
+ "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "toml 0.8.2",

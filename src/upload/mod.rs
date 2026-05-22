@@ -1,5 +1,7 @@
 #![allow(dead_code)]
 
+pub mod known_hosts;
+
 use anyhow::{anyhow, Result};
 use image::RgbaImage;
 use std::io::Cursor;
@@ -793,9 +795,10 @@ pub fn upload_ftp(data: &[u8], file_name: &str, target: &FtpTarget) -> Result<Up
 pub fn upload_sftp(data: &[u8], file_name: &str, target: &SftpTarget) -> Result<UploadResult> {
     use async_trait::async_trait;
     use russh::client;
+    use russh::keys::HashAlg;
     use russh_sftp::client::SftpSession;
     use russh_sftp::protocol::OpenFlags;
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
     use tokio::io::AsyncWriteExt;
 
     validate_host(&target.host)?;
@@ -812,20 +815,60 @@ pub fn upload_sftp(data: &[u8], file_name: &str, target: &SftpTarget) -> Result<
     let url_template = target.public_url_template.clone();
     let data_owned = data.to_vec();
 
-    // host-key acceptance policy: by design we accept any server key on first
-    // connect (no TOFU pinning surface yet — see #50 in roadmap). this matches
-    // the FTP path's "trust the configured host" stance; users who care about
-    // server-key verification should put the SFTP host behind a known-good
-    // tunnel until the pin store lands.
-    struct AcceptAny;
+    // host-key TOFU. First connect to a host:port stores the SHA256 fingerprint;
+    // subsequent connects compare against the store. Mismatch aborts the
+    // upload — the user must explicitly forget the stored fingerprint via the
+    // hub UI before capscr will re-trust a new key (legitimate rotation or MITM
+    // both look the same at the wire level).
+    let known_hosts_path = known_hosts::KnownHosts::default_path()
+        .ok_or_else(|| anyhow!("can't resolve config dir for ssh_known_hosts.toml"))?;
+    // mismatch_error captures the structured rejection reason inside the
+    // async handler so we can surface a friendly message after block_on returns
+    let mismatch_error: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+
+    struct VerifyHostKey {
+        host_port: String,
+        known_hosts_path: std::path::PathBuf,
+        mismatch_error: Arc<Mutex<Option<String>>>,
+    }
+
     #[async_trait]
-    impl client::Handler for AcceptAny {
+    impl client::Handler for VerifyHostKey {
         type Error = russh::Error;
         async fn check_server_key(
             &mut self,
-            _key: &russh::keys::ssh_key::PublicKey,
+            key: &russh::keys::ssh_key::PublicKey,
         ) -> std::result::Result<bool, Self::Error> {
-            Ok(true)
+            let fp = match key.fingerprint(HashAlg::Sha256).to_string() {
+                s if s.is_empty() => "SHA256:<empty>".to_string(),
+                s => s,
+            };
+            let mut store = known_hosts::KnownHosts::load(&self.known_hosts_path);
+            match store.lookup(&self.host_port) {
+                Some(entry) if entry.fingerprint == fp => Ok(true),
+                Some(entry) => {
+                    let stored = entry.fingerprint.clone();
+                    *self.mismatch_error.lock().unwrap() = Some(format!(
+                        "SSH host key mismatch for {} — stored {}, server now offering {}. \
+                         If this is intentional (e.g. key rotation), forget the host in \
+                         Settings → SSH known hosts and reconnect.",
+                        self.host_port, stored, fp
+                    ));
+                    Ok(false)
+                }
+                None => {
+                    store.insert(self.host_port.clone(), fp.clone());
+                    if let Err(e) = store.save(&self.known_hosts_path) {
+                        tracing::warn!("ssh_known_hosts save failed: {e}");
+                    }
+                    tracing::info!(
+                        "ssh host trust-on-first-use: {} -> {}",
+                        self.host_port,
+                        fp
+                    );
+                    Ok(true)
+                }
+            }
         }
     }
 
@@ -834,13 +877,20 @@ pub fn upload_sftp(data: &[u8], file_name: &str, target: &SftpTarget) -> Result<
         .build()
         .map_err(|e| anyhow!("SFTP runtime init failed: {e}"))?;
 
+    let host_port = known_hosts::host_key(&host, port);
     let upload_filename = filename.clone();
-    runtime.block_on(async move {
+    let mismatch_error_for_handler = Arc::clone(&mismatch_error);
+    let connect_result: Result<()> = runtime.block_on(async move {
+        let handler = VerifyHostKey {
+            host_port: host_port.clone(),
+            known_hosts_path: known_hosts_path.clone(),
+            mismatch_error: mismatch_error_for_handler,
+        };
         let config = Arc::new(client::Config {
             inactivity_timeout: Some(std::time::Duration::from_secs(UPLOAD_TIMEOUT_SECS)),
             ..Default::default()
         });
-        let mut session = client::connect(config, (host.as_str(), port), AcceptAny)
+        let mut session = client::connect(config, (host.as_str(), port), handler)
             .await
             .map_err(|e| anyhow!("SFTP connect to {}:{} failed: {}", host, port, e))?;
 
@@ -892,7 +942,15 @@ pub fn upload_sftp(data: &[u8], file_name: &str, target: &SftpTarget) -> Result<
         }
 
         Ok(())
-    })?;
+    });
+
+    // host-key mismatch surfaces as a connection-aborted-by-handler russh
+    // error; prefer the structured message captured by VerifyHostKey so the
+    // user knows it's a fingerprint problem and not a network blip.
+    if let Some(msg) = mismatch_error.lock().unwrap().take() {
+        return Err(anyhow!("{}", msg));
+    }
+    connect_result?;
 
     let url = build_url(&url_template, &filename)?;
     Ok(UploadResult { url, delete_url: None })

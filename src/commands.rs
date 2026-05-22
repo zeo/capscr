@@ -1771,6 +1771,43 @@ pub fn hotkey_diagnostics(state: State<AppState>) -> HotkeyDiagnostics {
     }
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct SftpKnownHost {
+    pub host_port: String,
+    pub fingerprint: String,
+    pub first_seen_unix: u64,
+}
+
+#[tauri::command]
+pub fn sftp_known_hosts() -> Result<Vec<SftpKnownHost>, String> {
+    let path = crate::upload::known_hosts::KnownHosts::default_path()
+        .ok_or_else(|| "config dir unresolvable".to_string())?;
+    let kh = crate::upload::known_hosts::KnownHosts::load(&path);
+    let mut out: Vec<SftpKnownHost> = kh
+        .hosts
+        .into_iter()
+        .map(|(host_port, entry)| SftpKnownHost {
+            host_port,
+            fingerprint: entry.fingerprint,
+            first_seen_unix: entry.first_seen_unix,
+        })
+        .collect();
+    out.sort_by(|a, b| a.host_port.cmp(&b.host_port));
+    Ok(out)
+}
+
+#[tauri::command]
+pub fn sftp_forget_host(host_port: String) -> Result<bool, String> {
+    let path = crate::upload::known_hosts::KnownHosts::default_path()
+        .ok_or_else(|| "config dir unresolvable".to_string())?;
+    let mut kh = crate::upload::known_hosts::KnownHosts::load(&path);
+    let removed = kh.forget(&host_port);
+    if removed {
+        kh.save(&path).map_err(|e| e.to_string())?;
+    }
+    Ok(removed)
+}
+
 #[tauri::command]
 pub fn set_hotkeys_disabled(
     disabled: bool,

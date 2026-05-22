@@ -158,6 +158,12 @@ export interface HotkeyDiagnostics {
   statuses: HotkeyStatusEntry[];
 }
 
+export interface SftpKnownHost {
+  host_port: string;
+  fingerprint: string;
+  first_seen_unix: number;
+}
+
 export const api = {
   getConfig: () => invoke<AppConfig>("get_config"),
   getDefaultConfig: () => invoke<AppConfig>("get_default_config"),
@@ -191,4 +197,7 @@ export const api = {
   hotkeyDiagnostics: () => invoke<HotkeyDiagnostics>("hotkey_diagnostics"),
   setHotkeysDisabled: (disabled: boolean) =>
     invoke<void>("set_hotkeys_disabled", { disabled }),
+  sftpKnownHosts: () => invoke<SftpKnownHost[]>("sftp_known_hosts"),
+  sftpForgetHost: (hostPort: string) =>
+    invoke<boolean>("sftp_forget_host", { hostPort }),
 };

@@ -1,6 +1,6 @@
 [package]
 name = "capscr"
-version = "0.3.46"
+version = "0.3.47"
 edition = "2021"
 description = "Fast HDR-aware Windows screen capture — tray-first, signed updates, no telemetry."
 authors = ["rot <96458554+rotlove@users.noreply.github.com>"]
@@ -143,6 +143,9 @@ windows = { version = "0.58", features = [
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
+
+[dev-dependencies]
+tempfile = "3"
 
 [patch.crates-io]
 # Force wry to the last release before the Send+Sync breaking change in
