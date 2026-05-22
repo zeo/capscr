@@ -721,10 +721,7 @@ fn spawn_hotkey_thread(
         // reload loop: hotkey re-registration is driven by the Reload command
         // channel, which is sent on config save, tray toggle, and any other
         // path that mutates the binding set.
-        loop {
-            let Ok(HotkeyCommand::Reload { tasks }) = rx.recv() else {
-                break;
-            };
+        while let Ok(HotkeyCommand::Reload { tasks }) = rx.recv() {
             hm.unregister_all();
             for task in &tasks {
                 hm.try_register(task.id.clone(), &task.hotkey);
