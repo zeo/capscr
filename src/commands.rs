@@ -556,7 +556,11 @@ fn maybe_write_hdr_sidecar(
     let mut sidecar_name = stem;
     sidecar_name.push(".hdr.png");
     let sidecar_path = sdr_path.with_file_name(sidecar_name);
-    if let Err(e) = crate::capture::encode_hdr_png(&sidecar_path, bitmap) {
+    let transfer = match config.capture.hdr.output_format {
+        crate::config::HdrOutputFormat::Pq => crate::capture::HdrTransfer::Pq,
+        crate::config::HdrOutputFormat::Hlg => crate::capture::HdrTransfer::Hlg,
+    };
+    if let Err(e) = crate::capture::encode_hdr_png(&sidecar_path, bitmap, transfer) {
         tracing::warn!("hdr sidecar write failed for {sidecar_path:?}: {e}");
     }
 }

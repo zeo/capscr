@@ -41,13 +41,26 @@ impl HdrBitmap {
     }
 }
 
+/// HDR PNG output transfer characteristic. PQ is the source-native HDR10
+/// format; HLG is transcoded by decoding PQ to linear nits then applying
+/// the HLG OETF per BT.2100.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HdrTransfer {
+    Pq,
+    Hlg,
+}
+
 /// write `bitmap` to `path` as a 16-bit RGBA PNG with a `cICP` chunk.
-/// currently only `HdrFormat::Hdr10` is fully supported; other formats
-/// return an explanatory error so the caller can fall back to the SDR-only
-/// path without surprises.
-pub fn encode_hdr_png(path: &Path, bitmap: &HdrBitmap) -> Result<()> {
+/// currently only `HdrFormat::Hdr10` is fully supported as a source format;
+/// the output transfer can be PQ (passthrough) or HLG (transcoded). other
+/// source formats still return explanatory errors so the caller can fall
+/// back to the SDR-only path without surprises.
+pub fn encode_hdr_png(path: &Path, bitmap: &HdrBitmap, transfer: HdrTransfer) -> Result<()> {
     match bitmap.format {
-        HdrFormat::Hdr10 => encode_hdr10_png(path, bitmap),
+        HdrFormat::Hdr10 => match transfer {
+            HdrTransfer::Pq => encode_hdr10_png(path, bitmap),
+            HdrTransfer::Hlg => encode_hdr10_as_hlg_png(path, bitmap),
+        },
         HdrFormat::ScRgb => Err(anyhow!(
             "scRGB HDR encoding not yet implemented (needs matrix + PQ pass) — Phase 2"
         )),
@@ -101,6 +114,110 @@ fn encode_hdr10_png(path: &Path, bitmap: &HdrBitmap) -> Result<()> {
     writer.write_image_data(&be_data)?;
     writer.finish()?;
     Ok(())
+}
+
+// transcode HDR10 (PQ-encoded BT.2020) to HLG-encoded BT.2020 16-bit PNG.
+// pipeline per pixel channel:
+//   1. PQ EOTF: decode the source u16 (normalised 0..1) back to linear nits
+//      in [0, 10000]
+//   2. normalise: divide by HLG nominal peak (1000 nits) so 1.0 maps to the
+//      reference HDR white
+//   3. HLG OETF: encode linear E -> non-linear E' per BT.2100 / ARIB STD-B67
+//   4. quantise back to u16, write 16-bit RGBA PNG, attach cICP 9/18/0/1
+fn encode_hdr10_as_hlg_png(path: &Path, bitmap: &HdrBitmap) -> Result<()> {
+    let pixel_count = bitmap.pixel_count();
+    let expected_bytes = pixel_count
+        .checked_mul(8)
+        .ok_or_else(|| anyhow!("hdr10 dimensions overflow byte count"))?;
+    if (bitmap.data.len() as u64) < expected_bytes {
+        return Err(anyhow!(
+            "hdr10 source buffer too small: have {}, need {}",
+            bitmap.data.len(),
+            expected_bytes
+        ));
+    }
+
+    // build a 65536-entry LUT mapping PQ-encoded u16 -> HLG-encoded u16.
+    // the alpha channel passes through unchanged.
+    let mut pq_to_hlg = vec![0u16; 65536];
+    for i in 0..65536u32 {
+        let pq_norm = i as f32 / 65535.0;
+        let nits = pq_eotf_to_nits(pq_norm);
+        // normalise to HLG nominal peak. BT.2100 uses 1000 nits as the
+        // reference white for HLG; values above are theoretically allowed
+        // but capped here at 1.0 since HLG OETF is only defined on [0, 1]
+        let linear = (nits / 1000.0).clamp(0.0, 1.0);
+        let hlg_norm = hlg_oetf(linear);
+        pq_to_hlg[i as usize] = (hlg_norm * 65535.0).round().clamp(0.0, 65535.0) as u16;
+    }
+
+    let file = File::create(path)?;
+    let mut w = BufWriter::new(file);
+
+    let mut enc = png::Encoder::new(&mut w, bitmap.width, bitmap.height);
+    enc.set_color(png::ColorType::Rgba);
+    enc.set_depth(png::BitDepth::Sixteen);
+    let mut writer = enc.write_header()?;
+
+    // cICP: BT.2020 (9), HLG / ARIB STD-B67 (18), identity matrix (0), full range (1)
+    let cicp: [u8; 4] = [9, 18, 0, 1];
+    writer.write_chunk(ChunkType(*b"cICP"), &cicp)?;
+
+    // convert LE u16 source -> transcoded BE u16 destination in one pass.
+    let mut out = Vec::with_capacity(bitmap.data.len());
+    for pixel in bitmap.data.chunks_exact(8) {
+        // R, G, B get the LUT; A passes through. all stored big-endian
+        let r = u16::from_le_bytes([pixel[0], pixel[1]]);
+        let g = u16::from_le_bytes([pixel[2], pixel[3]]);
+        let b = u16::from_le_bytes([pixel[4], pixel[5]]);
+        let a = u16::from_le_bytes([pixel[6], pixel[7]]);
+        let r2 = pq_to_hlg[r as usize];
+        let g2 = pq_to_hlg[g as usize];
+        let b2 = pq_to_hlg[b as usize];
+        out.extend_from_slice(&r2.to_be_bytes());
+        out.extend_from_slice(&g2.to_be_bytes());
+        out.extend_from_slice(&b2.to_be_bytes());
+        out.extend_from_slice(&a.to_be_bytes());
+    }
+    writer.write_image_data(&out)?;
+    writer.finish()?;
+    Ok(())
+}
+
+// SMPTE ST 2084 / BT.2100 PQ EOTF (decode). takes a normalised 0..1 input
+// and returns absolute luminance in nits, range [0, 10000].
+fn pq_eotf_to_nits(pq_norm: f32) -> f32 {
+    let m1 = 2610.0 / 16384.0;
+    let m2 = (2523.0 / 4096.0) * 128.0;
+    let c1 = 3424.0 / 4096.0;
+    let c2 = (2413.0 / 4096.0) * 32.0;
+    let c3 = (2392.0 / 4096.0) * 32.0;
+    if pq_norm <= 0.0 {
+        return 0.0;
+    }
+    let e_p = pq_norm.powf(1.0 / m2);
+    let num = (e_p - c1).max(0.0);
+    let den = c2 - c3 * e_p;
+    if den <= 0.0 {
+        return 10000.0;
+    }
+    let y = (num / den).powf(1.0 / m1);
+    10000.0 * y.clamp(0.0, 1.0)
+}
+
+// BT.2100 HLG OETF (ARIB STD-B67). input E in [0, 1], output E' in [0, 1].
+// constants per BT.2100 Table 5: a = 0.17883277, b = 0.28466892, c = 0.55991073.
+// the trailing digit is rounded by f32 (~7 significant decimal digits) so the
+// grouped-by-three underscored form below is bit-exact equivalent.
+fn hlg_oetf(e: f32) -> f32 {
+    let a = 0.178_832_77_f32;
+    let b = 0.284_668_92_f32;
+    let c = 0.559_910_7_f32;
+    if e <= 1.0 / 12.0 {
+        (3.0 * e).max(0.0).sqrt()
+    } else {
+        a * (12.0 * e - b).ln() + c
+    }
 }
 
 /// probe a PNG for a `cICP` chunk that signals HDR. Used by the editor to
@@ -173,7 +290,7 @@ mod tests {
             data: vec![0u8; 32], // 4 pixels × 8 bytes
             max_luminance_nits: 1000.0,
         };
-        encode_hdr_png(&tmp, &bitmap).unwrap();
+        encode_hdr_png(&tmp, &bitmap, HdrTransfer::Pq).unwrap();
         let info = read_cicp(&tmp).expect("cICP chunk should be present");
         assert_eq!(info.colour_primaries, 9);
         assert_eq!(info.transfer, 16);
@@ -181,6 +298,50 @@ mod tests {
         assert_eq!(info.full_range, 1);
         assert!(info.is_hdr());
         let _ = std::fs::remove_file(tmp);
+    }
+
+    #[test]
+    fn hlg_output_writes_cicp_9_18() {
+        let tmp = std::env::temp_dir().join("capscr-hlg-test.png");
+        let bitmap = HdrBitmap {
+            width: 2,
+            height: 2,
+            format: HdrFormat::Hdr10,
+            data: vec![0u8; 32],
+            max_luminance_nits: 1000.0,
+        };
+        encode_hdr_png(&tmp, &bitmap, HdrTransfer::Hlg).unwrap();
+        let info = read_cicp(&tmp).expect("cICP chunk should be present");
+        assert_eq!(info.colour_primaries, 9);
+        assert_eq!(info.transfer, 18);
+        assert_eq!(info.matrix, 0);
+        assert_eq!(info.full_range, 1);
+        assert!(info.is_hdr());
+        let _ = std::fs::remove_file(tmp);
+    }
+
+    #[test]
+    fn pq_eotf_known_points() {
+        // 0 -> 0 nits
+        assert!((pq_eotf_to_nits(0.0)).abs() < 0.01);
+        // 1.0 -> 10000 nits (PQ peak)
+        assert!((pq_eotf_to_nits(1.0) - 10000.0).abs() < 1.0);
+        // ~0.5081 PQ encoding maps to ~100 nits (PQ midpoint reference)
+        let mid = pq_eotf_to_nits(0.5081);
+        assert!(
+            (mid - 100.0).abs() < 5.0,
+            "expected ~100 nits at PQ 0.5081, got {mid}"
+        );
+    }
+
+    #[test]
+    fn hlg_oetf_known_points() {
+        // 0 -> 0
+        assert!(hlg_oetf(0.0).abs() < 1e-6);
+        // 1/12 -> sqrt(3 * 1/12) = 0.5 (the OETF stitch point)
+        assert!((hlg_oetf(1.0 / 12.0) - 0.5).abs() < 1e-4);
+        // 1.0 -> a*ln(12-b)+c ≈ 1.0
+        assert!((hlg_oetf(1.0) - 1.0).abs() < 1e-3);
     }
 
     #[test]

@@ -350,6 +350,30 @@ function CapturePane(props: { c: AppConfig; patch: Patch }) {
 function HdrPane(props: { c: AppConfig; patch: Patch }) {
   const c = () => props.c;
   return (
+    <>
+    <Section title="hdr png sidecar">
+      <div class="field">
+        <label class="field-label">output format</label>
+        <div class="field-control">
+          <select
+            value={c().capture.hdr.output_format}
+            onChange={(e) =>
+              props.patch("capture", {
+                ...c().capture,
+                hdr: { ...c().capture.hdr, output_format: e.currentTarget.value as never },
+              })
+            }
+          >
+            <option value="pq">pq (bt.2020, hdr10-style — default)</option>
+            <option value="hlg">hlg (bt.2020, broadcast-style)</option>
+          </select>
+          <span class="field-hint">
+            pq is the safest for windows photos / edge. hlg is transcoded from
+            the pq source by decoding to nits then applying hlg oetf.
+          </span>
+        </div>
+      </div>
+    </Section>
     <Section title="skiv tonemap">
       <div class="field">
         <label class="field-label">mode</label>
@@ -453,17 +477,18 @@ function HdrPane(props: { c: AppConfig; patch: Patch }) {
             />
             <span class="check-label">
               {c().output.preserve_hdr
-                ? "writes a 16-bit bt.2020+pq .hdr.png sidecar next to each hdr capture"
+                ? `writes a 16-bit bt.2020+${c().capture.hdr.output_format} .hdr.png sidecar next to each hdr capture`
                 : "tonemaps to sdr only — no hdr sidecar saved"}
             </span>
           </label>
           <span class="field-hint">
-            only writes when source is hdr10 (the common case) — scrgb / hlg
-            land in v0.4. fullscreen / active-monitor captures only.
+            source format is HDR10 (the common case). transfer = whichever
+            output format you pick above. fullscreen / active-monitor captures only.
           </span>
         </div>
       </div>
     </Section>
+    </>
   );
 }
 

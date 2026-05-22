@@ -229,6 +229,38 @@ impl std::fmt::Display for HdrCompressionMode {
     }
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum HdrOutputFormat {
+    /// 16-bit BT.2020 PNG with PQ transfer (cICP 9/16/0/1). default — the
+    /// best-supported HDR PNG format for Windows Photos, Edge, IrfanView w/
+    /// libpng>=1.6.39.
+    #[default]
+    Pq,
+    /// 16-bit BT.2020 PNG with HLG transfer (cICP 9/18/0/1). useful when
+    /// targeting TV/broadcast displays or HLG-aware viewers. transcoded from
+    /// the HDR10 PQ source by decoding PQ to linear nits then applying HLG OETF.
+    Hlg,
+}
+
+impl HdrOutputFormat {
+    pub fn all() -> &'static [HdrOutputFormat] {
+        &[HdrOutputFormat::Pq, HdrOutputFormat::Hlg]
+    }
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            HdrOutputFormat::Pq => "PQ (BT.2020, HDR10-style — default)",
+            HdrOutputFormat::Hlg => "HLG (BT.2020, broadcast-style)",
+        }
+    }
+}
+
+impl std::fmt::Display for HdrOutputFormat {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.display_name())
+    }
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HdrConfig {
@@ -236,6 +268,11 @@ pub struct HdrConfig {
     pub brightness_nits: f32,
     pub user_brightness_scale: f32,
     pub use_p99_max_cll: bool,
+    /// HDR-preserving PNG transfer characteristic when preserve_hdr is on.
+    /// applies only to HDR sources; SDR captures bypass the HDR encoder
+    /// entirely
+    #[serde(default)]
+    pub output_format: HdrOutputFormat,
 }
 
 impl Default for HdrConfig {
@@ -251,6 +288,7 @@ impl Default for HdrConfig {
             brightness_nits: 0.0,
             user_brightness_scale: 1.0,
             use_p99_max_cll: true,
+            output_format: HdrOutputFormat::Pq,
         }
     }
 }

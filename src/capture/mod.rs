@@ -13,7 +13,7 @@ pub use window::WindowCapture;
 pub use region::RegionCapture;
 pub use tonemapping::{SkivMode, SkivParams};
 pub use hdr::HdrCapture;
-pub use hdr_png::{encode_hdr_png, read_cicp, HdrBitmap};
+pub use hdr_png::{encode_hdr_png, read_cicp, HdrBitmap, HdrTransfer};
 pub use cursor::composite_system_cursor;
 
 use std::sync::OnceLock;

@@ -6,6 +6,25 @@ format follows [keep-a-changelog](https://keepachangelog.com/en/1.1.0/) loosely.
 
 nothing pending. drop ideas in github issues.
 
+## [0.3.52] — 2026-05-22
+
+### added
+- HDR PNG sidecar can now be written with HLG transfer (BT.2020 primaries, cICP 9/18/0/1) in addition to the existing PQ default (cICP 9/16/0/1). HLG is transcoded from the HDR10 PQ source by:
+  1. PQ EOTF decode each u16 to linear nits in [0, 10000] (SMPTE ST 2084)
+  2. normalise to HLG nominal peak (1000 nits)
+  3. HLG OETF encode per BT.2100 Table 5 (ARIB STD-B67)
+  4. write as 16-bit BT.2020 PNG with the appropriate cICP chunk
+- precomputed 65536-entry PQ→HLG lookup table builds once per encode call so the per-pixel loop is a simple LUT lookup + endian swap
+- new Settings → HDR → "output format" selector: PQ (default) or HLG
+- 3 new unit tests in `hdr_png::tests`: HLG output writes cICP 9/18 correctly, PQ EOTF passes known reference points (0/1000/10000 nits at 0/0.5081/1.0 PQ encoding), HLG OETF passes BT.2100 stitch-point + endpoints
+
+### changed
+- `encode_hdr_png` signature gains an `HdrTransfer` parameter so callers explicitly pick PQ-passthrough vs HLG-transcode
+- the "preserve HDR" hint in Settings → HDR now reads the active output_format dynamically — selecting HLG flips the description to "writes a 16-bit bt.2020+hlg .hdr.png sidecar"
+
+### not-yet-shipped
+- scRGB output deferred. the format is non-standard for PNG, and zero major viewers parse cICP 1/8/0/1 as scRGB-in-PNG. revisit if/when the Photoshop / Affinity pipeline catches up
+
 ## [0.3.51] — 2026-05-22
 
 ### added
