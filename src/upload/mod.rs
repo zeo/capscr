@@ -46,6 +46,8 @@ pub struct SftpTarget {
     pub password: String,
     pub remote_dir: String,
     pub public_url_template: String,
+    pub private_key_path: String,
+    pub private_key_passphrase: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -813,6 +815,8 @@ pub fn upload_sftp(data: &[u8], file_name: &str, target: &SftpTarget) -> Result<
     let password = target.password.clone();
     let remote_dir = target.remote_dir.clone();
     let url_template = target.public_url_template.clone();
+    let target_key_path = target.private_key_path.clone();
+    let target_key_passphrase = target.private_key_passphrase.clone();
     let data_owned = data.to_vec();
 
     // host-key TOFU. First connect to a host:port stores the SHA256 fingerprint;
@@ -894,12 +898,49 @@ pub fn upload_sftp(data: &[u8], file_name: &str, target: &SftpTarget) -> Result<
             .await
             .map_err(|e| anyhow!("SFTP connect to {}:{} failed: {}", host, port, e))?;
 
-        let authed = session
-            .authenticate_password(&username, &password)
-            .await
-            .map_err(|e| anyhow!("SFTP authenticate_password failed: {e}"))?;
-        if !authed {
-            return Err(anyhow!("SFTP authentication rejected (bad username or password)"));
+        // try public-key auth first when a key path is configured; fall
+        // through to password only on key-auth failure with a password set.
+        // key path + password BOTH empty errors out below.
+        let key_path = target_key_path.clone();
+        let key_pass = target_key_passphrase.clone();
+        let mut auth_ok = false;
+        let mut auth_diag: Vec<String> = Vec::new();
+        if !key_path.is_empty() {
+            match load_private_key(&key_path, &key_pass) {
+                Ok(pk) => {
+                    match russh::keys::key::PrivateKeyWithHashAlg::new(
+                        std::sync::Arc::new(pk),
+                        None,
+                    ) {
+                        Ok(pkwha) => {
+                            match session.authenticate_publickey(&username, pkwha).await {
+                                Ok(true) => auth_ok = true,
+                                Ok(false) => auth_diag.push(
+                                    "publickey: server rejected the key (not in authorized_keys?)".into(),
+                                ),
+                                Err(e) => auth_diag.push(format!("publickey: {e}")),
+                            }
+                        }
+                        Err(e) => auth_diag.push(format!("publickey: key/hash-alg wrap failed: {e}")),
+                    }
+                }
+                Err(e) => auth_diag.push(format!("publickey: {e}")),
+            }
+        }
+        if !auth_ok && !password.is_empty() {
+            match session.authenticate_password(&username, &password).await {
+                Ok(true) => auth_ok = true,
+                Ok(false) => auth_diag.push("password: server rejected the password".into()),
+                Err(e) => auth_diag.push(format!("password: {e}")),
+            }
+        }
+        if !auth_ok {
+            let summary = if auth_diag.is_empty() {
+                "no authentication method configured (set a private key or password)".to_string()
+            } else {
+                auth_diag.join("; ")
+            };
+            return Err(anyhow!("SFTP authentication failed — {summary}"));
         }
 
         let channel = session
@@ -961,6 +1002,38 @@ pub fn upload_sftp(_data: &[u8], _file_name: &str, _target: &SftpTarget) -> Resu
     Err(anyhow!(
         "SFTP support not compiled in — rebuild with --features sftp (or restore the default feature set)"
     ))
+}
+
+#[cfg(feature = "sftp")]
+fn load_private_key(
+    path: &str,
+    passphrase: &str,
+) -> Result<russh::keys::ssh_key::PrivateKey> {
+    use russh::keys::ssh_key::PrivateKey;
+
+    let path_buf = std::path::PathBuf::from(path);
+    let canonical = path_buf
+        .canonicalize()
+        .map_err(|e| anyhow!("can't canonicalize SSH key path '{}': {e}", path))?;
+    // canonicalize collapses any '..' before we read; this rejects nothing
+    // operationally (the user picks the file) but means logs always show the
+    // real on-disk location instead of whatever they typed.
+    let body = std::fs::read(&canonical)
+        .map_err(|e| anyhow!("can't read SSH key from {:?}: {e}", canonical))?;
+    let key = PrivateKey::from_openssh(&body)
+        .map_err(|e| anyhow!("SSH key parse failed (expected OpenSSH PEM): {e}"))?;
+    if key.is_encrypted() {
+        if passphrase.is_empty() {
+            return Err(anyhow!(
+                "SSH key at {:?} is passphrase-protected — set the passphrase in Destinations",
+                canonical
+            ));
+        }
+        key.decrypt(passphrase.as_bytes())
+            .map_err(|e| anyhow!("SSH key decrypt failed (bad passphrase?): {e}"))
+    } else {
+        Ok(key)
+    }
 }
 
 fn sanitize_remote_filename(name: &str) -> String {

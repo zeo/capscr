@@ -77,10 +77,10 @@ pub fn set_config(
     app: AppHandle,
     state: State<AppState>,
 ) -> Result<(), String> {
-    // preserve the encrypted FTP password when the UI sent an empty plaintext
-    // input — without this, every Settings → Save would wipe the vault unless
-    // the user retypes their password each time. The frontend shows an empty
-    // input when an encrypted blob exists, so empty here means "keep current"
+    // preserve encrypted secrets when the UI sent empty plaintext inputs —
+    // without this, every Settings → Save would wipe the vault unless the
+    // user retypes their secret each time. the frontend shows an empty input
+    // when an encrypted blob exists, so empty here means "keep current"
     {
         let stored = state.config.lock().unwrap();
         if config.upload.ftp.password.is_empty()
@@ -89,6 +89,20 @@ pub fn set_config(
         {
             config.upload.ftp.password_encrypted =
                 stored.upload.ftp.password_encrypted.clone();
+        }
+        if config.upload.sftp.password.is_empty()
+            && config.upload.sftp.password_encrypted.is_empty()
+            && !stored.upload.sftp.password_encrypted.is_empty()
+        {
+            config.upload.sftp.password_encrypted =
+                stored.upload.sftp.password_encrypted.clone();
+        }
+        if config.upload.sftp.private_key_passphrase.is_empty()
+            && config.upload.sftp.private_key_passphrase_encrypted.is_empty()
+            && !stored.upload.sftp.private_key_passphrase_encrypted.is_empty()
+        {
+            config.upload.sftp.private_key_passphrase_encrypted =
+                stored.upload.sftp.private_key_passphrase_encrypted.clone();
         }
     }
     config.validate().map_err(|e| e.to_string())?;
@@ -412,6 +426,8 @@ fn build_sftp_service(config: &Config) -> UploadService {
         password: config.upload.sftp.password_plaintext(),
         remote_dir: config.upload.sftp.remote_dir.clone(),
         public_url_template: config.upload.sftp.public_url_template.clone(),
+        private_key_path: config.upload.sftp.private_key_path.clone(),
+        private_key_passphrase: config.upload.sftp.private_key_passphrase_plaintext(),
     })
 }
 

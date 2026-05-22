@@ -58,6 +58,13 @@ export interface SftpConfig {
   password_encrypted: string;
   remote_dir: string;
   public_url_template: string;
+  /** absolute filesystem path to an OpenSSH-format private key. blank = use
+   *  password auth */
+  private_key_path: string;
+  /** passphrase for an encrypted key. same vault treatment as `password` */
+  private_key_passphrase: string;
+  /** DPAPI-wrapped passphrase blob */
+  private_key_passphrase_encrypted: string;
 }
 
 export interface UploadConfig {

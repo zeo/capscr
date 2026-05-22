@@ -1,5 +1,6 @@
 import { createResource, createSignal, Show } from "solid-js";
-import { Save } from "lucide-solid";
+import { Save, FolderOpen } from "lucide-solid";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { Section } from "../components/Section";
 import { api, AppConfig } from "../api";
 import { configDirty, setConfigDirty } from "../dirty";
@@ -310,6 +311,73 @@ export function Destinations() {
                   </div>
                 </div>
                 <div class="field">
+                  <label class="field-label">private key</label>
+                  <div class="field-control">
+                    <input
+                      type="text"
+                      placeholder="C:\Users\you\.ssh\id_ed25519 (blank = password auth)"
+                      value={c().upload.sftp.private_key_path}
+                      onInput={(e) =>
+                        patch({
+                          ...c().upload,
+                          sftp: { ...c().upload.sftp, private_key_path: e.currentTarget.value },
+                        })
+                      }
+                    />
+                    <button
+                      class="btn"
+                      data-variant="ghost"
+                      data-size="xs"
+                      onClick={async () => {
+                        const picked = await openDialog({
+                          multiple: false,
+                          directory: false,
+                          filters: [
+                            { name: "OpenSSH key", extensions: ["pem", "key", ""] },
+                          ],
+                        });
+                        if (typeof picked === "string") {
+                          patch({
+                            ...c().upload,
+                            sftp: { ...c().upload.sftp, private_key_path: picked },
+                          });
+                        }
+                      }}
+                    >
+                      <FolderOpen size={11} stroke-width={1.5} />
+                      browse
+                    </button>
+                    <span class="field-hint">
+                      openssh format. ed25519 / rsa / ecdsa supported.
+                    </span>
+                  </div>
+                </div>
+                <Show when={c().upload.sftp.private_key_path}>
+                  <div class="field">
+                    <label class="field-label">key passphrase</label>
+                    <div class="field-control">
+                      <input
+                        type="password"
+                        placeholder={
+                          c().upload.sftp.private_key_passphrase_encrypted
+                            ? "(stored — leave blank to keep current)"
+                            : "leave blank if the key is unencrypted"
+                        }
+                        value={c().upload.sftp.private_key_passphrase}
+                        onInput={(e) =>
+                          patch({
+                            ...c().upload,
+                            sftp: { ...c().upload.sftp, private_key_passphrase: e.currentTarget.value },
+                          })
+                        }
+                      />
+                      <span class="field-hint">
+                        encrypted at rest with Windows DPAPI on save.
+                      </span>
+                    </div>
+                  </div>
+                </Show>
+                <div class="field">
                   <label class="field-label">password</label>
                   <div class="field-control">
                     <input
@@ -317,7 +385,7 @@ export function Destinations() {
                       placeholder={
                         c().upload.sftp.password_encrypted
                           ? "(stored — leave blank to keep current)"
-                          : ""
+                          : "fallback if key auth fails or no key set"
                       }
                       value={c().upload.sftp.password}
                       onInput={(e) =>

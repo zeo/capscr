@@ -506,6 +506,18 @@ pub struct SftpUploadConfig {
     pub remote_dir: String,
     #[serde(default)]
     pub public_url_template: String,
+    /// absolute filesystem path to an OpenSSH-format private key. when set,
+    /// the upload path tries public-key auth first; on failure it falls back
+    /// to password if one is configured. empty = password-only
+    #[serde(default)]
+    pub private_key_path: String,
+    /// passphrase for an encrypted private key. plaintext slot — same vault
+    /// treatment as `password` (migrated on save, cleared from disk)
+    #[serde(default)]
+    pub private_key_passphrase: String,
+    /// DPAPI-wrapped passphrase blob (hex-encoded)
+    #[serde(default)]
+    pub private_key_passphrase_encrypted: String,
 }
 
 impl SftpUploadConfig {
@@ -521,6 +533,20 @@ impl SftpUploadConfig {
             }
         }
         self.password.clone()
+    }
+
+    pub fn private_key_passphrase_plaintext(&self) -> String {
+        if !self.private_key_passphrase_encrypted.is_empty() {
+            match crate::secret::decrypt(&self.private_key_passphrase_encrypted) {
+                Ok(p) => return p,
+                Err(e) => {
+                    tracing::warn!(
+                        "SFTP key passphrase decrypt failed (corrupt blob or wrong user?): {e}"
+                    );
+                }
+            }
+        }
+        self.private_key_passphrase.clone()
     }
 }
 
@@ -893,7 +919,9 @@ impl Config {
                         let needs_secret_migration = (!config.upload.ftp.password.is_empty()
                             && config.upload.ftp.password_encrypted.is_empty())
                             || (!config.upload.sftp.password.is_empty()
-                                && config.upload.sftp.password_encrypted.is_empty());
+                                && config.upload.sftp.password_encrypted.is_empty())
+                            || (!config.upload.sftp.private_key_passphrase.is_empty()
+                                && config.upload.sftp.private_key_passphrase_encrypted.is_empty());
                         if needs_secret_migration {
                             config.migrate_secrets();
                             if let Err(e) = config.save() {
@@ -984,6 +1012,22 @@ impl Config {
                 Err(e) => {
                     tracing::warn!(
                         "SFTP password DPAPI encrypt failed; leaving plaintext: {e}"
+                    );
+                }
+            }
+        }
+        if !sftp.private_key_passphrase.is_empty()
+            && sftp.private_key_passphrase_encrypted.is_empty()
+        {
+            match crate::secret::encrypt(&sftp.private_key_passphrase) {
+                Ok(blob) => {
+                    sftp.private_key_passphrase_encrypted = blob;
+                    sftp.private_key_passphrase.clear();
+                    tracing::info!("migrated SFTP key passphrase into encrypted vault");
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "SFTP key passphrase DPAPI encrypt failed; leaving plaintext: {e}"
                     );
                 }
             }

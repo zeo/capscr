@@ -6,6 +6,18 @@ format follows [keep-a-changelog](https://keepachangelog.com/en/1.1.0/) loosely.
 
 nothing pending. drop ideas in github issues.
 
+## [0.3.48] — 2026-05-22
+
+### added
+- SSH key authentication for the SFTP destination. when `private_key_path` is set the upload path tries public-key auth first (`russh::client::Session::authenticate_publickey` against `russh::keys::key::PrivateKeyWithHashAlg`), only falling through to password auth if key auth fails AND a password is configured
+- new `private_key_path`, `private_key_passphrase` (plaintext slot), and `private_key_passphrase_encrypted` (DPAPI vault) fields on `SftpUploadConfig`. passphrase gets the same migrate-on-save vault treatment as the SFTP password
+- `load_private_key` helper parses OpenSSH PEM with `ssh-key`'s `PrivateKey::from_openssh`; if the key is encrypted, decrypts with the configured passphrase via `key.decrypt(...)`. friendly error on bad passphrase or missing passphrase for an encrypted key
+- Destinations → SFTP form: file-picker for the private key path (filters for `.pem`, `.key`, no extension), conditional passphrase input (only shown when a key path is set), inline hints clarifying the precedence order (key → password fallback)
+
+### changed
+- `set_config` now preserves the encrypted SFTP password AND the encrypted key-passphrase blobs when the UI sends empty plaintext inputs (parity with the FTP password preservation shipped in 0.3.43)
+- friendlier auth-failure error: surfaces the per-method diagnostic instead of russh's generic "authentication rejected". e.g. `"SFTP authentication failed — publickey: server rejected the key (not in authorized_keys?); password: server rejected the password"`
+
 ## [0.3.47] — 2026-05-22
 
 ### security
