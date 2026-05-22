@@ -219,7 +219,7 @@ export const api = {
   sftpKnownHosts: () => invoke<SftpKnownHost[]>("sftp_known_hosts"),
   sftpForgetHost: (hostPort: string) =>
     invoke<boolean>("sftp_forget_host", { hostPort }),
-  testUploadConnection: (destination: "Ftp" | "Sftp") =>
+  testUploadConnection: (destination: "Ftp" | "Sftp" | "Imgur" | "Custom") =>
     invoke<ConnectionTestReport>("test_upload_connection", { destination }),
   fireTask: (taskId: string) => invoke<void>("fire_task", { taskId }),
 };

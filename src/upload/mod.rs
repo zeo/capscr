@@ -1000,6 +1000,135 @@ impl TestStep {
     }
 }
 
+// dry-run probe for Imgur: hits api.imgur.com/3/credits with the configured
+// Client-ID. 200 = creds work and rate-limit is reported in the detail string.
+// 401/403 = bad client-id. anything else = the API itself is unhappy.
+pub fn test_connection_imgur(client_id: &str) -> Result<Vec<TestStep>> {
+    let mut steps: Vec<TestStep> = Vec::new();
+    let effective_cid = if client_id.trim().is_empty() {
+        steps.push(TestStep::ok("client-id", "(shared bot key)".into()));
+        "546c25a59c58ad7"
+    } else {
+        steps.push(TestStep::ok("client-id", "(custom)".into()));
+        client_id.trim()
+    };
+
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(15))
+        .user_agent("capscr/1.0")
+        .build()
+        .map_err(|e| anyhow!("HTTP client init failed: {e}"))?;
+
+    let resp = match client
+        .get("https://api.imgur.com/3/credits")
+        .header("Authorization", format!("Client-ID {}", effective_cid))
+        .send()
+    {
+        Ok(r) => r,
+        Err(e) => {
+            steps.push(TestStep::fail("request", e.to_string()));
+            return Ok(steps);
+        }
+    };
+    let status = resp.status();
+    let body = resp.text().unwrap_or_default();
+    if status.is_success() {
+        // try to surface the rate-limit fields without pulling serde_json
+        // — quick string carving is fine for an opportunistic probe
+        let snippet = body
+            .chars()
+            .take(200)
+            .collect::<String>()
+            .replace('\n', " ");
+        steps.push(TestStep::ok("api-credits", snippet));
+    } else if status.as_u16() == 401 || status.as_u16() == 403 {
+        steps.push(TestStep::fail(
+            "api-credits",
+            format!("{} — client-id rejected", status),
+        ));
+    } else {
+        steps.push(TestStep::fail(
+            "api-credits",
+            format!("HTTP {} — {}", status, body.chars().take(200).collect::<String>()),
+        ));
+    }
+    Ok(steps)
+}
+
+// dry-run probe for Custom HTTP: sends an OPTIONS request to the configured
+// URL. 2xx/3xx/405 = endpoint exists and is reachable. anything else = the
+// configured URL is wrong, the host is down, or the SSRF guard rejected it.
+pub fn test_connection_custom(uploader: &CustomUploader) -> Result<Vec<TestStep>> {
+    let mut steps: Vec<TestStep> = Vec::new();
+    let url = uploader.request_url.trim();
+    if url.is_empty() {
+        steps.push(TestStep::fail("url", "post url is empty".into()));
+        return Ok(steps);
+    }
+    steps.push(TestStep::ok("url", url.into()));
+
+    let parsed = match url::Url::parse(url) {
+        Ok(u) => u,
+        Err(e) => {
+            steps.push(TestStep::fail("parse-url", e.to_string()));
+            return Ok(steps);
+        }
+    };
+    if parsed.scheme() != "https" {
+        steps.push(TestStep::fail(
+            "scheme",
+            "https only — plain http is rejected by the uploader".into(),
+        ));
+        return Ok(steps);
+    }
+    steps.push(TestStep::ok("scheme", "https".into()));
+
+    if let Some(host) = parsed.host_str() {
+        if let Err(e) = validate_host(host) {
+            steps.push(TestStep::fail("validate-host", e.to_string()));
+            return Ok(steps);
+        }
+        let port = parsed.port_or_known_default().unwrap_or(443);
+        if let Err(e) = validate_resolved_host(host, port) {
+            steps.push(TestStep::fail("resolve-host", e.to_string()));
+            return Ok(steps);
+        }
+        steps.push(TestStep::ok("resolve-host", format!("{}:{}", host, port)));
+    }
+
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(15))
+        .user_agent("capscr/1.0")
+        .build()
+        .map_err(|e| anyhow!("HTTP client init failed: {e}"))?;
+
+    let resp = match client.request(reqwest::Method::OPTIONS, url).send() {
+        Ok(r) => r,
+        Err(e) => {
+            steps.push(TestStep::fail("options-request", e.to_string()));
+            return Ok(steps);
+        }
+    };
+    let status = resp.status();
+    // OPTIONS isn't universally supported. treat 2xx, 3xx, and 405
+    // (Method Not Allowed — server is reachable but doesn't speak OPTIONS) as
+    // OK; anything else means we couldn't reach a working endpoint
+    let ok = status.is_success() || status.is_redirection() || status.as_u16() == 405;
+    if ok {
+        steps.push(TestStep::ok(
+            "options-request",
+            format!("HTTP {} — endpoint reachable", status),
+        ));
+    } else {
+        let body = resp.text().unwrap_or_default();
+        steps.push(TestStep::fail(
+            "options-request",
+            format!("HTTP {} — {}", status, body.chars().take(200).collect::<String>()),
+        ));
+    }
+    Ok(steps)
+}
+
 pub fn upload_ftp(data: &[u8], file_name: &str, target: &FtpTarget) -> Result<UploadResult> {
     use std::io::Cursor;
     use suppaftp::FtpStream;

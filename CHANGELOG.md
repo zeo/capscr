@@ -6,6 +6,17 @@ format follows [keep-a-changelog](https://keepachangelog.com/en/1.1.0/) loosely.
 
 nothing pending. drop ideas in github issues.
 
+## [0.3.51] — 2026-05-22
+
+### added
+- test-connection probes for the remaining two upload destinations:
+  - **Imgur**: GET api.imgur.com/3/credits with the configured Client-ID. 200 = creds work (rate-limit JSON surfaced as detail), 401/403 = client-id rejected
+  - **Custom HTTP**: OPTIONS request to the configured post URL with full SSRF guard (host validation + DNS resolution + private-IP rejection). 2xx/3xx/405 = endpoint reachable
+- the diagnostic surface is now symmetric across all four destinations — Destinations view always has a "test connection" button next to the form for the active target
+
+### changed
+- `ConnectionTestPanel` renders whenever a report exists, not just for FTP/SFTP, so switching destinations after a probe doesn't strand the result
+
 ## [0.3.50] — 2026-05-22
 
 ### added

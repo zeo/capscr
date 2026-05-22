@@ -1865,6 +1865,19 @@ pub fn test_upload_connection(
             };
             crate::upload::test_connection_sftp(&target).map_err(|e| e.to_string())?
         }
+        "Imgur" | "imgur" => {
+            crate::upload::test_connection_imgur(&cfg.upload.imgur_client_id)
+                .map_err(|e| e.to_string())?
+        }
+        "Custom" | "custom" => {
+            let uploader = crate::upload::CustomUploader {
+                name: "Custom".to_string(),
+                request_url: cfg.upload.custom_url.clone(),
+                file_form_name: cfg.upload.custom_form_name.clone(),
+                response_url_path: cfg.upload.custom_response_path.clone(),
+            };
+            crate::upload::test_connection_custom(&uploader).map_err(|e| e.to_string())?
+        }
         other => return Err(format!("'{other}' has no test-connection probe")),
     };
     let overall_ok = !steps.is_empty() && steps.iter().all(|s| s.ok);

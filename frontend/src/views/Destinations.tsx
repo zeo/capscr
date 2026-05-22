@@ -10,10 +10,10 @@ export function Destinations() {
   const [status, setStatus] = createSignal<{ tone: string; msg: string } | null>(
     null,
   );
-  const [testing, setTesting] = createSignal<"Ftp" | "Sftp" | null>(null);
+  const [testing, setTesting] = createSignal<"Ftp" | "Sftp" | "Imgur" | "Custom" | null>(null);
   const [report, setReport] = createSignal<ConnectionTestReport | null>(null);
 
-  const test = async (destination: "Ftp" | "Sftp") => {
+  const test = async (destination: "Ftp" | "Sftp" | "Imgur" | "Custom") => {
     setTesting(destination);
     setReport(null);
     try {
@@ -110,6 +110,23 @@ export function Destinations() {
                     </span>
                   </div>
                 </div>
+                <div class="field">
+                  <label class="field-label">test</label>
+                  <div class="field-control">
+                    <button
+                      class="btn"
+                      data-variant="ghost"
+                      disabled={testing() === "Imgur"}
+                      onClick={() => test("Imgur")}
+                    >
+                      <Zap size={12} stroke-width={1.5} />
+                      {testing() === "Imgur" ? "probing..." : "test connection"}
+                    </button>
+                    <span class="field-hint">
+                      hits api.imgur.com/3/credits with this client-id.
+                    </span>
+                  </div>
+                </div>
               </Show>
               <div class="field">
                 <label class="field-label">copy url to clipboard</label>
@@ -135,7 +152,7 @@ export function Destinations() {
               </div>
             </Section>
 
-            <Show when={(c().upload.destination === "Ftp" || c().upload.destination === "Sftp") && report()}>
+            <Show when={report()}>
               <ConnectionTestPanel report={report()!} />
             </Show>
 
@@ -554,6 +571,25 @@ export function Destinations() {
                   </span>
                 </div>
               </div>
+              <Show when={c().upload.destination === "Custom"}>
+                <div class="field">
+                  <label class="field-label">test</label>
+                  <div class="field-control">
+                    <button
+                      class="btn"
+                      data-variant="ghost"
+                      disabled={testing() === "Custom"}
+                      onClick={() => test("Custom")}
+                    >
+                      <Zap size={12} stroke-width={1.5} />
+                      {testing() === "Custom" ? "probing..." : "test connection"}
+                    </button>
+                    <span class="field-hint">
+                      sends OPTIONS to the post url. 2xx/3xx/405 = reachable.
+                    </span>
+                  </div>
+                </div>
+              </Show>
             </Section>
 
             <hr class="rule" />
