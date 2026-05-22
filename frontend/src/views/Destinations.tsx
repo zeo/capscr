@@ -1,8 +1,8 @@
-import { createResource, createSignal, Show } from "solid-js";
-import { Save, FolderOpen } from "lucide-solid";
+import { createResource, createSignal, For, Show } from "solid-js";
+import { Save, FolderOpen, Zap } from "lucide-solid";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { Section } from "../components/Section";
-import { api, AppConfig } from "../api";
+import { api, AppConfig, ConnectionTestReport } from "../api";
 import { configDirty, setConfigDirty } from "../dirty";
 
 export function Destinations() {
@@ -10,6 +10,25 @@ export function Destinations() {
   const [status, setStatus] = createSignal<{ tone: string; msg: string } | null>(
     null,
   );
+  const [testing, setTesting] = createSignal<"Ftp" | "Sftp" | null>(null);
+  const [report, setReport] = createSignal<ConnectionTestReport | null>(null);
+
+  const test = async (destination: "Ftp" | "Sftp") => {
+    setTesting(destination);
+    setReport(null);
+    try {
+      const r = await api.testUploadConnection(destination);
+      setReport(r);
+    } catch (e) {
+      setReport({
+        destination,
+        overall_ok: false,
+        steps: [{ step: "invoke", ok: false, detail: String(e) }],
+      });
+    } finally {
+      setTesting(null);
+    }
+  };
 
   const save = async () => {
     const c = config();
@@ -115,6 +134,10 @@ export function Destinations() {
                 </div>
               </div>
             </Section>
+
+            <Show when={(c().upload.destination === "Ftp" || c().upload.destination === "Sftp") && report()}>
+              <ConnectionTestPanel report={report()!} />
+            </Show>
 
             <Show when={c().upload.destination === "Ftp"}>
               <Section title="ftp / ftps">
@@ -250,6 +273,23 @@ export function Destinations() {
                     />
                     <span class="field-hint">
                       {`{filename} → basename, empty = no url returned`}
+                    </span>
+                  </div>
+                </div>
+                <div class="field">
+                  <label class="field-label">test</label>
+                  <div class="field-control">
+                    <button
+                      class="btn"
+                      data-variant="ghost"
+                      disabled={testing() === "Ftp"}
+                      onClick={() => test("Ftp")}
+                    >
+                      <Zap size={12} stroke-width={1.5} />
+                      {testing() === "Ftp" ? "probing..." : "test connection"}
+                    </button>
+                    <span class="field-hint">
+                      connects, logs in, cwd's to remote dir. doesn't upload.
                     </span>
                   </div>
                 </div>
@@ -440,6 +480,23 @@ export function Destinations() {
                     </span>
                   </div>
                 </div>
+                <div class="field">
+                  <label class="field-label">test</label>
+                  <div class="field-control">
+                    <button
+                      class="btn"
+                      data-variant="ghost"
+                      disabled={testing() === "Sftp"}
+                      onClick={() => test("Sftp")}
+                    >
+                      <Zap size={12} stroke-width={1.5} />
+                      {testing() === "Sftp" ? "probing..." : "test connection"}
+                    </button>
+                    <span class="field-hint">
+                      connects, authenticates, lists remote dir. doesn't upload.
+                    </span>
+                  </div>
+                </div>
               </Section>
             </Show>
 
@@ -521,5 +578,45 @@ export function Destinations() {
         )}
       </Show>
     </>
+  );
+}
+
+function ConnectionTestPanel(props: { report: ConnectionTestReport }) {
+  return (
+    <Section title={`probe — ${props.report.destination.toLowerCase()}`}>
+      <p
+        class="flash"
+        data-tone={props.report.overall_ok ? "ok" : "err"}
+        style="margin-bottom: 8px;"
+      >
+        {props.report.overall_ok
+          ? "all steps passed — credentials and connectivity look good."
+          : "one or more steps failed — see details below."}
+      </p>
+      <table class="diag-table">
+        <thead>
+          <tr>
+            <th>step</th>
+            <th>status</th>
+            <th>detail</th>
+          </tr>
+        </thead>
+        <tbody>
+          <For each={props.report.steps}>
+            {(s) => (
+              <tr>
+                <td>{s.step}</td>
+                <td>
+                  <span class={s.ok ? "chip-live" : "chip-fail"}>
+                    ● {s.ok ? "ok" : "fail"}
+                  </span>
+                </td>
+                <td style="word-break: break-word;">{s.detail}</td>
+              </tr>
+            )}
+          </For>
+        </tbody>
+      </table>
+    </Section>
   );
 }

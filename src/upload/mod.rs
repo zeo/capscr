@@ -708,6 +708,298 @@ fn is_transient_upload_error(e: &anyhow::Error) -> bool {
     transient_markers.iter().any(|m| text.contains(m))
 }
 
+// connect + auth + cwd dry-run for the FTP target. used by the
+// `test_upload_connection` command so users can validate credentials
+// without doing an actual capture upload. logs out cleanly on every exit
+// path; never writes anything to the remote.
+pub fn test_connection_ftp(target: &FtpTarget) -> Result<Vec<TestStep>> {
+    use suppaftp::FtpStream;
+    let mut steps: Vec<TestStep> = Vec::new();
+
+    if let Err(e) = validate_host(&target.host) {
+        steps.push(TestStep::fail("validate-host", e.to_string()));
+        return Ok(steps);
+    }
+    steps.push(TestStep::ok("validate-host", target.host.clone()));
+
+    if let Err(e) = validate_remote_dir(&target.remote_dir) {
+        steps.push(TestStep::fail("validate-remote-dir", e.to_string()));
+        return Ok(steps);
+    }
+
+    if let Err(e) = validate_resolved_host(&target.host, target.port.max(1)) {
+        steps.push(TestStep::fail("resolve-host", e.to_string()));
+        return Ok(steps);
+    }
+    steps.push(TestStep::ok(
+        "resolve-host",
+        format!("{}:{}", target.host, target.port.max(1)),
+    ));
+
+    if target.use_tls {
+        steps.push(TestStep::fail(
+            "tls-mode",
+            "FTPS not yet implemented; disable use_tls or use SFTP".into(),
+        ));
+        return Ok(steps);
+    }
+
+    let address = format!("{}:{}", target.host, target.port.max(1));
+    let mut stream = match FtpStream::connect(&address) {
+        Ok(s) => s,
+        Err(e) => {
+            steps.push(TestStep::fail("connect", e.to_string()));
+            return Ok(steps);
+        }
+    };
+    steps.push(TestStep::ok("connect", address));
+
+    if let Err(e) = stream.login(&target.username, &target.password) {
+        let _ = stream.quit();
+        steps.push(TestStep::fail("login", e.to_string()));
+        return Ok(steps);
+    }
+    steps.push(TestStep::ok("login", target.username.clone()));
+
+    if !target.remote_dir.is_empty() {
+        if let Err(e) = stream.cwd(&target.remote_dir) {
+            let _ = stream.quit();
+            steps.push(TestStep::fail("cwd", e.to_string()));
+            return Ok(steps);
+        }
+        steps.push(TestStep::ok("cwd", target.remote_dir.clone()));
+    }
+
+    let _ = stream.quit();
+    Ok(steps)
+}
+
+#[cfg(feature = "sftp")]
+pub fn test_connection_sftp(target: &SftpTarget) -> Result<Vec<TestStep>> {
+    use async_trait::async_trait;
+    use russh::client;
+    use russh::keys::HashAlg;
+    use russh_sftp::client::SftpSession;
+    use std::sync::{Arc, Mutex};
+
+    let mut steps: Vec<TestStep> = Vec::new();
+
+    if let Err(e) = validate_host(&target.host) {
+        steps.push(TestStep::fail("validate-host", e.to_string()));
+        return Ok(steps);
+    }
+    steps.push(TestStep::ok("validate-host", target.host.clone()));
+
+    if let Err(e) = validate_remote_dir(&target.remote_dir) {
+        steps.push(TestStep::fail("validate-remote-dir", e.to_string()));
+        return Ok(steps);
+    }
+
+    if let Err(e) = validate_resolved_host(&target.host, target.port.max(1)) {
+        steps.push(TestStep::fail("resolve-host", e.to_string()));
+        return Ok(steps);
+    }
+    steps.push(TestStep::ok(
+        "resolve-host",
+        format!("{}:{}", target.host, target.port.max(1)),
+    ));
+
+    let known_hosts_path = match known_hosts::KnownHosts::default_path() {
+        Some(p) => p,
+        None => {
+            steps.push(TestStep::fail(
+                "known-hosts",
+                "can't resolve config dir for ssh_known_hosts.toml".into(),
+            ));
+            return Ok(steps);
+        }
+    };
+
+    let host = target.host.clone();
+    let port = target.port.max(1);
+    let username = target.username.clone();
+    let password = target.password.clone();
+    let key_path = target.private_key_path.clone();
+    let key_pass = target.private_key_passphrase.clone();
+    let remote_dir = target.remote_dir.clone();
+    let host_port = known_hosts::host_key(&host, port);
+    let mismatch_error: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+    let mismatch_for_handler = Arc::clone(&mismatch_error);
+
+    struct VerifyHostKey {
+        host_port: String,
+        known_hosts_path: std::path::PathBuf,
+        mismatch_error: Arc<Mutex<Option<String>>>,
+    }
+
+    #[async_trait]
+    impl client::Handler for VerifyHostKey {
+        type Error = russh::Error;
+        async fn check_server_key(
+            &mut self,
+            key: &russh::keys::ssh_key::PublicKey,
+        ) -> std::result::Result<bool, Self::Error> {
+            let fp = key.fingerprint(HashAlg::Sha256).to_string();
+            let mut store = known_hosts::KnownHosts::load(&self.known_hosts_path);
+            match store.lookup(&self.host_port) {
+                Some(entry) if entry.fingerprint == fp => Ok(true),
+                Some(entry) => {
+                    *self.mismatch_error.lock().unwrap() = Some(format!(
+                        "stored {}, server now offering {}",
+                        entry.fingerprint, fp
+                    ));
+                    Ok(false)
+                }
+                None => {
+                    store.insert(self.host_port.clone(), fp.clone());
+                    if let Err(e) = store.save(&self.known_hosts_path) {
+                        tracing::warn!("ssh_known_hosts save (test) failed: {e}");
+                    }
+                    Ok(true)
+                }
+            }
+        }
+    }
+
+    let runtime = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+        Ok(r) => r,
+        Err(e) => {
+            steps.push(TestStep::fail("runtime", e.to_string()));
+            return Ok(steps);
+        }
+    };
+
+    let result = runtime.block_on(async move {
+        let handler = VerifyHostKey {
+            host_port: host_port.clone(),
+            known_hosts_path: known_hosts_path.clone(),
+            mismatch_error: mismatch_for_handler,
+        };
+        let config = Arc::new(client::Config {
+            inactivity_timeout: Some(std::time::Duration::from_secs(UPLOAD_TIMEOUT_SECS)),
+            ..Default::default()
+        });
+        let mut session = client::connect(config, (host.as_str(), port), handler)
+            .await
+            .map_err(|e| format!("{}", e))?;
+        steps.push(TestStep::ok("connect", format!("{}:{}", host, port)));
+
+        let mut auth_ok = false;
+        if !key_path.is_empty() {
+            match load_private_key(&key_path, &key_pass) {
+                Ok(pk) => match russh::keys::key::PrivateKeyWithHashAlg::new(
+                    std::sync::Arc::new(pk),
+                    None,
+                ) {
+                    Ok(pkwha) => match session.authenticate_publickey(&username, pkwha).await {
+                        Ok(true) => {
+                            steps.push(TestStep::ok("auth-publickey", key_path.clone()));
+                            auth_ok = true;
+                        }
+                        Ok(false) => steps.push(TestStep::fail(
+                            "auth-publickey",
+                            "server rejected the key (not in authorized_keys?)".into(),
+                        )),
+                        Err(e) => steps.push(TestStep::fail("auth-publickey", e.to_string())),
+                    },
+                    Err(e) => steps.push(TestStep::fail(
+                        "auth-publickey",
+                        format!("key/hash-alg wrap failed: {e}"),
+                    )),
+                },
+                Err(e) => steps.push(TestStep::fail("auth-publickey", e.to_string())),
+            }
+        }
+        if !auth_ok && !password.is_empty() {
+            match session.authenticate_password(&username, &password).await {
+                Ok(true) => {
+                    steps.push(TestStep::ok("auth-password", username.clone()));
+                    auth_ok = true;
+                }
+                Ok(false) => steps.push(TestStep::fail(
+                    "auth-password",
+                    "server rejected the password".into(),
+                )),
+                Err(e) => steps.push(TestStep::fail("auth-password", e.to_string())),
+            }
+        }
+        if !auth_ok {
+            return Err("no auth method succeeded".to_string());
+        }
+
+        let channel = session
+            .channel_open_session()
+            .await
+            .map_err(|e| format!("channel: {e}"))?;
+        channel
+            .request_subsystem(true, "sftp")
+            .await
+            .map_err(|e| format!("sftp subsystem: {e}"))?;
+        let sftp = SftpSession::new(channel.into_stream())
+            .await
+            .map_err(|e| format!("sftp session: {e}"))?;
+        steps.push(TestStep::ok("sftp-subsystem", "opened".into()));
+
+        let probe_path = if remote_dir.is_empty() { "." } else { remote_dir.as_str() };
+        match sftp.read_dir(probe_path).await {
+            Ok(_) => {
+                steps.push(TestStep::ok(
+                    "read-remote-dir",
+                    format!("{} listed", probe_path),
+                ));
+            }
+            Err(e) => steps.push(TestStep::fail("read-remote-dir", e.to_string())),
+        }
+
+        Ok::<Vec<TestStep>, String>(steps)
+    });
+
+    if let Some(msg) = mismatch_error.lock().unwrap().take() {
+        return Ok(vec![TestStep::fail(
+            "host-key-mismatch",
+            format!(
+                "{msg} — forget the host in Settings → SSH known hosts and reconnect"
+            ),
+        )]);
+    }
+
+    match result {
+        Ok(steps) => Ok(steps),
+        Err(e) => Err(anyhow!("{e}")),
+    }
+}
+
+#[cfg(not(feature = "sftp"))]
+pub fn test_connection_sftp(_target: &SftpTarget) -> Result<Vec<TestStep>> {
+    Err(anyhow!(
+        "SFTP support not compiled in — rebuild with --features sftp"
+    ))
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct TestStep {
+    pub step: String,
+    pub ok: bool,
+    pub detail: String,
+}
+
+impl TestStep {
+    fn ok(step: &str, detail: String) -> Self {
+        Self {
+            step: step.to_string(),
+            ok: true,
+            detail,
+        }
+    }
+    fn fail(step: &str, detail: String) -> Self {
+        Self {
+            step: step.to_string(),
+            ok: false,
+            detail,
+        }
+    }
+}
+
 pub fn upload_ftp(data: &[u8], file_name: &str, target: &FtpTarget) -> Result<UploadResult> {
     use std::io::Cursor;
     use suppaftp::FtpStream;

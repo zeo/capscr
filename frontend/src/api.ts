@@ -171,6 +171,18 @@ export interface SftpKnownHost {
   first_seen_unix: number;
 }
 
+export interface TestStep {
+  step: string;
+  ok: boolean;
+  detail: string;
+}
+
+export interface ConnectionTestReport {
+  destination: string;
+  overall_ok: boolean;
+  steps: TestStep[];
+}
+
 export const api = {
   getConfig: () => invoke<AppConfig>("get_config"),
   getDefaultConfig: () => invoke<AppConfig>("get_default_config"),
@@ -207,4 +219,6 @@ export const api = {
   sftpKnownHosts: () => invoke<SftpKnownHost[]>("sftp_known_hosts"),
   sftpForgetHost: (hostPort: string) =>
     invoke<boolean>("sftp_forget_host", { hostPort }),
+  testUploadConnection: (destination: "Ftp" | "Sftp") =>
+    invoke<ConnectionTestReport>("test_upload_connection", { destination }),
 };

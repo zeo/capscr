@@ -1812,6 +1812,55 @@ pub fn sftp_known_hosts() -> Result<Vec<SftpKnownHost>, String> {
     Ok(out)
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct ConnectionTestReport {
+    pub destination: String,
+    pub overall_ok: bool,
+    pub steps: Vec<crate::upload::TestStep>,
+}
+
+#[tauri::command]
+pub fn test_upload_connection(
+    destination: String,
+    state: State<AppState>,
+) -> Result<ConnectionTestReport, String> {
+    let cfg = state.config.lock().unwrap().clone();
+    let steps = match destination.as_str() {
+        "Ftp" | "ftp" => {
+            let target = crate::upload::FtpTarget {
+                host: cfg.upload.ftp.host.clone(),
+                port: cfg.upload.ftp.port,
+                username: cfg.upload.ftp.username.clone(),
+                password: cfg.upload.ftp.password_plaintext(),
+                remote_dir: cfg.upload.ftp.remote_dir.clone(),
+                use_tls: cfg.upload.ftp.use_tls,
+                public_url_template: cfg.upload.ftp.public_url_template.clone(),
+            };
+            crate::upload::test_connection_ftp(&target).map_err(|e| e.to_string())?
+        }
+        "Sftp" | "sftp" => {
+            let target = crate::upload::SftpTarget {
+                host: cfg.upload.sftp.host.clone(),
+                port: cfg.upload.sftp.port,
+                username: cfg.upload.sftp.username.clone(),
+                password: cfg.upload.sftp.password_plaintext(),
+                remote_dir: cfg.upload.sftp.remote_dir.clone(),
+                public_url_template: cfg.upload.sftp.public_url_template.clone(),
+                private_key_path: cfg.upload.sftp.private_key_path.clone(),
+                private_key_passphrase: cfg.upload.sftp.private_key_passphrase_plaintext(),
+            };
+            crate::upload::test_connection_sftp(&target).map_err(|e| e.to_string())?
+        }
+        other => return Err(format!("'{other}' has no test-connection probe")),
+    };
+    let overall_ok = !steps.is_empty() && steps.iter().all(|s| s.ok);
+    Ok(ConnectionTestReport {
+        destination,
+        overall_ok,
+        steps,
+    })
+}
+
 #[tauri::command]
 pub fn sftp_forget_host(host_port: String) -> Result<bool, String> {
     let path = crate::upload::known_hosts::KnownHosts::default_path()

@@ -648,7 +648,7 @@ dependencies = [
 
 [[package]]
 name = "capscr"
-version = "0.3.48"
+version = "0.3.49"
 dependencies = [
  "anyhow",
  "arboard",

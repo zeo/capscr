@@ -6,6 +6,17 @@ format follows [keep-a-changelog](https://keepachangelog.com/en/1.1.0/) loosely.
 
 nothing pending. drop ideas in github issues.
 
+## [0.3.49] — 2026-05-22
+
+### added
+- "test connection" button on the FTP and SFTP forms in the Destinations view. probes the full upload path — host validation, DNS resolution, connect, login/authenticate, change to remote directory — without uploading anything. failures surface a per-step diagnostic table so users debugging credentials know exactly which step broke (e.g. `auth-publickey: server rejected the key (not in authorized_keys?)` vs `cwd: 550 No such directory`)
+- new `test_upload_connection` invoke + `ConnectionTestReport`/`TestStep` types — frontend renders the result as a labelled table with ● ok / ● fail chips matching the per-task hotkey status styling
+- `upload::test_connection_ftp` and `upload::test_connection_sftp` (feature-gated) mirror the upload paths step-for-step, including the same VerifyHostKey TOFU check and the publickey-then-password auth precedence shipped in 0.3.47/0.3.48
+
+### changed
+- Destinations view layout: probe report renders above the destination form when present, so the user can compare a failing step against the input that produced it without scrolling
+- SFTP probe reads the remote_dir (or `.` if empty) to surface permission issues — listing a directory doesn't require write access, so this verifies "can I reach this path?" without leaving artefacts
+
 ## [0.3.48] — 2026-05-22
 
 ### added
