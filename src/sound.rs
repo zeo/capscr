@@ -63,6 +63,8 @@ mod engine {
         _mastering_voice: IXAudio2MasteringVoice,
         screenshot: Mutex<PreparedSound>,
         upload: Mutex<PreparedSound>,
+        keepalive: IXAudio2SourceVoice,
+        keepalive_silence: &'static [u8],
     }
 
     // SAFETY: IXAudio2 + voices are COM objects documented to be safe to
@@ -80,13 +82,50 @@ mod engine {
             let result = init();
             let elapsed_ms = started.elapsed().as_millis();
             match &result {
-                Some(_) => tracing::info!("xaudio2 engine init ok in {elapsed_ms}ms"),
+                Some(_) => {
+                    tracing::info!("xaudio2 engine init ok in {elapsed_ms}ms");
+                    // start the keep-alive heartbeat after init so the
+                    // global ENGINE OnceLock is populated and the thread
+                    // can resolve it.
+                    std::thread::spawn(keepalive_loop);
+                }
                 None => tracing::warn!(
                     "xaudio2 engine init FAILED after {elapsed_ms}ms — sounds will be dropped"
                 ),
             }
             result
         });
+    }
+
+    // device keep-alive heartbeat. WASAPI shared-mode output devices sleep
+    // after ~5-10s of silence, and the first play after the device idles
+    // pays a 50-200ms wake penalty — that was the entire perceptible
+    // "sound is delayed" lag for capture cues that fire sporadically.
+    // submitting a near-silent buffer every 2 seconds keeps the device
+    // active. ENGINE lives forever in a OnceLock so referencing it from
+    // this thread is sound.
+    fn keepalive_loop() {
+        loop {
+            std::thread::sleep(std::time::Duration::from_millis(2000));
+            let Some(Some(engine)) = ENGINE.get() else { return };
+            let mut state = XAUDIO2_VOICE_STATE::default();
+            unsafe { engine.keepalive.GetState(&mut state, 0) };
+            if state.BuffersQueued > 0 {
+                continue;
+            }
+            let buffer = XAUDIO2_BUFFER {
+                Flags: XAUDIO2_END_OF_STREAM,
+                AudioBytes: engine.keepalive_silence.len() as u32,
+                pAudioData: engine.keepalive_silence.as_ptr(),
+                PlayBegin: 0,
+                PlayLength: 0,
+                LoopBegin: 0,
+                LoopLength: 0,
+                LoopCount: 0,
+                pContext: std::ptr::null_mut(),
+            };
+            let _ = unsafe { engine.keepalive.SubmitSourceBuffer(&buffer, None) };
+        }
     }
 
     pub fn play(sound: Sound) {
@@ -200,6 +239,7 @@ mod engine {
 
             let screenshot_voice = create_source_voice(&xaudio2, &fmt)?;
             let upload_voice = create_source_voice(&xaudio2, &fmt)?;
+            let keepalive_voice = create_source_voice(&xaudio2, &fmt)?;
 
             if let Err(e) = screenshot_voice.Start(0, XAUDIO2_COMMIT_NOW) {
                 tracing::warn!("screenshot SourceVoice::Start failed: {e}");
@@ -209,6 +249,17 @@ mod engine {
                 tracing::warn!("upload SourceVoice::Start failed: {e}");
                 return None;
             }
+            if let Err(e) = keepalive_voice.Start(0, XAUDIO2_COMMIT_NOW) {
+                tracing::warn!("keepalive SourceVoice::Start failed: {e}");
+                return None;
+            }
+
+            // one frame of zeros is enough to keep the WASAPI device awake.
+            // leak the boxed slice so the pointer we hand XAUDIO2_BUFFER
+            // stays valid for the engine's lifetime (process lifetime).
+            let silence_bytes = (fmt.nBlockAlign as usize).max(4);
+            let keepalive_silence: &'static [u8] =
+                Box::leak(vec![0u8; silence_bytes].into_boxed_slice());
 
             Some(Engine {
                 _xaudio2: xaudio2,
@@ -221,6 +272,8 @@ mod engine {
                     pcm: upload_pcm,
                     voice: upload_voice,
                 }),
+                keepalive: keepalive_voice,
+                keepalive_silence,
             })
         }
     }
