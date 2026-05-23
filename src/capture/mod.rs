@@ -7,12 +7,16 @@ mod hdr;
 mod hdr_png;
 mod tonemapping;
 mod cursor;
+#[cfg(windows)]
+mod wgc;
 
 pub use screen::ScreenCapture;
 pub use window::WindowCapture;
 pub use region::RegionCapture;
 pub use tonemapping::TonemapParams;
 pub use hdr::HdrCapture;
+#[cfg(windows)]
+pub use wgc::capture_at_point as wgc_capture_at_point;
 pub use hdr_png::{encode_hdr_png, read_cicp, HdrBitmap, HdrTransfer};
 pub use cursor::composite_system_cursor;
 

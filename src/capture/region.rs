@@ -66,14 +66,22 @@ impl Capture for RegionCapture {
         let total_width = (max_x - min_x) as u32;
         let total_height = (max_y - min_y) as u32;
 
+        // capture path priority:
+        //   1. CAPSCR_HDR_AWARE=1 + HDR display -> custom CPU tonemap
+        //      (slow, gives us control over the look)
+        //   2. HDR display detected -> WGC (Windows.Graphics.Capture)
+        //      (instant, OS-side tonemap, matches Snipping Tool quality)
+        //   3. default -> GDI BitBlt via xcap (instant, overblown on HDR)
         let env_on = hdr_aware_enabled();
         let hdr_avail = HdrCapture::is_hdr_available();
-        let use_hdr = env_on && hdr_avail;
+        let use_cpu_hdr = env_on && hdr_avail;
+        let use_wgc = !env_on && hdr_avail;
         tracing::info!(
-            "RegionCapture: env_on={} hdr_avail={} -> use_hdr={}",
+            "RegionCapture: env_on={} hdr_avail={} -> cpu_hdr={} wgc={}",
             env_on,
             hdr_avail,
-            use_hdr,
+            use_cpu_hdr,
+            use_wgc,
         );
 
         // selection bounds in virtual-screen coords. used to skip monitors
@@ -103,22 +111,37 @@ impl Capture for RegionCapture {
                 continue;
             }
 
-            let img_result: Result<RgbaImage> = if use_hdr {
-                let center = (
-                    monitor.x() + (monitor.width() as i32) / 2,
-                    monitor.y() + (monitor.height() as i32) / 2,
-                );
+            let center = (
+                monitor.x() + (monitor.width() as i32) / 2,
+                monitor.y() + (monitor.height() as i32) / 2,
+            );
+            let img_result: Result<RgbaImage> = if use_cpu_hdr {
                 HdrCapture::new()
                     .capture_with_hdr_at(Some(center))
                     .map(|(img, _)| img)
                     .or_else(|e| {
                         tracing::warn!(
-                            "HDR-aware capture failed for monitor at {},{} — GDI fallback: {e:#}",
+                            "CPU HDR capture failed for monitor at {},{} — GDI fallback: {e:#}",
                             monitor.x(),
                             monitor.y(),
                         );
                         monitor.capture_image().map_err(|e| anyhow!("{e}"))
                     })
+            } else if use_wgc {
+                let t0 = std::time::Instant::now();
+                let r = super::wgc_capture_at_point(center.0, center.1);
+                let dt = t0.elapsed().as_millis();
+                match &r {
+                    Ok(img) => tracing::info!(
+                        "WGC capture {}x{} at ({},{}) in {dt}ms",
+                        img.width(), img.height(), center.0, center.1
+                    ),
+                    Err(e) => tracing::warn!(
+                        "WGC capture failed at ({},{}) in {dt}ms — GDI fallback: {e:#}",
+                        center.0, center.1
+                    ),
+                }
+                r.or_else(|_| monitor.capture_image().map_err(|e| anyhow!("{e}")))
             } else {
                 monitor.capture_image().map_err(|e| anyhow!("{e}"))
             };
