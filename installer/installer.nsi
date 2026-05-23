@@ -131,10 +131,10 @@ VIAddVersionKey "ProductVersion" "${VERSION}"
   !define MUI_WELCOMEFINISHPAGE_BITMAP "${SIDEBARIMAGE}"
 !endif
 
-; capscr: dark theme — sets the MUI2 page background + text colour to match
-; the hub's diagnostic-console aesthetic. Only the page chrome reads these;
-; native list/edit controls keep their Windows-themed colours. For a fully
-; dark installer we would have to replace MUI2 with hand-rolled nsDialogs.
+; capscr: dark theme — page background + text colour. The native title bar
+; and child controls are themed separately in CapscrApplyDarkFrame /
+; CapscrDarkenPage via DwmSetWindowAttribute + SetWindowTheme. See the
+; NSIS upstream Examples/NSISMenu.nsi for the canonical call pattern.
 !define MUI_BGCOLOR 0d0d0d
 !define MUI_TEXTCOLOR c4c4c4
 !define MUI_BRANDINGTEXT "capscr"
@@ -166,20 +166,116 @@ VIAddVersionKey "ProductVersion" "${VERSION}"
 !define MUI_LANGDLL_REGISTRY_KEY "${MANUPRODUCTKEY}"
 !define MUI_LANGDLL_REGISTRY_VALUENAME "Installer Language"
 
+; capscr dark mode helpers — apply native dark theme to the outer installer
+; frame and to every page's child controls. Win10 2004+ (build 19041) uses
+; DWMWA_USE_IMMERSIVE_DARK_MODE attribute 20; Win10 1903/1909 used 19; the
+; SetProp("UseImmersiveDarkModeColors") fallback covers Win10 1809. The
+; uxtheme ordinals 135/136 and the "DarkMode_Explorer" theme class are
+; undocumented but stable since 1903 and degrade silently on unsupported
+; builds — see Examples/NSISMenu.nsi in the NSIS source tree.
+!macro _CapscrThemeControl HWND
+  System::Call 'UXTHEME::SetWindowTheme(p${HWND}, w "DarkMode_Explorer", p0)'
+!macroend
+
+Function CapscrApplyDarkFrame
+  ; immersive dark mode on the titlebar
+  System::Call 'DWMAPI::DwmSetWindowAttribute(p$HWNDPARENT,i20,*i1,i4)i.r0'
+  IntCmp $0 0 +2 +2
+    System::Call 'DWMAPI::DwmSetWindowAttribute(p$HWNDPARENT,i19,*i1,i4)i.r0'
+  System::Call 'USER32::SetProp(p$HWNDPARENT,t"UseImmersiveDarkModeColors",p1)'
+  ; per-process dark mode (uxtheme ordinal 135 = SetPreferredAppMode(AllowDark))
+  System::Call 'UXTHEME::#135(i1)'
+  ; theme the outer frame controls — Next/Cancel buttons + branding
+  System::Call 'USER32::GetDlgItem(p$HWNDPARENT,i1)p.r1'
+  !insertmacro _CapscrThemeControl $1
+  System::Call 'USER32::GetDlgItem(p$HWNDPARENT,i2)p.r1'
+  !insertmacro _CapscrThemeControl $1
+  System::Call 'USER32::GetDlgItem(p$HWNDPARENT,i3)p.r1'
+  !insertmacro _CapscrThemeControl $1
+  System::Call 'USER32::GetDlgItem(p$HWNDPARENT,i1028)p.r1'
+  !insertmacro _CapscrThemeControl $1
+  System::Call 'UXTHEME::#136()'
+FunctionEnd
+
+Function un.CapscrApplyDarkFrame
+  System::Call 'DWMAPI::DwmSetWindowAttribute(p$HWNDPARENT,i20,*i1,i4)i.r0'
+  IntCmp $0 0 +2 +2
+    System::Call 'DWMAPI::DwmSetWindowAttribute(p$HWNDPARENT,i19,*i1,i4)i.r0'
+  System::Call 'USER32::SetProp(p$HWNDPARENT,t"UseImmersiveDarkModeColors",p1)'
+  System::Call 'UXTHEME::#135(i1)'
+  System::Call 'USER32::GetDlgItem(p$HWNDPARENT,i1)p.r1'
+  !insertmacro _CapscrThemeControl $1
+  System::Call 'USER32::GetDlgItem(p$HWNDPARENT,i2)p.r1'
+  !insertmacro _CapscrThemeControl $1
+  System::Call 'USER32::GetDlgItem(p$HWNDPARENT,i3)p.r1'
+  !insertmacro _CapscrThemeControl $1
+  System::Call 'USER32::GetDlgItem(p$HWNDPARENT,i1028)p.r1'
+  !insertmacro _CapscrThemeControl $1
+  System::Call 'UXTHEME::#136()'
+FunctionEnd
+
+; theme the inner #32770 page dialog and its children. called from each
+; page's MUI_PAGE_CUSTOMFUNCTION_SHOW because MUI2 creates page controls
+; dynamically *after* .onGUIInit has run.
+Function CapscrDarkenPage
+  FindWindow $R0 "#32770" "" $HWNDPARENT
+  StrCmp $R0 "" +2 0
+    !insertmacro _CapscrThemeControl $R0
+  ; common MUI control IDs (1004 dir-edit, 1019 license-edit, 1006 list, etc.)
+  System::Call 'USER32::GetDlgItem(p$R0,i1001)p.r1'
+  !insertmacro _CapscrThemeControl $1
+  System::Call 'USER32::GetDlgItem(p$R0,i1004)p.r1'
+  !insertmacro _CapscrThemeControl $1
+  System::Call 'USER32::GetDlgItem(p$R0,i1006)p.r1'
+  !insertmacro _CapscrThemeControl $1
+  System::Call 'USER32::GetDlgItem(p$R0,i1016)p.r1'
+  !insertmacro _CapscrThemeControl $1
+  System::Call 'USER32::GetDlgItem(p$R0,i1017)p.r1'
+  !insertmacro _CapscrThemeControl $1
+  System::Call 'USER32::GetDlgItem(p$R0,i1019)p.r1'
+  !insertmacro _CapscrThemeControl $1
+  System::Call 'USER32::GetDlgItem(p$R0,i1034)p.r1'
+  !insertmacro _CapscrThemeControl $1
+  System::Call 'USER32::GetDlgItem(p$R0,i1036)p.r1'
+  !insertmacro _CapscrThemeControl $1
+FunctionEnd
+
+Function un.CapscrDarkenPage
+  FindWindow $R0 "#32770" "" $HWNDPARENT
+  StrCmp $R0 "" +2 0
+    !insertmacro _CapscrThemeControl $R0
+  System::Call 'USER32::GetDlgItem(p$R0,i1001)p.r1'
+  !insertmacro _CapscrThemeControl $1
+  System::Call 'USER32::GetDlgItem(p$R0,i1004)p.r1'
+  !insertmacro _CapscrThemeControl $1
+  System::Call 'USER32::GetDlgItem(p$R0,i1006)p.r1'
+  !insertmacro _CapscrThemeControl $1
+  System::Call 'USER32::GetDlgItem(p$R0,i1016)p.r1'
+  !insertmacro _CapscrThemeControl $1
+  System::Call 'USER32::GetDlgItem(p$R0,i1017)p.r1'
+  !insertmacro _CapscrThemeControl $1
+FunctionEnd
+
+; PRE hook that combines SkipIfPassive with darken-on-show. Used by every
+; page below so we don't redefine MUI_PAGE_CUSTOMFUNCTION_PRE inline.
+
 ; Installer pages, must be ordered as they appear
 ; 1. Welcome Page
 !define MUI_PAGE_CUSTOMFUNCTION_PRE SkipIfPassive
+!define MUI_PAGE_CUSTOMFUNCTION_SHOW CapscrDarkenPage
 !insertmacro MUI_PAGE_WELCOME
 
 ; 2. License Page (if defined)
 !if "${LICENSE}" != ""
   !define MUI_PAGE_CUSTOMFUNCTION_PRE SkipIfPassive
+  !define MUI_PAGE_CUSTOMFUNCTION_SHOW CapscrDarkenPage
   !insertmacro MUI_PAGE_LICENSE "${LICENSE}"
 !endif
 
 ; 3. Install mode (if it is set to `both`)
 !if "${INSTALLMODE}" == "both"
   !define MUI_PAGE_CUSTOMFUNCTION_PRE SkipIfPassive
+  !define MUI_PAGE_CUSTOMFUNCTION_SHOW CapscrDarkenPage
   !insertmacro MULTIUSER_PAGE_INSTALLMODE
 !endif
 
@@ -392,6 +488,7 @@ FunctionEnd
 
 ; 5. Choose install directory page
 !define MUI_PAGE_CUSTOMFUNCTION_PRE SkipIfPassive
+!define MUI_PAGE_CUSTOMFUNCTION_SHOW CapscrDarkenPage
 !insertmacro MUI_PAGE_DIRECTORY
 
 ; 6. Start menu shortcut page
@@ -402,9 +499,11 @@ Var AppStartMenuFolder
 !else
   !define MUI_PAGE_CUSTOMFUNCTION_PRE Skip
 !endif
+!define MUI_PAGE_CUSTOMFUNCTION_SHOW CapscrDarkenPage
 !insertmacro MUI_PAGE_STARTMENU Application $AppStartMenuFolder
 
 ; 7. Installation page
+!define MUI_PAGE_CUSTOMFUNCTION_SHOW CapscrDarkenPage
 !insertmacro MUI_PAGE_INSTFILES
 
 ; 8. Finish page
@@ -420,6 +519,7 @@ Var AppStartMenuFolder
 !define MUI_FINISHPAGE_RUN
 !define MUI_FINISHPAGE_RUN_FUNCTION RunMainBinary
 !define MUI_PAGE_CUSTOMFUNCTION_PRE SkipIfPassive
+!define MUI_PAGE_CUSTOMFUNCTION_SHOW CapscrDarkenPage
 !insertmacro MUI_PAGE_FINISH
 
 Function RunMainBinary
@@ -433,6 +533,7 @@ Var DeleteAppDataCheckboxState
 !define /ifndef WS_EX_LAYOUTRTL         0x00400000
 !define MUI_PAGE_CUSTOMFUNCTION_SHOW un.ConfirmShow
 Function un.ConfirmShow ; Add add a `Delete app data` check box
+  Call un.CapscrDarkenPage
   ; $1 inner dialog HWND
   ; $2 window DPI
   ; $3 style
@@ -469,6 +570,7 @@ FunctionEnd
 !insertmacro MUI_UNPAGE_CONFIRM
 
 ; 2. Uninstalling Page
+!define MUI_PAGE_CUSTOMFUNCTION_SHOW un.CapscrDarkenPage
 !insertmacro MUI_UNPAGE_INSTFILES
 
 ;Languages
@@ -529,6 +631,9 @@ Function .onInit
   !endif
 FunctionEnd
 
+Function .onGUIInit
+  Call CapscrApplyDarkFrame
+FunctionEnd
 
 Section EarlyChecks
   ; Abort silent installer if downgrades is disabled
@@ -777,6 +882,10 @@ Function un.onInit
   ${IfNot} ${Errors}
     StrCpy $UpdateMode 1
   ${EndIf}
+FunctionEnd
+
+Function un.onGUIInit
+  Call un.CapscrApplyDarkFrame
 FunctionEnd
 
 Section Uninstall

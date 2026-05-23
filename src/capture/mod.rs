@@ -11,21 +11,21 @@ mod cursor;
 pub use screen::ScreenCapture;
 pub use window::WindowCapture;
 pub use region::RegionCapture;
-pub use tonemapping::{SkivMode, SkivParams};
+pub use tonemapping::TonemapParams;
 pub use hdr::HdrCapture;
 pub use hdr_png::{encode_hdr_png, read_cicp, HdrBitmap, HdrTransfer};
 pub use cursor::composite_system_cursor;
 
 use std::sync::OnceLock;
 
-static SKIV_OVERRIDE: OnceLock<SkivParams> = OnceLock::new();
+static TONEMAP_OVERRIDE: OnceLock<TonemapParams> = OnceLock::new();
 
-pub fn install_skiv_params(params: SkivParams) {
-    let _ = SKIV_OVERRIDE.set(params);
+pub fn install_tonemap_params(params: TonemapParams) {
+    let _ = TONEMAP_OVERRIDE.set(params);
 }
 
-pub fn current_skiv_params() -> SkivParams {
-    SKIV_OVERRIDE.get().copied().unwrap_or_default()
+pub fn current_tonemap_params() -> TonemapParams {
+    TONEMAP_OVERRIDE.get().copied().unwrap_or_default()
 }
 
 use anyhow::Result;

@@ -374,45 +374,28 @@ function HdrPane(props: { c: AppConfig; patch: Patch }) {
         </div>
       </div>
     </Section>
-    <Section title="skiv tonemap">
+    <Section title="hdr tonemap">
       <div class="field">
-        <label class="field-label">mode</label>
-        <div class="field-control">
-          <select
-            value={c().capture.hdr.mode}
-            onChange={(e) =>
-              props.patch("capture", {
-                ...c().capture,
-                hdr: { ...c().capture.hdr, mode: e.currentTarget.value as never },
-              })
-            }
-          >
-            <option value="map-cll-to-display">map peak to display</option>
-            <option value="normalize-to-cll">normalize to peak</option>
-          </select>
-          <span class="field-hint">
-            map = sdr-friendly compress, normalize = preserve relative luminance
-          </span>
-        </div>
-      </div>
-      <div class="field">
-        <label class="field-label">sdr target</label>
+        <label class="field-label">sdr white override</label>
         <div class="field-control">
           <input
             type="number"
-            min={1}
+            min={0}
             max={10000}
             value={c().capture.hdr.brightness_nits}
             onInput={(e) => {
               const v = parseFloat(e.currentTarget.value);
-              if (!isNaN(v) && v >= 1 && v <= 10000)
+              if (!isNaN(v) && v >= 0 && v <= 10000)
                 props.patch("capture", {
                   ...c().capture,
                   hdr: { ...c().capture.hdr, brightness_nits: v },
                 });
             }}
           />
-          <span class="field-hint">paper-white target, nits</span>
+          <span class="field-hint">
+            manual sdr-white target in nits. 0 = auto-detect from the os
+            sdr-content brightness slider (recommended)
+          </span>
         </div>
       </div>
       <div class="field">
@@ -598,6 +581,72 @@ function HotkeysPane(props: { c: AppConfig }) {
             </table>
           </Show>
         </div>
+      </Section>
+
+      <Section title="ll-hook telemetry (debug)">
+        <p class="lede">
+          live counters from the low-level keyboard hook. press any key and
+          click refresh. if <code>calls_total</code> doesn't climb, the hook
+          isn't installed (or another tool is blocking it).
+        </p>
+        <div style="margin-bottom: 10px;">
+          <button class="btn" data-variant="ghost" onClick={() => refetch()}>
+            refresh
+          </button>
+        </div>
+        <Show
+          when={diag()?.hook}
+          fallback={
+            <p class="flash" data-tone="warn">
+              hook telemetry not in response (backend missing the field — old
+              build still running, or non-windows). diag payload:{" "}
+              <code>{JSON.stringify(diag() ?? null)}</code>
+            </p>
+          }
+        >
+          <table class="diag-table">
+            <tbody>
+              <tr><td>hook installed</td><td><code>{String(diag()!.hook!.installed)}</code></td></tr>
+              <tr><td>enabled</td><td><code>{String(diag()!.hook!.enabled)}</code></td></tr>
+              <tr><td>bindings in hook table</td><td><code>{diag()!.hook!.registered_count}</code></td></tr>
+              <tr><td>callback calls total</td><td><code>{diag()!.hook!.calls_total}</code></td></tr>
+              <tr><td>keydown calls</td><td><code>{diag()!.hook!.keydown_calls}</code></td></tr>
+              <tr><td>matched a binding</td><td><code>{diag()!.hook!.matched_calls}</code></td></tr>
+              <tr><td>dispatched to worker</td><td><code>{diag()!.hook!.dispatch_sent}</code></td></tr>
+              <tr><td>dispatch dropped (queue full)</td><td><code>{diag()!.hook!.dispatch_dropped}</code></td></tr>
+              <tr>
+                <td>last seen (vk + mods)</td>
+                <td>
+                  <code>vk=0x{diag()!.hook!.last_vk.toString(16).padStart(2, "0").toUpperCase()}</code>
+                  {" "}
+                  <code>mods=0b{diag()!.hook!.last_mods.toString(2).padStart(4, "0")}</code>
+                  <span class="lede" style="margin-left: 8px;">
+                    (mods: bit0=Ctrl bit1=Alt bit2=Shift bit3=Win)
+                  </span>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+          <Show when={diag()!.hook!.registered.length > 0}>
+            <p class="lede" style="margin-top: 10px;">registered chords pushed to the hook table:</p>
+            <table class="diag-table">
+              <thead>
+                <tr><th>task id</th><th>vk</th><th>mods</th></tr>
+              </thead>
+              <tbody>
+                <For each={diag()!.hook!.registered}>
+                  {(b) => (
+                    <tr>
+                      <td><code>{b.task_id}</code></td>
+                      <td><code>0x{b.vk.toString(16).padStart(2, "0").toUpperCase()}</code></td>
+                      <td><code>0b{b.mods.toString(2).padStart(4, "0")}</code></td>
+                    </tr>
+                  )}
+                </For>
+              </tbody>
+            </table>
+          </Show>
+        </Show>
       </Section>
     </>
   );

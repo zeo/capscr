@@ -1,8 +1,8 @@
 use anyhow::{anyhow, Result};
 use image::RgbaImage;
 
-use super::tonemapping::{hdr10_to_sdr_skiv, hlg_to_sdr_skiv, scrgb_to_sdr_skiv, SkivParams};
-use super::current_skiv_params;
+use super::tonemapping::{hdr10_to_sdr_bt2390, hlg_to_sdr_bt2390, scrgb_to_sdr_bt2390, TonemapParams};
+use super::current_tonemap_params;
 
 const MAX_HDR_DIMENSION: u32 = 16384;
 const MAX_HDR_PIXELS: usize = 256 * 1024 * 1024;
@@ -36,7 +36,6 @@ impl Default for HdrDisplayInfo {
     }
 }
 
-/// HDR capture with automatic Reinhard tonemapping to SDR.
 pub struct HdrCapture;
 
 impl HdrCapture {
@@ -61,21 +60,15 @@ impl HdrCapture {
             .unwrap_or(false)
     }
 
-    /// capture HDR content and automatically tonemap to SDR.
     pub fn capture(&self) -> Result<RgbaImage> {
         let (img, _hdr) = self.capture_with_hdr_at(None)?;
         Ok(img)
     }
 
-    /// same capture as `capture()`, but also returns the raw HDR bitmap when
-    /// the source was HDR. Used by the save path to write a sidecar HDR PNG
-    /// alongside the tonemapped SDR PNG.
     pub fn capture_with_hdr(&self) -> Result<(RgbaImage, Option<crate::capture::HdrBitmap>)> {
         self.capture_with_hdr_at(None)
     }
 
-    /// variant that targets the monitor containing the given desktop point.
-    /// `None` falls back to the first DXGI output (legacy behaviour).
     pub fn capture_with_hdr_at(
         &self,
         target: Option<(i32, i32)>,
@@ -150,7 +143,7 @@ impl HdrCapture {
             _ => return RgbaImage::new(1, 1),
         };
 
-        let params = effective_params(current_skiv_params(), sdr_white);
+        let params: TonemapParams = current_tonemap_params();
 
         match format {
             HdrFormat::ScRgb => {
@@ -166,7 +159,7 @@ impl HdrCapture {
                         if val.is_finite() { val } else { 0.0 }
                     })
                     .collect();
-                scrgb_to_sdr_skiv(&float_data, width, height, params)
+                scrgb_to_sdr_bt2390(&float_data, width, height, sdr_white, params)
             }
             HdrFormat::Hdr10 => {
                 let expected_bytes = pixel_count.saturating_mul(8);
@@ -177,17 +170,16 @@ impl HdrCapture {
                     .chunks_exact(2)
                     .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
                     .collect();
-                hdr10_to_sdr_skiv(&u16_data, width, height, params)
+                hdr10_to_sdr_bt2390(&u16_data, width, height, sdr_white, params)
             }
             HdrFormat::Hlg => {
                 let expected_bytes = pixel_count.saturating_mul(4);
                 if raw_data.len() < expected_bytes {
                     return RgbaImage::new(width, height);
                 }
-                hlg_to_sdr_skiv(raw_data, width, height, params)
+                hlg_to_sdr_bt2390(raw_data, width, height, sdr_white, params)
             }
             HdrFormat::Sdr => {
-                // already SDR, just copy
                 let expected_bytes = pixel_count.saturating_mul(4);
                 if raw_data.len() < expected_bytes {
                     return RgbaImage::new(width, height);
@@ -211,13 +203,6 @@ impl Default for HdrCapture {
     fn default() -> Self {
         Self::new()
     }
-}
-
-fn effective_params(mut params: SkivParams, display_sdr_white_nits: f32) -> SkivParams {
-    if params.sdr_brightness_nits <= 0.0 {
-        params.sdr_brightness_nits = display_sdr_white_nits.max(80.0);
-    }
-    params
 }
 
 #[cfg(target_os = "windows")]
@@ -248,6 +233,24 @@ mod windows_hdr {
                             let is_hdr = color_space.0 == 12 || color_space.0 == 13 || color_space.0 == 14;
 
                             if is_hdr {
+                                // prefer the OS-reported SDR white level
+                                // (DISPLAYCONFIG_SDR_WHITE_LEVEL — the actual
+                                // value driven by the SDR-content brightness
+                                // slider in Windows Settings). DXGI's
+                                // MaxFullFrameLuminance is a panel capability
+                                // figure that's typically much higher than
+                                // what the user actually wants SDR to render
+                                // at, so it was systematically blowing out
+                                // SDR-on-HDR captures.
+                                let sdr_white_level = query_displayconfig_sdr_white(&desc1.DeviceName)
+                                    .unwrap_or_else(|| {
+                                        if desc1.MaxFullFrameLuminance > 0.0 {
+                                            desc1.MaxFullFrameLuminance.min(400.0)
+                                        } else {
+                                            80.0
+                                        }
+                                    });
+
                                 return Ok(HdrDisplayInfo {
                                     is_hdr_enabled: true,
                                     format: match color_space.0 {
@@ -257,11 +260,7 @@ mod windows_hdr {
                                     },
                                     max_luminance: desc1.MaxLuminance,
                                     min_luminance: desc1.MinLuminance,
-                                    sdr_white_level: if desc1.MaxFullFrameLuminance > 0.0 {
-                                        desc1.MaxFullFrameLuminance.min(400.0)
-                                    } else {
-                                        80.0
-                                    },
+                                    sdr_white_level,
                                 });
                             }
                         }
@@ -274,6 +273,121 @@ mod windows_hdr {
 
             Ok(HdrDisplayInfo::default())
         }
+    }
+
+    // query the user-configured SDR white level for the monitor whose
+    // GDI device name matches `device_name`. returns nits, or None when the
+    // OS doesn't expose the value (older Win10, non-HDR-aware path, etc).
+    //
+    // the API: GetDisplayConfigBufferSizes -> QueryDisplayConfig ->
+    // DisplayConfigGetDeviceInfo with type
+    // DISPLAYCONFIG_DEVICE_INFO_GET_SDR_WHITE_LEVEL. the returned
+    // SDRWhiteLevel field encodes nits as (value * 80 / 1000), so a value
+    // of 1000 means 80 nits (the SDR reference) and 3125 means 250 nits.
+    fn query_displayconfig_sdr_white(device_name: &[u16; 32]) -> Option<f32> {
+        use windows::Win32::Devices::Display::{
+            DisplayConfigGetDeviceInfo, GetDisplayConfigBufferSizes,
+            QueryDisplayConfig, DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME,
+            DISPLAYCONFIG_DEVICE_INFO_HEADER, DISPLAYCONFIG_MODE_INFO,
+            DISPLAYCONFIG_PATH_INFO, DISPLAYCONFIG_SOURCE_DEVICE_NAME,
+            DISPLAYCONFIG_SDR_WHITE_LEVEL, QDC_ONLY_ACTIVE_PATHS,
+        };
+        use windows::Win32::Foundation::{ERROR_SUCCESS, WIN32_ERROR};
+
+        // DISPLAYCONFIG_DEVICE_INFO_GET_SDR_WHITE_LEVEL = 11 isn't a named
+        // constant in older windows-rs versions; use the literal type tag.
+        // documented at:
+        //   https://learn.microsoft.com/en-us/windows/win32/api/wingdi/ne-wingdi-displayconfig_device_info_type
+        const DISPLAYCONFIG_DEVICE_INFO_GET_SDR_WHITE_LEVEL: i32 = 11;
+
+        unsafe {
+            let mut path_count: u32 = 0;
+            let mut mode_count: u32 = 0;
+            let rc = GetDisplayConfigBufferSizes(
+                QDC_ONLY_ACTIVE_PATHS,
+                &mut path_count,
+                &mut mode_count,
+            );
+            if rc != ERROR_SUCCESS {
+                return None;
+            }
+            let mut paths: Vec<DISPLAYCONFIG_PATH_INFO> =
+                vec![DISPLAYCONFIG_PATH_INFO::default(); path_count as usize];
+            let mut modes: Vec<DISPLAYCONFIG_MODE_INFO> =
+                vec![DISPLAYCONFIG_MODE_INFO::default(); mode_count as usize];
+            let rc = QueryDisplayConfig(
+                QDC_ONLY_ACTIVE_PATHS,
+                &mut path_count,
+                paths.as_mut_ptr(),
+                &mut mode_count,
+                modes.as_mut_ptr(),
+                None,
+            );
+            if rc != ERROR_SUCCESS {
+                return None;
+            }
+            paths.truncate(path_count as usize);
+
+            for path in &paths {
+                // resolve the path's source GDI device name and match it
+                // against the DXGI output's DeviceName so we read SDR white
+                // for the correct monitor (not just the first one).
+                let mut source_name = DISPLAYCONFIG_SOURCE_DEVICE_NAME::default();
+                source_name.header = DISPLAYCONFIG_DEVICE_INFO_HEADER {
+                    r#type: DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME,
+                    size: std::mem::size_of::<DISPLAYCONFIG_SOURCE_DEVICE_NAME>() as u32,
+                    adapterId: path.sourceInfo.adapterId,
+                    id: path.sourceInfo.id,
+                };
+                let rc = WIN32_ERROR(
+                    DisplayConfigGetDeviceInfo(&mut source_name.header as *mut _) as u32,
+                );
+                if rc != ERROR_SUCCESS {
+                    continue;
+                }
+                if !device_names_match(&source_name.viewGdiDeviceName, device_name) {
+                    continue;
+                }
+
+                let mut sdr_white = DISPLAYCONFIG_SDR_WHITE_LEVEL::default();
+                sdr_white.header = DISPLAYCONFIG_DEVICE_INFO_HEADER {
+                    r#type: windows::Win32::Devices::Display::DISPLAYCONFIG_DEVICE_INFO_TYPE(
+                        DISPLAYCONFIG_DEVICE_INFO_GET_SDR_WHITE_LEVEL,
+                    ),
+                    size: std::mem::size_of::<DISPLAYCONFIG_SDR_WHITE_LEVEL>() as u32,
+                    adapterId: path.targetInfo.adapterId,
+                    id: path.targetInfo.id,
+                };
+                let rc = WIN32_ERROR(
+                    DisplayConfigGetDeviceInfo(&mut sdr_white.header as *mut _) as u32,
+                );
+                if rc != ERROR_SUCCESS {
+                    continue;
+                }
+                if sdr_white.SDRWhiteLevel == 0 {
+                    continue;
+                }
+                // 1000 == 80 nits (the Windows SDR reference)
+                let nits = (sdr_white.SDRWhiteLevel as f32) * 80.0 / 1000.0;
+                if nits >= 80.0 && nits <= 10000.0 {
+                    return Some(nits);
+                }
+            }
+            None
+        }
+    }
+
+    fn device_names_match(a: &[u16], b: &[u16; 32]) -> bool {
+        let len = a.len().min(b.len());
+        for i in 0..len {
+            if a[i] != b[i] {
+                return false;
+            }
+            if a[i] == 0 {
+                return true;
+            }
+        }
+        true
     }
 
     pub fn capture_hdr_screen(
@@ -329,9 +443,6 @@ mod windows_hdr {
             let device = device.ok_or_else(|| anyhow!("Failed to create D3D11 device"))?;
             let context = context.ok_or_else(|| anyhow!("Failed to get device context"))?;
 
-            // DuplicateOutput can fail with ACCESS_LOST when another
-            // exclusive-mode app (full-screen game, RDP) is holding the
-            // output. Recreate once after a brief wait before giving up.
             let mut duplication = match output1.DuplicateOutput(&device) {
                 Ok(d) => d,
                 Err(e) if e.code() == DXGI_ERROR_ACCESS_LOST => {
@@ -354,17 +465,12 @@ mod windows_hdr {
                         break;
                     }
                     Err(e) if e.code() == DXGI_ERROR_ACCESS_LOST && attempt < 9 => {
-                        // display config changed (monitor unplug, sleep/wake,
-                        // resolution switch). The duplication object is dead;
-                        // re-acquire by recreating it from the same output.
                         if let Ok(fresh) = output1.DuplicateOutput(&device) {
                             duplication = fresh;
                         }
                         std::thread::sleep(std::time::Duration::from_millis(100));
                     }
                     Err(e) if e.code() == DXGI_ERROR_WAIT_TIMEOUT => {
-                        // compositor produced no new frame within 100ms —
-                        // common on idle desktops. Just keep waiting.
                         std::thread::sleep(std::time::Duration::from_millis(50));
                     }
                     Err(_) => {
@@ -437,10 +543,6 @@ mod windows_hdr {
             let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
             context.Map(&staging_texture, 0, D3D11_MAP_READ, 0, Some(&mut mapped))?;
 
-            // guard pattern: every Map call needs a matching Unmap, even on
-            // panic or early return. Without this an OOM on Vec::with_capacity
-            // below could leave the staging texture locked and any subsequent
-            // capture would fail until capscr restarted.
             struct MapGuard<'a> {
                 context: &'a ID3D11DeviceContext,
                 texture: &'a ID3D11Texture2D,
@@ -474,7 +576,6 @@ mod windows_hdr {
                 data.extend_from_slice(row_slice);
             }
 
-            // _map_guard drops here, invoking Unmap
             Ok((data, width, height, hdr_format))
         }
     }

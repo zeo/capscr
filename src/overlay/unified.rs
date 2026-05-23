@@ -20,6 +20,7 @@ mod windows_impl {
         core::PCWSTR,
         Win32::{
             Foundation::{BOOL, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
+            Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_EXTENDED_FRAME_BOUNDS},
             Graphics::Gdi::{
                 AlphaBlend, BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC,
                 CreatePen, CreateSolidBrush, DeleteDC, DeleteObject, EndPaint, FillRect, GetDC,
@@ -37,9 +38,9 @@ mod windows_impl {
                     GetWindowRect, IsIconic, IsWindowVisible, PostQuitMessage, RegisterClassW,
                     ShowWindow, TranslateMessage, CS_HREDRAW, CS_VREDRAW, GA_ROOT, GWL_EXSTYLE,
                     GWL_STYLE, MSG, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN,
-                    SM_YVIRTUALSCREEN, SW_SHOWNORMAL, WM_DESTROY, WM_KEYDOWN, WM_LBUTTONDOWN,
-                    WM_LBUTTONUP, WM_MOUSEMOVE, WM_PAINT, WNDCLASSW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
-                    WS_POPUP, WS_VISIBLE,
+                    SM_YVIRTUALSCREEN, SetForegroundWindow, SW_SHOWNORMAL, WM_DESTROY, WM_KEYDOWN,
+                    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_PAINT, WM_RBUTTONDOWN,
+                    WNDCLASSW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP, WS_VISIBLE,
                 },
             },
         },
@@ -75,6 +76,13 @@ mod windows_impl {
 
     static SCREEN_BITMAP: Mutex<Option<isize>> = Mutex::new(None);
     static SCREEN_DC: Mutex<Option<isize>> = Mutex::new(None);
+    // pre-darkened copy of SCREEN_BITMAP used to paint the "outside selection"
+    // dim during a drag without a per-frame AlphaBlend. AlphaBlend on a 4K
+    // back buffer goes through GDI's software path (~10-30ms per call) and
+    // is the reason region selection felt locked to 60 Hz / lower. A cached
+    // darken bitmap reduces per-frame work to two BitBlts.
+    static DIM_BITMAP: Mutex<Option<isize>> = Mutex::new(None);
+    static DIM_DC: Mutex<Option<isize>> = Mutex::new(None);
     // persistent back buffer for double-buffered WM_PAINT. Without this, every
     // mouse move allocated/freed a screen-size GDI bitmap (~32 MB on a 4K
     // display × ~100 mouse-events/sec = visible flicker / stutter).
@@ -129,8 +137,20 @@ mod windows_impl {
             return BOOL(1);
         }
 
+        // GetWindowRect includes the ~7px transparent DWM shadow extent;
+        // DwmGetWindowAttribute(DWMWA_EXTENDED_FRAME_BOUNDS) gives the
+        // tight visible rectangle the user actually perceives as "the
+        // window". Use the tighter one so the hover highlight + final
+        // crop hug the window instead of overshooting into empty space.
         let mut rect = RECT::default();
-        if GetWindowRect(hwnd, &mut rect).is_err() {
+        let dwm_ok = DwmGetWindowAttribute(
+            hwnd,
+            DWMWA_EXTENDED_FRAME_BOUNDS,
+            &mut rect as *mut RECT as *mut _,
+            std::mem::size_of::<RECT>() as u32,
+        )
+        .is_ok();
+        if !dwm_ok && GetWindowRect(hwnd, &mut rect).is_err() {
             return BOOL(1);
         }
 
@@ -208,12 +228,66 @@ mod windows_impl {
             let screen_dc = GetDC(None);
             let mem_dc = CreateCompatibleDC(screen_dc);
             if !mem_dc.is_invalid() {
-                let bitmap = CreateCompatibleBitmap(screen_dc, virt_width, virt_height);
+                // On HDR displays, GDI BitBlt of the desktop clips bright
+                // (>80nit) pixels to pure white because GDI only sees the
+                // SDR-tonemapped frame. Use the DXGI HDR capture path
+                // instead so the overlay preview matches what the user
+                // actually sees on screen. Falls back to GDI on SDR or
+                // on any HDR capture error.
+                let (bitmap, needs_bitblt) = if crate::capture::HdrCapture::is_hdr_available() {
+                    match capture_virtual_screen_hdr_to_dib(virt_x, virt_y, virt_width, virt_height) {
+                        Some(bmp) => (bmp, false),
+                        None => (CreateCompatibleBitmap(screen_dc, virt_width, virt_height), true),
+                    }
+                } else {
+                    (CreateCompatibleBitmap(screen_dc, virt_width, virt_height), true)
+                };
                 if !bitmap.is_invalid() {
                     let old_bitmap = SelectObject(mem_dc, bitmap);
-                    BitBlt(mem_dc, 0, 0, virt_width, virt_height, screen_dc, virt_x, virt_y, SRCCOPY).ok();
+                    if needs_bitblt {
+                        BitBlt(mem_dc, 0, 0, virt_width, virt_height, screen_dc, virt_x, virt_y, SRCCOPY).ok();
+                    }
                     SelectObject(mem_dc, old_bitmap);
                     *SCREEN_BITMAP.lock().unwrap() = Some(bitmap.0 as isize);
+
+                    // build a dim copy once, used per-frame during drag to
+                    // paint the "outside selection" area without AlphaBlend.
+                    let dim_dc = CreateCompatibleDC(screen_dc);
+                    let dim_bmp = CreateCompatibleBitmap(screen_dc, virt_width, virt_height);
+                    if !dim_dc.is_invalid() && !dim_bmp.is_invalid() {
+                        let old_dim = SelectObject(dim_dc, dim_bmp);
+                        // start with a copy of the screen
+                        let _ = BitBlt(dim_dc, 0, 0, virt_width, virt_height, mem_dc, 0, 0, SRCCOPY);
+                        // darken via one AlphaBlend at startup (62% black overlay).
+                        // amortised across the lifetime of the selector instead
+                        // of paying it on every WM_PAINT.
+                        let dim_brush_dc = CreateCompatibleDC(screen_dc);
+                        let dim_brush_bmp = CreateCompatibleBitmap(screen_dc, virt_width, virt_height);
+                        if !dim_brush_dc.is_invalid() && !dim_brush_bmp.is_invalid() {
+                            let old_db = SelectObject(dim_brush_dc, dim_brush_bmp);
+                            let black = CreateSolidBrush(windows::Win32::Foundation::COLORREF(0x00000000));
+                            let full = RECT { left: 0, top: 0, right: virt_width, bottom: virt_height };
+                            FillRect(dim_brush_dc, &full, black);
+                            let _ = DeleteObject(black);
+                            let blend = BLENDFUNCTION {
+                                BlendOp: AC_SRC_OVER as u8,
+                                BlendFlags: 0,
+                                SourceConstantAlpha: 160,
+                                AlphaFormat: 0,
+                            };
+                            let _ = AlphaBlend(
+                                dim_dc, 0, 0, virt_width, virt_height,
+                                dim_brush_dc, 0, 0, virt_width, virt_height,
+                                blend,
+                            );
+                            SelectObject(dim_brush_dc, old_db);
+                            let _ = DeleteObject(dim_brush_bmp);
+                            let _ = DeleteDC(dim_brush_dc);
+                        }
+                        SelectObject(dim_dc, old_dim);
+                        *DIM_BITMAP.lock().unwrap() = Some(dim_bmp.0 as isize);
+                        *DIM_DC.lock().unwrap() = Some(dim_dc.0 as isize);
+                    }
                 }
                 *SCREEN_DC.lock().unwrap() = Some(mem_dc.0 as isize);
             }
@@ -290,6 +364,10 @@ mod windows_impl {
             };
 
             let _ = ShowWindow(hwnd, SW_SHOWNORMAL);
+            // grab foreground + keyboard focus so VK_ESCAPE actually reaches
+            // WM_KEYDOWN. without this the overlay paints but key input goes
+            // to whatever window had focus before the hotkey fired.
+            let _ = SetForegroundWindow(hwnd);
 
             let mut msg = MSG::default();
             while SELECTING.load(Ordering::SeqCst) {
@@ -408,37 +486,26 @@ mod windows_impl {
                     let right = (sx.max(ex)) - virt_x;
                     let bottom = (sy.max(ey)) - virt_y;
 
-                    let dim_brush = CreateSolidBrush(windows::Win32::Foundation::COLORREF(0x00000000));
-
-                    let top_rect = RECT { left: 0, top: 0, right: width, bottom: top };
-                    let bottom_rect = RECT { left: 0, top: bottom, right: width, bottom: height };
-                    let left_rect = RECT { left: 0, top, right: left, bottom };
-                    let right_rect = RECT { left: right, top, right: width, bottom };
-
-                    let alpha_dc = CreateCompatibleDC(back_dc);
-                    let alpha_bmp = CreateCompatibleBitmap(back_dc, width, height);
-                    let old_alpha_bmp = SelectObject(alpha_dc, alpha_bmp);
-
-                    BitBlt(alpha_dc, 0, 0, width, height, back_dc, 0, 0, SRCCOPY).ok();
-
-                    FillRect(alpha_dc, &top_rect, dim_brush);
-                    FillRect(alpha_dc, &bottom_rect, dim_brush);
-                    FillRect(alpha_dc, &left_rect, dim_brush);
-                    FillRect(alpha_dc, &right_rect, dim_brush);
-
-                    let blend = BLENDFUNCTION {
-                        BlendOp: AC_SRC_OVER as u8,
-                        BlendFlags: 0,
-                        SourceConstantAlpha: 160,
-                        AlphaFormat: 0,
-                    };
-
-                    let _ = AlphaBlend(back_dc, 0, 0, width, height, alpha_dc, 0, 0, width, height, blend);
-
-                    SelectObject(alpha_dc, old_alpha_bmp);
-                    let _ = DeleteObject(alpha_bmp);
-                    let _ = DeleteDC(alpha_dc);
-                    let _ = DeleteObject(dim_brush);
+                    // fast path: BitBlt the pre-darkened bitmap over the
+                    // whole back buffer, then BitBlt the bright original
+                    // back into the selection rect. Two memcpy-style ops
+                    // instead of a software AlphaBlend per WM_PAINT — keeps
+                    // the selection responsive at high mouse-poll rates.
+                    if let Some(dim_dc) = *DIM_DC.lock().unwrap() {
+                        let dim_hdc = HDC(dim_dc as *mut _);
+                        let _ = BitBlt(back_dc, 0, 0, width, height, dim_hdc, 0, 0, SRCCOPY);
+                    } else {
+                        let dim_brush = CreateSolidBrush(windows::Win32::Foundation::COLORREF(0x00000000));
+                        let full = RECT { left: 0, top: 0, right: width, bottom: height };
+                        FillRect(back_dc, &full, dim_brush);
+                        let _ = DeleteObject(dim_brush);
+                    }
+                    if let Some(dc) = *SCREEN_DC.lock().unwrap() {
+                        let mem_dc = HDC(dc as *mut _);
+                        let sel_w = (right - left).max(1);
+                        let sel_h = (bottom - top).max(1);
+                        let _ = BitBlt(back_dc, left, top, sel_w, sel_h, mem_dc, left, top, SRCCOPY);
+                    }
 
                     // 1px solid white selection border — greyscale, no chroma.
                     let border_pen = CreatePen(PS_SOLID, 1, windows::Win32::Foundation::COLORREF(0x00FFFFFF));
@@ -477,36 +544,9 @@ mod windows_impl {
                             let right = cached.right - virt_x;
                             let bottom = cached.bottom - virt_y;
 
-                            // subtle dimming inside the hovered window's bounds + 1px white outline.
-                            // replaces the previous 3px lime-green rectangle that looked like a debug overlay.
-                            let dim_brush = CreateSolidBrush(windows::Win32::Foundation::COLORREF(0x00FFFFFF));
-                            let rect = RECT { left, top, right, bottom };
-
-                            let alpha_dc = CreateCompatibleDC(back_dc);
-                            let alpha_bmp = CreateCompatibleBitmap(back_dc, width, height);
-                            let old_alpha_bmp = SelectObject(alpha_dc, alpha_bmp);
-                            BitBlt(alpha_dc, 0, 0, width, height, back_dc, 0, 0, SRCCOPY).ok();
-                            FillRect(alpha_dc, &rect, dim_brush);
-
-                            let blend = BLENDFUNCTION {
-                                BlendOp: AC_SRC_OVER as u8,
-                                BlendFlags: 0,
-                                SourceConstantAlpha: 32,
-                                AlphaFormat: 0,
-                            };
-                            let _ = AlphaBlend(
-                                back_dc, left, top,
-                                (right - left).max(1), (bottom - top).max(1),
-                                alpha_dc, left, top,
-                                (right - left).max(1), (bottom - top).max(1),
-                                blend,
-                            );
-
-                            SelectObject(alpha_dc, old_alpha_bmp);
-                            let _ = DeleteObject(alpha_bmp);
-                            let _ = DeleteDC(alpha_dc);
-                            let _ = DeleteObject(dim_brush);
-
+                            // 1px white outline only — no fill. the previous 12%-alpha
+                            // white wash inside the hovered window made bright UI look
+                            // hazy and made the cursor target less obvious.
                             let pen = CreatePen(PS_SOLID, 1, windows::Win32::Foundation::COLORREF(0x00FFFFFF));
                             let old_pen = SelectObject(back_dc, pen);
                             let hollow = GetStockObject(HOLLOW_BRUSH);
@@ -691,14 +731,26 @@ mod windows_impl {
                 }
                 LRESULT(0)
             }
+            WM_RBUTTONDOWN => {
+                CANCELLED.store(true, Ordering::SeqCst);
+                SELECTING.store(false, Ordering::SeqCst);
+                PostQuitMessage(0);
+                LRESULT(0)
+            }
             WM_DESTROY => {
-                // release the cached back buffer that WM_PAINT created on
-                // demand — leaks ~32 MB of GDI memory per selector invocation
-                // otherwise.
+                // release the cached back buffer + dim bitmap that the
+                // selector allocated on demand — leaks ~64 MB of GDI
+                // memory per selector invocation otherwise.
                 if let Some(dc) = BACK_DC.lock().unwrap().take() {
                     let _ = DeleteDC(HDC(dc as *mut _));
                 }
                 if let Some(bmp) = BACK_BITMAP.lock().unwrap().take() {
+                    let _ = DeleteObject(HBITMAP(bmp as *mut _));
+                }
+                if let Some(dc) = DIM_DC.lock().unwrap().take() {
+                    let _ = DeleteDC(HDC(dc as *mut _));
+                }
+                if let Some(bmp) = DIM_BITMAP.lock().unwrap().take() {
                     let _ = DeleteObject(HBITMAP(bmp as *mut _));
                 }
                 SELECTING.store(false, Ordering::SeqCst);
@@ -707,6 +759,120 @@ mod windows_impl {
             }
             _ => DefWindowProcW(hwnd, msg, wparam, lparam),
         }
+    }
+
+    // Capture each monitor via the DXGI HDR pipeline and composite into a
+    // single virtual-screen DIB. Used as the overlay preview snapshot
+    // when the user is on an HDR display so the preview doesn't show the
+    // GDI-clipped (washed-out white) version. Returns None on any failure
+    // so the caller can fall back to GDI BitBlt.
+    fn capture_virtual_screen_hdr_to_dib(
+        virt_x: i32,
+        virt_y: i32,
+        virt_width: i32,
+        virt_height: i32,
+    ) -> Option<HBITMAP> {
+        use crate::capture::HdrCapture;
+        use windows::Win32::Graphics::Gdi::{
+            CreateDIBSection, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS,
+        };
+
+        let monitors = xcap::Monitor::all().ok()?;
+        if monitors.is_empty() {
+            return None;
+        }
+
+        // top-down 32bpp DIB so memcpy lands at predictable offsets and
+        // GDI reads pixels in the right order for SelectObject + BitBlt.
+        let mut bi: BITMAPINFO = unsafe { std::mem::zeroed() };
+        bi.bmiHeader = BITMAPINFOHEADER {
+            biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+            biWidth: virt_width,
+            biHeight: -virt_height,
+            biPlanes: 1,
+            biBitCount: 32,
+            biCompression: BI_RGB.0,
+            ..Default::default()
+        };
+
+        let mut bits_ptr: *mut std::ffi::c_void = std::ptr::null_mut();
+        let hbmp = unsafe {
+            CreateDIBSection(
+                HDC::default(),
+                &bi,
+                DIB_RGB_COLORS,
+                &mut bits_ptr,
+                None,
+                0,
+            )
+        }
+        .ok()?;
+        if hbmp.is_invalid() || bits_ptr.is_null() {
+            return None;
+        }
+
+        let row_stride = (virt_width as usize) * 4;
+        let total_bytes = row_stride * (virt_height as usize);
+        // initialise to opaque black so monitors that fail capture don't
+        // show random heap noise.
+        unsafe {
+            std::ptr::write_bytes(bits_ptr as *mut u8, 0, total_bytes);
+        }
+
+        let mut any_ok = false;
+        for monitor in &monitors {
+            let mx = monitor.x();
+            let my = monitor.y();
+            let mw = monitor.width() as i32;
+            let mh = monitor.height() as i32;
+            let center = (mx + mw / 2, my + mh / 2);
+            let img = match HdrCapture::new().capture_with_hdr_at(Some(center)) {
+                Ok((img, _)) => img,
+                Err(_) => continue,
+            };
+            // blit the tonemapped pixels into the right place in the DIB.
+            // RgbaImage is RGBA; GDI 32bpp DIB is BGRA. swap on copy.
+            let img_w = img.width() as i32;
+            let img_h = img.height() as i32;
+            let dst_x0 = mx - virt_x;
+            let dst_y0 = my - virt_y;
+            for row in 0..img_h.min(mh) {
+                let dst_y = dst_y0 + row;
+                if dst_y < 0 || dst_y >= virt_height {
+                    continue;
+                }
+                let src_row_offset = (row as usize) * (img_w as usize) * 4;
+                for col in 0..img_w.min(mw) {
+                    let dst_x = dst_x0 + col;
+                    if dst_x < 0 || dst_x >= virt_width {
+                        continue;
+                    }
+                    let src = src_row_offset + (col as usize) * 4;
+                    let dst = (dst_y as usize) * row_stride + (dst_x as usize) * 4;
+                    let pixels = img.as_raw();
+                    if src + 3 >= pixels.len() {
+                        continue;
+                    }
+                    unsafe {
+                        let p = bits_ptr as *mut u8;
+                        *p.add(dst) = pixels[src + 2]; // B
+                        *p.add(dst + 1) = pixels[src + 1]; // G
+                        *p.add(dst + 2) = pixels[src]; // R
+                        *p.add(dst + 3) = 255;
+                    }
+                }
+            }
+            any_ok = true;
+        }
+
+        if !any_ok {
+            unsafe {
+                let _ = windows::Win32::Graphics::Gdi::DeleteObject(hbmp);
+            }
+            return None;
+        }
+
+        Some(hbmp)
     }
 }
 

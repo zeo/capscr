@@ -76,8 +76,64 @@ impl WindowCapture {
 
 impl Capture for WindowCapture {
     fn capture(&self) -> Result<RgbaImage> {
-        let window = self.find_window()?;
-        let img = window.capture_image()?;
-        Ok(img)
+        match self.find_window() {
+            Ok(window) => {
+                let img = window.capture_image()?;
+                Ok(img)
+            }
+            Err(_e) => {
+                // xcap excludes windows owned by the current process to avoid
+                // a GetWindowText deadlock (see xcap impl_window.rs::is_valid_window).
+                // Use a screen-region capture via the window's DWM-extended
+                // frame bounds: this works for any window class including
+                // WebView2/Chromium/Tauri whose DirectComposition surfaces
+                // are invisible to PrintWindow.
+                #[cfg(windows)]
+                {
+                    self_capture_screen_region(self.window_id)
+                }
+                #[cfg(not(windows))]
+                Err(_e)
+            }
+        }
     }
 }
+
+#[cfg(windows)]
+fn self_capture_screen_region(hwnd_u32: u32) -> Result<RgbaImage> {
+    use windows::Win32::Foundation::{HWND, RECT};
+    use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_EXTENDED_FRAME_BOUNDS};
+    use windows::Win32::UI::WindowsAndMessaging::GetWindowRect;
+
+    let hwnd = HWND(hwnd_u32 as usize as *mut _);
+
+    let rect = unsafe {
+        let mut r = RECT::default();
+        let ok = DwmGetWindowAttribute(
+            hwnd,
+            DWMWA_EXTENDED_FRAME_BOUNDS,
+            &mut r as *mut RECT as *mut _,
+            std::mem::size_of::<RECT>() as u32,
+        )
+        .is_ok();
+        if !ok {
+            GetWindowRect(hwnd, &mut r).map_err(|e| anyhow!("GetWindowRect failed: {e}"))?;
+        }
+        r
+    };
+
+    let width = (rect.right - rect.left).max(1);
+    let height = (rect.bottom - rect.top).max(1);
+
+    // hand off to RegionCapture which uses xcap::Monitor (DXGI Desktop
+    // Duplication on Windows). DXGI captures the actual composed desktop,
+    // so it sees every surface including DComp-backed WebView2 content.
+    let region = super::Rectangle {
+        x: rect.left,
+        y: rect.top,
+        width: width as u32,
+        height: height as u32,
+    };
+    super::region::RegionCapture::new(region).capture()
+}
+

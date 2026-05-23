@@ -26,6 +26,73 @@ pub fn hotkey_to_hook_binding(hk: &HotKey) -> Option<ll_hook::HookBinding> {
     Some(ll_hook::HookBinding { vk, mods })
 }
 
+/// Inverse of [`code_to_vk`] + modifier-mask formatting. Produces the
+/// hotkey string the rest of the system already understands ("Ctrl+Shift+G",
+/// "Numpad5", "F12"). Used by the capture-via-LL-hook path so the recorded
+/// binding matches what Windows actually delivered at press time.
+pub fn format_vk_mods(vk: u32, mods: u8) -> String {
+    let mut parts: Vec<&str> = Vec::new();
+    #[cfg(windows)]
+    {
+        if mods & ll_hook::MOD_CTRL != 0 { parts.push("Ctrl"); }
+        if mods & ll_hook::MOD_ALT != 0 { parts.push("Alt"); }
+        if mods & ll_hook::MOD_SHIFT != 0 { parts.push("Shift"); }
+        if mods & ll_hook::MOD_WIN != 0 { parts.push("Win"); }
+    }
+    #[cfg(not(windows))]
+    { let _ = mods; }
+    let key = vk_to_name(vk).unwrap_or_else(|| format!("VK_0x{:02X}", vk));
+    if parts.is_empty() {
+        key
+    } else {
+        let mut s = parts.join("+");
+        s.push('+');
+        s.push_str(&key);
+        s
+    }
+}
+
+fn vk_to_name(vk: u32) -> Option<String> {
+    let s: &str = match vk {
+        0x41..=0x5A => return Some(((vk as u8) as char).to_string()),
+        0x30..=0x39 => return Some(((vk as u8) as char).to_string()),
+        0x70 => "F1", 0x71 => "F2", 0x72 => "F3", 0x73 => "F4",
+        0x74 => "F5", 0x75 => "F6", 0x76 => "F7", 0x77 => "F8",
+        0x78 => "F9", 0x79 => "F10", 0x7A => "F11", 0x7B => "F12",
+        0x7C => "F13", 0x7D => "F14", 0x7E => "F15", 0x7F => "F16",
+        0x80 => "F17", 0x81 => "F18", 0x82 => "F19", 0x83 => "F20",
+        0x84 => "F21", 0x85 => "F22", 0x86 => "F23", 0x87 => "F24",
+        0x20 => "Space",
+        0x0D => "Enter",
+        0x09 => "Tab",
+        0x1B => "Esc",
+        0x08 => "Backspace",
+        0x2E => "Delete",
+        0x2D => "Insert",
+        0x24 => "Home",
+        0x23 => "End",
+        0x21 => "PageUp",
+        0x22 => "PageDown",
+        0x26 => "Up",
+        0x28 => "Down",
+        0x25 => "Left",
+        0x27 => "Right",
+        0x2C => "PrintScreen",
+        0x13 => "Pause",
+        0x91 => "ScrollLock",
+        0x60 => "Numpad0", 0x61 => "Numpad1", 0x62 => "Numpad2", 0x63 => "Numpad3",
+        0x64 => "Numpad4", 0x65 => "Numpad5", 0x66 => "Numpad6", 0x67 => "Numpad7",
+        0x68 => "Numpad8", 0x69 => "Numpad9",
+        0x6B => "NumpadAdd",
+        0x6D => "NumpadSubtract",
+        0x6A => "NumpadMultiply",
+        0x6F => "NumpadDivide",
+        0x6E => "NumpadDecimal",
+        _ => return None,
+    };
+    Some(s.to_string())
+}
+
 #[cfg(windows)]
 fn code_to_vk(c: Code) -> Option<u32> {
     let vk: u32 = match c {

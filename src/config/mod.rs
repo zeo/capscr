@@ -200,35 +200,6 @@ pub struct CaptureConfig {
     pub hdr: HdrConfig,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "kebab-case")]
-pub enum HdrCompressionMode {
-    MapCllToDisplay,
-    NormalizeToCll,
-}
-
-impl HdrCompressionMode {
-    pub fn display_name(&self) -> &'static str {
-        match self {
-            HdrCompressionMode::MapCllToDisplay => "Map peak to display (SDR-friendly)",
-            HdrCompressionMode::NormalizeToCll => "Normalize to peak (HDR-friendly)",
-        }
-    }
-
-    pub fn all() -> &'static [HdrCompressionMode] {
-        &[
-            HdrCompressionMode::MapCllToDisplay,
-            HdrCompressionMode::NormalizeToCll,
-        ]
-    }
-}
-
-impl std::fmt::Display for HdrCompressionMode {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.display_name())
-    }
-}
-
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum HdrOutputFormat {
@@ -262,9 +233,9 @@ impl std::fmt::Display for HdrOutputFormat {
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct HdrConfig {
-    pub mode: HdrCompressionMode,
+    /// manual override for the display's SDR white level in nits. 0.0 means
+    /// auto-detect via DISPLAYCONFIG_SDR_WHITE_LEVEL (with a DXGI fallback).
     pub brightness_nits: f32,
     pub user_brightness_scale: f32,
     pub use_p99_max_cll: bool,
@@ -278,13 +249,6 @@ pub struct HdrConfig {
 impl Default for HdrConfig {
     fn default() -> Self {
         Self {
-            mode: HdrCompressionMode::MapCllToDisplay,
-            // 0.0 is the sentinel for "auto — use the display's SDR white
-            // level reported by DXGI". The previous default of 80 was a
-            // hardcoded value that ignored the display, which made HDR
-            // tonemap output too bright on displays with high SDR white
-            // sliders (300+ nits) because effective_params() only auto-fills
-            // when the param is <= 0.0.
             brightness_nits: 0.0,
             user_brightness_scale: 1.0,
             use_p99_max_cll: true,

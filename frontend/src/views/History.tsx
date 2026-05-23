@@ -41,6 +41,10 @@ function formatDate(unix: number): string {
 
 export function History() {
   const [entries, { refetch }] = createResource(api.listCaptures);
+  const [outputDir, setOutputDir] = createSignal<string>("");
+  onMount(() => {
+    api.getConfig().then((c) => setOutputDir(c.output.directory)).catch(() => {});
+  });
   // track which path is in the "confirm delete" state. Second click on the
   // trash icon within 4s commits; otherwise the prompt resets.
   const [confirmDelete, setConfirmDelete] = createSignal<string | null>(null);
@@ -206,6 +210,11 @@ export function History() {
               <p class="muted" style="margin-top: 8px; font-size: 11px;">
                 rebind these in <strong>tasks</strong> · destinations live in <strong>destinations</strong>.
               </p>
+              <Show when={outputDir()}>
+                <p class="muted" style="margin-top: 12px; font-size: 10px;">
+                  reading from <code>{outputDir()}</code>
+                </p>
+              </Show>
             </div>
           </Show>
         }

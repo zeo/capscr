@@ -703,6 +703,10 @@ pub fn list_captures(state: State<AppState>) -> Result<Vec<HistoryEntry>, String
     let config = state.config.lock().unwrap().clone();
     let dir = config.output.directory.clone();
     if !dir.exists() {
+        tracing::info!(
+            "list_captures: output dir does not exist: {}",
+            dir.display()
+        );
         return Ok(Vec::new());
     }
 
@@ -770,6 +774,11 @@ pub fn list_captures(state: State<AppState>) -> Result<Vec<HistoryEntry>, String
         });
     }
     entries.sort_by_key(|e| std::cmp::Reverse(e.modified_unix));
+    tracing::info!(
+        "list_captures: {} entries from {}",
+        entries.len(),
+        dir.display()
+    );
     Ok(entries)
 }
 
@@ -1737,6 +1746,32 @@ pub struct HotkeyStatusEntry {
 pub struct HotkeyDiagnostics {
     pub disabled_globally: bool,
     pub statuses: Vec<HotkeyStatusEntry>,
+    #[cfg(windows)]
+    pub hook: HookTelemetrySnapshot,
+}
+
+#[cfg(windows)]
+#[derive(Debug, Clone, Serialize)]
+pub struct HookTelemetrySnapshot {
+    pub installed: bool,
+    pub enabled: bool,
+    pub registered_count: usize,
+    pub registered: Vec<HookBindingSnapshot>,
+    pub calls_total: u64,
+    pub keydown_calls: u64,
+    pub matched_calls: u64,
+    pub dispatch_sent: u64,
+    pub dispatch_dropped: u64,
+    pub last_vk: u32,
+    pub last_mods: u8,
+}
+
+#[cfg(windows)]
+#[derive(Debug, Clone, Serialize)]
+pub struct HookBindingSnapshot {
+    pub task_id: String,
+    pub vk: u32,
+    pub mods: u8,
 }
 
 // called from the hotkey thread after every register/reload to push per-task
@@ -1788,6 +1823,31 @@ pub fn hotkey_diagnostics(state: State<AppState>) -> HotkeyDiagnostics {
     HotkeyDiagnostics {
         disabled_globally: disabled,
         statuses,
+        #[cfg(windows)]
+        hook: {
+            let t = crate::hotkeys::ll_hook::snapshot_telemetry();
+            HookTelemetrySnapshot {
+                installed: t.installed,
+                enabled: t.enabled,
+                registered_count: t.registered_count,
+                registered: t
+                    .registered
+                    .into_iter()
+                    .map(|(b, id)| HookBindingSnapshot {
+                        task_id: id,
+                        vk: b.vk,
+                        mods: b.mods,
+                    })
+                    .collect(),
+                calls_total: t.calls_total,
+                keydown_calls: t.keydown_calls,
+                matched_calls: t.matched_calls,
+                dispatch_sent: t.dispatch_sent,
+                dispatch_dropped: t.dispatch_dropped,
+                last_vk: t.last_vk,
+                last_mods: t.last_mods,
+            }
+        },
     }
 }
 
@@ -1902,6 +1962,36 @@ pub fn sftp_forget_host(host_port: String) -> Result<bool, String> {
         kh.save(&path).map_err(|e| e.to_string())?;
     }
     Ok(removed)
+}
+
+/// Arm the LL hook to capture the next non-modifier keydown as a hotkey.
+/// On press, the backend emits `capscr://hotkey-captured` with the vk +
+/// mods + canonical hotkey string and clears the arm. UI cancels via
+/// `cancel_hotkey_capture` if the user backs out.
+#[tauri::command]
+#[cfg(windows)]
+pub fn start_hotkey_capture() -> Result<(), String> {
+    crate::hotkeys::ll_hook::begin_capture();
+    Ok(())
+}
+
+#[tauri::command]
+#[cfg(not(windows))]
+pub fn start_hotkey_capture() -> Result<(), String> {
+    Err("hotkey capture is windows-only".into())
+}
+
+#[tauri::command]
+#[cfg(windows)]
+pub fn cancel_hotkey_capture() -> Result<(), String> {
+    crate::hotkeys::ll_hook::cancel_capture();
+    Ok(())
+}
+
+#[tauri::command]
+#[cfg(not(windows))]
+pub fn cancel_hotkey_capture() -> Result<(), String> {
+    Ok(())
 }
 
 #[tauri::command]

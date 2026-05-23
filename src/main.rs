@@ -28,16 +28,10 @@ use tracing_subscriber::EnvFilter;
 use state::HotkeyCommand;
 
 pub fn install_hdr_runtime_from_config(config: &config::Config) {
-    use capture::{SkivMode, SkivParams};
-    use config::HdrCompressionMode;
+    use capture::TonemapParams;
 
-    let mode = match config.capture.hdr.mode {
-        HdrCompressionMode::MapCllToDisplay => SkivMode::MapCllToDisplay,
-        HdrCompressionMode::NormalizeToCll => SkivMode::NormalizeToCll,
-    };
-    capture::install_skiv_params(SkivParams {
-        mode,
-        sdr_brightness_nits: config.capture.hdr.brightness_nits,
+    capture::install_tonemap_params(TonemapParams {
+        sdr_white_nits_override: config.capture.hdr.brightness_nits,
         user_brightness_scale: config.capture.hdr.user_brightness_scale,
         use_p99_max_cll: config.capture.hdr.use_p99_max_cll,
     });
@@ -200,6 +194,8 @@ fn main() {
             commands::upload_file,
             commands::hotkey_diagnostics,
             commands::set_hotkeys_disabled,
+            commands::start_hotkey_capture,
+            commands::cancel_hotkey_capture,
             commands::sftp_known_hosts,
             commands::sftp_forget_host,
             commands::test_upload_connection,
@@ -379,29 +375,8 @@ fn build_tray_menu<R: tauri::Runtime, M: tauri::Manager<R>>(
         &[&dest_imgur, &dest_custom, &dest_ftp, &dest_sftp],
     )?;
 
-    // --- Open hub (with quick-tab submenu) ---
+    // --- Open hub (single top-level item, no submenu) ---
     let open_hub = MenuItem::with_id(app, "tab_default", "Open hub", true, None::<&str>)?;
-    let tab_settings =
-        MenuItem::with_id(app, "tab_settings", "Settings", true, None::<&str>)?;
-    let tab_tasks = MenuItem::with_id(app, "tab_tasks", "Tasks", true, None::<&str>)?;
-    let tab_history = MenuItem::with_id(app, "tab_history", "History", true, None::<&str>)?;
-    let tab_destinations =
-        MenuItem::with_id(app, "tab_destinations", "Destinations", true, None::<&str>)?;
-    let tab_plugins =
-        MenuItem::with_id(app, "tab_plugins", "Plugins", true, None::<&str>)?;
-    let open_hub_submenu = Submenu::with_items(
-        app,
-        "Open hub →",
-        true,
-        &[
-            &open_hub,
-            &tab_settings,
-            &tab_tasks,
-            &tab_history,
-            &tab_destinations,
-            &tab_plugins,
-        ],
-    )?;
 
     // --- Hotkey toggle (stateful) ---
     let disabled = state.hotkeys_disabled.load(Ordering::SeqCst);
@@ -435,7 +410,7 @@ fn build_tray_menu<R: tauri::Runtime, M: tauri::Manager<R>>(
             &open_captures,
             &dest_submenu,
             &separator2,
-            &open_hub_submenu,
+            &open_hub,
             &separator3,
             &hotkeys_toggle,
             &separator4,
@@ -550,12 +525,6 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
                 }
                 "tab_default" => {
                     let _ = commands::open_hub_window(app);
-                }
-                "tab_settings" | "tab_tasks" | "tab_history" | "tab_destinations"
-                | "tab_plugins" => {
-                    let _ = commands::open_hub_window(app);
-                    let target = id.trim_start_matches("tab_");
-                    let _ = app.emit("capscr://goto-tab", target);
                 }
                 "dest_imgur" | "dest_custom" | "dest_ftp" | "dest_sftp" => {
                     let st = app.state::<state::AppState>();
@@ -685,6 +654,15 @@ fn spawn_hotkey_thread(
                             }
                             last_fire.insert(task_id.clone(), now);
                             commands::trigger_task(&app_dispatch, &task_id);
+                        }
+                        ll_hook::HookEvent::Captured { vk, mods } => {
+                            let hotkey = hotkeys::format_vk_mods(vk, mods);
+                            let payload = serde_json::json!({
+                                "vk": vk,
+                                "mods": mods,
+                                "hotkey": hotkey,
+                            });
+                            let _ = app_dispatch.emit("capscr://hotkey-captured", payload);
                         }
                     }
                 }

@@ -53,10 +53,9 @@ Settings live at `%APPDATA%\capscr\config.toml` and are editable in **hub → Se
 
 ```toml
 [capture.hdr]
-mode = "map-cll-to-display"  # or "normalize-to-cll" for HDR display output
-brightness_nits = 80.0       # SDR-white target in nits
-user_brightness_scale = 1.0
-use_p99_max_cll = true
+brightness_nits = 0.0        # SDR-white override in nits; 0 = auto-detect
+user_brightness_scale = 1.0  # global pre-tonemap exposure multiplier
+use_p99_max_cll = true       # ignore extreme outliers when picking source peak
 
 [upload]
 destination = "Imgur"        # or "Custom" / "Ftp"

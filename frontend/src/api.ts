@@ -10,7 +10,6 @@ export type PostAction =
   | "prompt";
 
 export interface HdrConfig {
-  mode: "map-cll-to-display" | "normalize-to-cll";
   brightness_nits: number;
   user_brightness_scale: number;
   use_p99_max_cll: boolean;
@@ -164,6 +163,21 @@ export interface HotkeyStatusEntry {
 export interface HotkeyDiagnostics {
   disabled_globally: boolean;
   statuses: HotkeyStatusEntry[];
+  hook?: HookTelemetrySnapshot;
+}
+
+export interface HookTelemetrySnapshot {
+  installed: boolean;
+  enabled: boolean;
+  registered_count: number;
+  registered: { task_id: string; vk: number; mods: number }[];
+  calls_total: number;
+  keydown_calls: number;
+  matched_calls: number;
+  dispatch_sent: number;
+  dispatch_dropped: number;
+  last_vk: number;
+  last_mods: number;
 }
 
 export interface SftpKnownHost {
@@ -217,6 +231,8 @@ export const api = {
   hotkeyDiagnostics: () => invoke<HotkeyDiagnostics>("hotkey_diagnostics"),
   setHotkeysDisabled: (disabled: boolean) =>
     invoke<void>("set_hotkeys_disabled", { disabled }),
+  startHotkeyCapture: () => invoke<void>("start_hotkey_capture"),
+  cancelHotkeyCapture: () => invoke<void>("cancel_hotkey_capture"),
   sftpKnownHosts: () => invoke<SftpKnownHost[]>("sftp_known_hosts"),
   sftpForgetHost: (hostPort: string) =>
     invoke<boolean>("sftp_forget_host", { hostPort }),

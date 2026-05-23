@@ -1,80 +1,107 @@
 import { createSignal, For, onCleanup, Show } from "solid-js";
+import { listen, UnlistenFn } from "@tauri-apps/api/event";
 import { X } from "lucide-solid";
 import {
-  eventToHotkey,
-  isRiskyHotkey,
   splitHotkey,
 } from "../keys";
+import { api } from "../api";
 
 interface Props {
   value: string;
   onChange: (next: string) => void;
 }
 
+interface CapturedPayload {
+  vk: number;
+  mods: number;
+  hotkey: string;
+}
+
+const RISKY_BARE_OK = new Set([
+  "F1","F2","F3","F4","F5","F6","F7","F8","F9","F10","F11","F12",
+  "F13","F14","F15","F16","F17","F18","F19","F20","F21","F22","F23","F24",
+  "Pause","PrintScreen","ScrollLock",
+  "Numpad0","Numpad1","Numpad2","Numpad3","Numpad4",
+  "Numpad5","Numpad6","Numpad7","Numpad8","Numpad9",
+  "NumpadAdd","NumpadSubtract","NumpadMultiply","NumpadDivide","NumpadDecimal","NumpadEnter",
+]);
+
 /**
- * Click → captures next key combo → emits backend-format string.
- * Esc cancels. Backspace clears. Bare-letter hotkeys warn but accept.
+ * Click → arms the backend LL hook to capture the next non-modifier
+ * keydown → records the exact vk Windows delivers (so NumLock state,
+ * FN-modified laptop keys, and unusual layouts all bind correctly).
+ * Esc cancels. Backspace clears.
  */
 export function HotkeyInput(props: Props) {
   const [capturing, setCapturing] = createSignal(false);
   const [warning, setWarning] = createSignal<string | null>(null);
 
-  let cleanup: (() => void) | null = null;
+  let unlisten: UnlistenFn | null = null;
+  let escHandler: ((e: KeyboardEvent) => void) | null = null;
 
   const stop = () => {
-    cleanup?.();
-    cleanup = null;
+    if (unlisten) { unlisten(); unlisten = null; }
+    if (escHandler) {
+      window.removeEventListener("keydown", escHandler, true);
+      escHandler = null;
+    }
+    void api.cancelHotkeyCapture().catch(() => {});
     setCapturing(false);
   };
 
-  const begin = () => {
-    if (capturing()) return;
-    setCapturing(true);
-    setWarning(null);
-
-    const onKeyDown = (e: KeyboardEvent) => {
-      e.preventDefault();
-      e.stopPropagation();
-
-      if (e.code === "Escape" && !e.ctrlKey && !e.altKey && !e.shiftKey && !e.metaKey) {
+  const accept = (payload: CapturedPayload) => {
+    const stripped = payload.hotkey.split("+").pop() ?? payload.hotkey;
+    const hasModifier = payload.mods !== 0;
+    if (!hasModifier && !RISKY_BARE_OK.has(stripped)) {
+      setWarning(
+        `${payload.hotkey} would steal that key from every app — add a modifier (Ctrl / Alt / Shift / Win).`,
+      );
+      // re-arm for another attempt
+      void api.startHotkeyCapture().catch((e) => {
+        setWarning(String(e));
         stop();
-        return;
-      }
-
-      if (e.code === "Backspace" && !e.ctrlKey && !e.altKey && !e.shiftKey && !e.metaKey) {
-        props.onChange("");
-        stop();
-        return;
-      }
-
-      const parsed = eventToHotkey(e);
-      if (!parsed) return; // pure modifier — keep listening
-
-      if (isRiskyHotkey(parsed)) {
-        // bare letter/digit hotkeys steal that key system-wide and lock
-        // the user out of typing it anywhere else. refuse the bind and
-        // keep listening so they can press a combo with a modifier
-        setWarning(
-          `${parsed.combined} would steal that key from every app — add a modifier (Ctrl / Alt / Shift / Win).`,
-        );
-        return;
-      }
-      props.onChange(parsed.combined);
-      stop();
-    };
-
-    const onBlur = () => stop();
-
-    window.addEventListener("keydown", onKeyDown, true);
-    window.addEventListener("blur", onBlur);
-
-    cleanup = () => {
-      window.removeEventListener("keydown", onKeyDown, true);
-      window.removeEventListener("blur", onBlur);
-    };
+      });
+      return;
+    }
+    props.onChange(payload.hotkey);
+    stop();
   };
 
-  onCleanup(() => cleanup?.());
+  const begin = async () => {
+    if (capturing()) return;
+    setWarning(null);
+
+    try {
+      unlisten = await listen<CapturedPayload>(
+        "capscr://hotkey-captured",
+        (e) => accept(e.payload),
+      );
+      await api.startHotkeyCapture();
+      setCapturing(true);
+    } catch (e) {
+      setWarning(String(e));
+      stop();
+      return;
+    }
+
+    // browser-side Esc/Backspace handling — these never reach the LL hook
+    // capture path because we cancel before the keydown completes.
+    escHandler = (e: KeyboardEvent) => {
+      if (e.code === "Escape" && !e.ctrlKey && !e.altKey && !e.shiftKey && !e.metaKey) {
+        e.preventDefault();
+        e.stopPropagation();
+        stop();
+      } else if (e.code === "Backspace" && !e.ctrlKey && !e.altKey && !e.shiftKey && !e.metaKey) {
+        e.preventDefault();
+        e.stopPropagation();
+        props.onChange("");
+        stop();
+      }
+    };
+    window.addEventListener("keydown", escHandler, true);
+  };
+
+  onCleanup(() => stop());
 
   const clear = (e: MouseEvent) => {
     e.stopPropagation();

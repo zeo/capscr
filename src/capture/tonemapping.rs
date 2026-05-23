@@ -1,16 +1,14 @@
 // HDR -> SDR tonemap pipeline.
 //
-// the `*_skiv` functions and the supporting ICtCp / PQ / tonemap-rolloff
-// helpers are a Rust port of the SKIV (Special K Image Viewer) tonemap by
-// andon "Kaldaien" Coleman, MIT-licensed:
-//   https://github.com/SpecialKO/SKIV
-// specifically: PostProcessingColor.hlsl, tone_mapping.hlsli, and
-// colorspaces.hlsli, together with the per-frame ImageInfo / MaxCLL
-// computation adapted from GotoFinal's open-source HDR tonemap
-// reference (MIT-licensed).
-//
-// the Reinhard path below is kept only as a reference / fallback and is
-// unused by the runtime pipeline.
+// the runtime tonemap is a per-pixel maxRGB BT.2390 EETF operating in
+// PQ-encoded space. inputs are normalized so the OS-reported SDR white
+// level maps to 1.0 in working space; the source peak (p99 of maxRGB) is
+// PQ-encoded and used as the EETF's Lc; the SDR-white target is the EETF's
+// Lw. the cubic Hermite knee starts at KS = 1.5·Lw - 0.5·Lc (in absolute
+// PQ), so SDR-range pixels pass through nearly untouched while HDR
+// highlights are smoothly rolled off. monotonic by construction because PQ
+// compresses bright values into a small fraction of the [0,1] range, which
+// keeps the cubic well-behaved no matter how bright the source.
 
 use image::{Rgba, RgbaImage};
 
@@ -23,42 +21,30 @@ const PQ_C1: f32 = 3424.0 / 4096.0;
 const PQ_C2: f32 = 2413.0 / 4096.0 * 32.0;
 const PQ_C3: f32 = 2392.0 / 4096.0 * 32.0;
 
-// scRGB units where 1.0 = 80 nits, so 125 scRGB units = 10000 nits = PQ ceiling
-const PQ_MAX_SCRGB: f32 = 125.0;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TonemapAlgorithm {
-    Skiv,
-    Reinhard,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SkivMode {
-    NormalizeToCll,
-    MapCllToDisplay,
-}
-
 #[derive(Debug, Clone, Copy)]
-pub struct SkivParams {
-    pub mode: SkivMode,
-    pub sdr_brightness_nits: f32,
+pub struct TonemapParams {
+    /// manual override for the display's SDR white level in nits. when set
+    /// to 0.0, the runtime falls back to the value detected by the capture
+    /// path (DISPLAYCONFIG_SDR_WHITE_LEVEL with a DXGI fallback).
+    pub sdr_white_nits_override: f32,
+    /// global exposure multiplier applied before tonemapping. 1.0 is the
+    /// neutral pass-through.
     pub user_brightness_scale: f32,
+    /// when true, the source peak used by the EETF is the 99th percentile
+    /// of maxRGB across the frame; this drops a small fraction of extreme
+    /// outliers (specular glints, sun pixels) so the rest of the image
+    /// isn't crushed by their presence.
     pub use_p99_max_cll: bool,
 }
 
-impl Default for SkivParams {
+impl Default for TonemapParams {
     fn default() -> Self {
         Self {
-            mode: SkivMode::MapCllToDisplay,
-            sdr_brightness_nits: 80.0,
+            sdr_white_nits_override: 0.0,
             user_brightness_scale: 1.0,
             use_p99_max_cll: true,
         }
     }
-}
-
-fn reinhard(v: f32) -> f32 {
-    v / (1.0 + v)
 }
 
 pub fn pq_to_linear(pq: f32) -> f32 {
@@ -91,108 +77,98 @@ fn linear_to_srgb(linear: f32) -> f32 {
     }
 }
 
-fn linear_to_pq_scaled(x: f32, max_value: f32) -> f32 {
-    let s = if x >= 0.0 { 1.0 } else { -1.0 };
-    let abs_x = x.abs();
-    let xn = (abs_x / max_value).powf(PQ_N);
-    let nd = (PQ_C1 + PQ_C2 * xn) / (1.0 + PQ_C3 * xn);
-    s * nd.powf(PQ_M)
-}
-
-fn pq_to_linear_scaled(x: f32, max_value: f32) -> f32 {
-    let s = if x >= 0.0 { 1.0 } else { -1.0 };
-    let abs_x = x.abs();
-    let xm = abs_x.powf(1.0 / PQ_M);
-    let denom = PQ_C2 - PQ_C3 * xm;
-    if denom <= 0.0 {
+// normalized PQ encode: v in [0, 1] where 1.0 = 10000 nits absolute, output
+// in [0, 1] PQ-encoded.
+fn linear_to_pq_norm(v: f32) -> f32 {
+    let v = v.clamp(0.0, 1.0);
+    if v <= 0.0 {
         return 0.0;
     }
-    let nd = (xm - PQ_C1).max(0.0) / denom;
-    s * nd.powf(1.0 / PQ_N) * max_value
+    let n = v.powf(PQ_N);
+    ((PQ_C1 + PQ_C2 * n) / (1.0 + PQ_C3 * n)).powf(PQ_M)
 }
 
-fn rec709_to_xyz(r: f32, g: f32, b: f32) -> (f32, f32, f32) {
-    let x = 0.412_390_8 * r + 0.357_584_3 * g + 0.180_480_8 * b;
-    let y = 0.212_639 * r + 0.715_168_7 * g + 0.072_192_3 * b;
-    let z = 0.019_330_8 * r + 0.119_194_8 * g + 0.950_532_1 * b;
-    (x, y, z)
-}
-
-fn xyz_to_rec709(x: f32, y: f32, z: f32) -> (f32, f32, f32) {
-    let r = 3.240_97 * x - 1.537_383_2 * y - 0.498_610_8 * z;
-    let g = -0.969_243_6 * x + 1.875_967_5 * y + 0.041_555_1 * z;
-    let b = 0.055_630_1 * x - 0.203_977 * y + 1.056_971_5 * z;
-    (r, g, b)
-}
-
-fn xyz_to_lms(x: f32, y: f32, z: f32) -> (f32, f32, f32) {
-    let l = 0.3592 * x + 0.6976 * y - 0.0358 * z;
-    let m = -0.1922 * x + 1.1004 * y + 0.0755 * z;
-    let s = 0.0070 * x + 0.0749 * y + 0.8434 * z;
-    (l, m, s)
-}
-
-fn lms_to_xyz(l: f32, m: f32, s: f32) -> (f32, f32, f32) {
-    let x = 2.070_180_1 * l - 1.326_456_9 * m + 0.206_616 * s;
-    let y = 0.364_988_2 * l + 0.680_467_4 * m - 0.045_421_8 * s;
-    let z = -0.049_595_5 * l - 0.049_421_2 * m + 1.187_995_9 * s;
-    (x, y, z)
-}
-
-fn rec709_to_ictcp(r: f32, g: f32, b: f32) -> (f32, f32, f32) {
-    let (x, y, z) = rec709_to_xyz(r.max(0.0), g.max(0.0), b.max(0.0));
-    let (l, m, s) = xyz_to_lms(x, y, z);
-    let lp = linear_to_pq_scaled(l.max(0.0), PQ_MAX_SCRGB);
-    let mp = linear_to_pq_scaled(m.max(0.0), PQ_MAX_SCRGB);
-    let sp = linear_to_pq_scaled(s.max(0.0), PQ_MAX_SCRGB);
-    let i = 0.5 * lp + 0.5 * mp;
-    let ct = 1.6137 * lp - 3.3234 * mp + 1.7097 * sp;
-    let cp = 4.3780 * lp - 4.2455 * mp - 0.1325 * sp;
-    (i, ct, cp)
-}
-
-fn ictcp_to_rec709(i: f32, ct: f32, cp: f32) -> (f32, f32, f32) {
-    let lp = i + 0.008_605_146 * ct + 0.111_035_6 * cp;
-    let mp = i - 0.008_605_146 * ct - 0.111_035_6 * cp;
-    let sp = i + 0.560_048_9 * ct - 0.320_637_47 * cp;
-    let l = pq_to_linear_scaled(lp, PQ_MAX_SCRGB);
-    let m = pq_to_linear_scaled(mp, PQ_MAX_SCRGB);
-    let s = pq_to_linear_scaled(sp, PQ_MAX_SCRGB);
-    let (x, y, z) = lms_to_xyz(l, m, s);
-    xyz_to_rec709(x, y, z)
-}
-
-fn tonemap_sdr_skiv(l: f32, lc: f32) -> f32 {
-    if lc <= f32::EPSILON {
-        return l;
+// normalized PQ decode: pq in [0, 1] PQ-encoded, output in [0, 1] where
+// 1.0 = 10000 nits absolute.
+fn pq_to_linear_norm(pq: f32) -> f32 {
+    let pq = pq.clamp(0.0, 1.0);
+    if pq <= 0.0 {
+        return 0.0;
     }
-    (l + l * l / (lc * lc)) / (1.0 + l)
-}
-
-fn tonemap_hdr_skiv(l: f32, lc: f32, ld: f32) -> f32 {
-    if lc <= f32::EPSILON || ld <= f32::EPSILON {
-        return l;
+    let p = pq.powf(1.0 / PQ_M);
+    let num = (p - PQ_C1).max(0.0);
+    let den = PQ_C2 - PQ_C3 * p;
+    if den <= 0.0 {
+        return 1.0;
     }
-    let a = ld / (lc * lc);
-    let b = 1.0 / ld;
-    l * (1.0 + a * l) / (1.0 + b * l)
+    (num / den).powf(1.0 / PQ_N)
 }
 
-fn pq_y(scrgb_value: f32) -> f32 {
-    linear_to_pq_scaled(scrgb_value.max(0.0), PQ_MAX_SCRGB)
+// BT.2390 EETF: maps PQ-encoded source pixel to PQ-encoded display pixel.
+//   e1: input PQ value (in [0, lc_pq])
+//   lw_pq: display peak in PQ
+//   lc_pq: source peak in PQ (>= lw_pq)
+// returns: tonemapped PQ value (in [0, lw_pq])
+fn bt2390_eetf_pq(e1: f32, lw_pq: f32, lc_pq: f32) -> f32 {
+    if lc_pq <= 0.0 {
+        return 0.0;
+    }
+    // normalize so source peak is 1.0 in working space
+    let e1n = (e1 / lc_pq).clamp(0.0, 1.0);
+    let lw_n = (lw_pq / lc_pq).clamp(0.0, 1.0);
+    let ks = (1.5 * lw_n - 0.5).max(0.0);
+    let e2n = if e1n < ks || (1.0 - ks) <= f32::EPSILON {
+        e1n
+    } else {
+        let t = (e1n - ks) / (1.0 - ks);
+        let t2 = t * t;
+        let t3 = t2 * t;
+        let h00 = 2.0 * t3 - 3.0 * t2 + 1.0;
+        let h10 = t3 - 2.0 * t2 + t;
+        let h01 = -2.0 * t3 + 3.0 * t2;
+        h00 * ks + h10 * (1.0 - ks) + h01 * lw_n
+    };
+    (e2n * lc_pq).clamp(0.0, lw_pq)
 }
 
-pub fn compute_max_cll_scrgb(scrgb_rgba: &[f32], use_p99: bool) -> f32 {
-    let mut samples: Vec<f32> = Vec::with_capacity(scrgb_rgba.len() / 4);
-    for chunk in scrgb_rgba.chunks_exact(4) {
+// per-pixel hue-preserving tonemap: compress maxRGB through the EETF in PQ
+// space, then scale all three channels by the same ratio. this is the
+// maxRGB flavour recommended by ITU-R BT.2390 for content where chroma
+// fidelity matters more than perfect luminance reproduction — the right
+// trade for screen-capture content (UI, text, photos).
+fn tonemap_pixel(
+    r: f32,
+    g: f32,
+    b: f32,
+    sdr_white_nits: f32,
+    lw_pq: f32,
+    lc_pq: f32,
+) -> (f32, f32, f32) {
+    let m = r.max(g).max(b);
+    if m <= f32::EPSILON {
+        return (0.0, 0.0, 0.0);
+    }
+    // working space (1.0 = SDR white) -> absolute PQ
+    let m_nits = m * sdr_white_nits;
+    let m_pq = linear_to_pq_norm(m_nits / 10000.0);
+    let out_pq = bt2390_eetf_pq(m_pq, lw_pq, lc_pq);
+    let out_nits = pq_to_linear_norm(out_pq) * 10000.0;
+    // absolute nits -> working space
+    let m_out = out_nits / sdr_white_nits;
+    let scale = m_out / m;
+    (r * scale, g * scale, b * scale)
+}
+
+fn p99_max_rgb(working: &[f32], use_p99: bool) -> f32 {
+    let mut samples: Vec<f32> = Vec::with_capacity(working.len() / 4);
+    for chunk in working.chunks_exact(4) {
         let r = chunk[0];
         let g = chunk[1];
         let b = chunk[2];
         if !r.is_finite() || !g.is_finite() || !b.is_finite() {
             continue;
         }
-        let m = r.max(g).max(b).max(0.0);
-        samples.push(m);
+        samples.push(r.max(g).max(b).max(0.0));
     }
     if samples.is_empty() {
         return 1.0;
@@ -206,37 +182,14 @@ pub fn compute_max_cll_scrgb(scrgb_rgba: &[f32], use_p99: bool) -> f32 {
     samples[idx.min(samples.len() - 1)].max(1.0)
 }
 
-fn tonemap_pixel_skiv(
-    r_in: f32,
-    g_in: f32,
-    b_in: f32,
-    cml: f32,
-    dml: f32,
-    mode: SkivMode,
-) -> (f32, f32, f32) {
-    let (i_pq, ct, cp) = rec709_to_ictcp(r_in, g_in, b_in);
-    let i_in = i_pq.max(0.0);
-    let i_out = match mode {
-        SkivMode::NormalizeToCll => tonemap_sdr_skiv(i_in, cml),
-        SkivMode::MapCllToDisplay => tonemap_hdr_skiv(i_in, cml, dml),
-    };
-    let (i_final, ct_final, cp_final) = if i_in > 0.0 && i_out > 0.0 {
-        let i_scale = (i_in / i_out).min(i_out / i_in);
-        (i_out, ct * i_scale, cp * i_scale)
-    } else {
-        (0.0, 0.0, 0.0)
-    };
-    ictcp_to_rec709(i_final, ct_final, cp_final)
-}
-
-pub fn scrgb_to_sdr_skiv(
+pub fn scrgb_to_sdr_bt2390(
     scrgb_rgba: &[f32],
     width: u32,
     height: u32,
-    params: SkivParams,
+    sdr_white_nits: f32,
+    params: TonemapParams,
 ) -> RgbaImage {
-    if width == 0 || height == 0 || width > MAX_TONEMAP_DIMENSION || height > MAX_TONEMAP_DIMENSION
-    {
+    if width == 0 || height == 0 || width > MAX_TONEMAP_DIMENSION || height > MAX_TONEMAP_DIMENSION {
         return RgbaImage::new(1, 1);
     }
     let pixel_count = match (width as usize).checked_mul(height as usize) {
@@ -248,38 +201,62 @@ pub fn scrgb_to_sdr_skiv(
     }
     let scrgb = &scrgb_rgba[..pixel_count * 4];
 
-    let display_max_scrgb = (params.sdr_brightness_nits / 80.0).max(1.0);
-    let dml = pq_y(display_max_scrgb);
-
-    let max_cll_raw = compute_max_cll_scrgb(scrgb, params.use_p99_max_cll).min(PQ_MAX_SCRGB);
-    let max_cll_floored = max_cll_raw.max(display_max_scrgb);
-    let cml = pq_y(max_cll_floored);
-
+    // build working space: scRGB units (1.0 = 80 nits) rescaled so the
+    // display's SDR-white pixel sits exactly at 1.0. an SDR-only image on
+    // an HDR display has pixels at scRGB sdr_white_nits/80; after this
+    // rescale every one of those pixels is at-or-below 1.0 in working space.
+    let sdr_white = effective_sdr_white(sdr_white_nits, params.sdr_white_nits_override);
+    let scale = 80.0 / sdr_white;
     let brightness = if params.user_brightness_scale > 0.0 {
         params.user_brightness_scale
     } else {
         1.0
+    };
+    let coeff = scale * brightness;
+
+    let mut working = vec![0.0f32; pixel_count * 4];
+    for i in 0..pixel_count {
+        let r = scrgb[i * 4];
+        let g = scrgb[i * 4 + 1];
+        let b = scrgb[i * 4 + 2];
+        let a = scrgb[i * 4 + 3];
+        working[i * 4] = if r.is_finite() { (r * coeff).max(0.0) } else { 0.0 };
+        working[i * 4 + 1] = if g.is_finite() { (g * coeff).max(0.0) } else { 0.0 };
+        working[i * 4 + 2] = if b.is_finite() { (b * coeff).max(0.0) } else { 0.0 };
+        working[i * 4 + 3] = if a.is_finite() { a.clamp(0.0, 1.0) } else { 1.0 };
+    }
+
+    let l_src = p99_max_rgb(&working, params.use_p99_max_cll);
+    let needs_compression = l_src > 1.0 + 1e-4;
+
+    // pre-compute PQ peaks. lc_pq is the source content peak (p99 maxRGB);
+    // lw_pq is the display SDR-white target. both expressed against the PQ
+    // reference of 10000 nits.
+    let lw_pq = linear_to_pq_norm(sdr_white / 10000.0);
+    let lc_pq = if needs_compression {
+        linear_to_pq_norm((l_src * sdr_white).min(10000.0) / 10000.0)
+    } else {
+        lw_pq
     };
 
     let mut out = RgbaImage::new(width, height);
     for y in 0..height {
         for x in 0..width {
             let idx = ((y as usize) * (width as usize) + (x as usize)) * 4;
-            let r_raw = scrgb[idx];
-            let g_raw = scrgb[idx + 1];
-            let b_raw = scrgb[idx + 2];
-            let a_raw = scrgb[idx + 3];
+            let r = working[idx];
+            let g = working[idx + 1];
+            let b = working[idx + 2];
+            let a = working[idx + 3];
 
-            let r = if r_raw.is_finite() { r_raw * brightness } else { 0.0 };
-            let g = if g_raw.is_finite() { g_raw * brightness } else { 0.0 };
-            let b = if b_raw.is_finite() { b_raw * brightness } else { 0.0 };
-            let a = if a_raw.is_finite() { a_raw.clamp(0.0, 1.0) } else { 1.0 };
+            let (r_tm, g_tm, b_tm) = if needs_compression {
+                tonemap_pixel(r, g, b, sdr_white, lw_pq, lc_pq)
+            } else {
+                (r, g, b)
+            };
 
-            let (r_out, g_out, b_out) = tonemap_pixel_skiv(r, g, b, cml, dml, params.mode);
-
-            let r_u = (linear_to_srgb(r_out.clamp(0.0, 1.0)) * 255.0).clamp(0.0, 255.0) as u8;
-            let g_u = (linear_to_srgb(g_out.clamp(0.0, 1.0)) * 255.0).clamp(0.0, 255.0) as u8;
-            let b_u = (linear_to_srgb(b_out.clamp(0.0, 1.0)) * 255.0).clamp(0.0, 255.0) as u8;
+            let r_u = (linear_to_srgb(r_tm.clamp(0.0, 1.0)) * 255.0).round().clamp(0.0, 255.0) as u8;
+            let g_u = (linear_to_srgb(g_tm.clamp(0.0, 1.0)) * 255.0).round().clamp(0.0, 255.0) as u8;
+            let b_u = (linear_to_srgb(b_tm.clamp(0.0, 1.0)) * 255.0).round().clamp(0.0, 255.0) as u8;
             let a_u = (a * 255.0).clamp(0.0, 255.0) as u8;
             out.put_pixel(x, y, Rgba([r_u, g_u, b_u, a_u]));
         }
@@ -287,14 +264,14 @@ pub fn scrgb_to_sdr_skiv(
     out
 }
 
-pub fn hdr10_to_sdr_skiv(
+pub fn hdr10_to_sdr_bt2390(
     pq_data: &[u16],
     width: u32,
     height: u32,
-    params: SkivParams,
+    sdr_white_nits: f32,
+    params: TonemapParams,
 ) -> RgbaImage {
-    if width == 0 || height == 0 || width > MAX_TONEMAP_DIMENSION || height > MAX_TONEMAP_DIMENSION
-    {
+    if width == 0 || height == 0 || width > MAX_TONEMAP_DIMENSION || height > MAX_TONEMAP_DIMENSION {
         return RgbaImage::new(1, 1);
     }
     let pixel_count = match (width as usize).checked_mul(height as usize) {
@@ -305,6 +282,8 @@ pub fn hdr10_to_sdr_skiv(
         return RgbaImage::new(width, height);
     }
 
+    // decode PQ -> linear nits, then rescale into scRGB (1.0 = 80 nits)
+    // so we can hand off to the scRGB path.
     let mut scrgb = vec![0.0f32; pixel_count * 4];
     for i in 0..pixel_count {
         let r_pq = pq_data[i * 4] as f32 / 65535.0;
@@ -316,18 +295,17 @@ pub fn hdr10_to_sdr_skiv(
         scrgb[i * 4 + 2] = pq_to_linear(b_pq) / 80.0;
         scrgb[i * 4 + 3] = a_pq;
     }
-
-    scrgb_to_sdr_skiv(&scrgb, width, height, params)
+    scrgb_to_sdr_bt2390(&scrgb, width, height, sdr_white_nits, params)
 }
 
-pub fn hlg_to_sdr_skiv(
+pub fn hlg_to_sdr_bt2390(
     hlg_data: &[u8],
     width: u32,
     height: u32,
-    params: SkivParams,
+    sdr_white_nits: f32,
+    params: TonemapParams,
 ) -> RgbaImage {
-    if width == 0 || height == 0 || width > MAX_TONEMAP_DIMENSION || height > MAX_TONEMAP_DIMENSION
-    {
+    if width == 0 || height == 0 || width > MAX_TONEMAP_DIMENSION || height > MAX_TONEMAP_DIMENSION {
         return RgbaImage::new(1, 1);
     }
     let pixel_count = match (width as usize).checked_mul(height as usize) {
@@ -338,210 +316,236 @@ pub fn hlg_to_sdr_skiv(
         return RgbaImage::new(width, height);
     }
 
-    // HLG reference white is 75% signal -> 100 nits-ish. scale to scRGB (80 nits/unit).
+    // HLG reference white is roughly 0.75 signal -> 1.0 linear; bring the
+    // peak up to scRGB ~12 (1000 nits) before handing to the scRGB path.
     let mut scrgb = vec![0.0f32; pixel_count * 4];
     for i in 0..pixel_count {
         let r_hlg = hlg_data[i * 4] as f32 / 255.0;
         let g_hlg = hlg_data[i * 4 + 1] as f32 / 255.0;
         let b_hlg = hlg_data[i * 4 + 2] as f32 / 255.0;
         let a_hlg = hlg_data[i * 4 + 3] as f32 / 255.0;
-        let r_lin = hlg_to_linear(r_hlg) * 12.0;
-        let g_lin = hlg_to_linear(g_hlg) * 12.0;
-        let b_lin = hlg_to_linear(b_hlg) * 12.0;
-        scrgb[i * 4] = r_lin;
-        scrgb[i * 4 + 1] = g_lin;
-        scrgb[i * 4 + 2] = b_lin;
+        scrgb[i * 4] = hlg_to_linear(r_hlg) * 12.0;
+        scrgb[i * 4 + 1] = hlg_to_linear(g_hlg) * 12.0;
+        scrgb[i * 4 + 2] = hlg_to_linear(b_hlg) * 12.0;
         scrgb[i * 4 + 3] = a_hlg;
     }
-
-    scrgb_to_sdr_skiv(&scrgb, width, height, params)
+    scrgb_to_sdr_bt2390(&scrgb, width, height, sdr_white_nits, params)
 }
 
-pub fn scrgb_to_sdr(scrgb_rgba: &[f32], width: u32, height: u32, sdr_white_level: f32) -> RgbaImage {
-    let params = SkivParams {
-        sdr_brightness_nits: sdr_white_level.max(80.0),
-        ..SkivParams::default()
-    };
-    scrgb_to_sdr_skiv(scrgb_rgba, width, height, params)
-}
-
-pub fn hdr10_to_sdr(pq_data: &[u16], width: u32, height: u32, sdr_white_level: f32) -> RgbaImage {
-    let params = SkivParams {
-        sdr_brightness_nits: sdr_white_level.max(80.0),
-        ..SkivParams::default()
-    };
-    hdr10_to_sdr_skiv(pq_data, width, height, params)
-}
-
-pub fn hlg_to_sdr(hlg_data: &[u8], width: u32, height: u32, sdr_white_level: f32) -> RgbaImage {
-    let params = SkivParams {
-        sdr_brightness_nits: sdr_white_level.max(80.0),
-        ..SkivParams::default()
-    };
-    hlg_to_sdr_skiv(hlg_data, width, height, params)
-}
-
-pub fn scrgb_to_sdr_reinhard(
-    hdr_data: &[f32],
-    width: u32,
-    height: u32,
-    sdr_white_level: f32,
-) -> RgbaImage {
-    if width == 0 || height == 0 || width > MAX_TONEMAP_DIMENSION || height > MAX_TONEMAP_DIMENSION
-    {
-        return RgbaImage::new(1, 1);
-    }
-    let pixel_count = match (width as usize).checked_mul(height as usize) {
-        Some(c) if c <= MAX_TONEMAP_PIXELS => c,
-        _ => return RgbaImage::new(1, 1),
-    };
-    if hdr_data.len() < pixel_count * 4 {
-        return RgbaImage::new(width, height);
-    }
-
-    let mut result = RgbaImage::new(width, height);
-    let white_scale = 80.0 / sdr_white_level.max(80.0);
-    for y in 0..height {
-        for x in 0..width {
-            let idx = ((y as usize) * (width as usize) + (x as usize)) * 4;
-            let r = hdr_data[idx];
-            let g = hdr_data[idx + 1];
-            let b = hdr_data[idx + 2];
-            let a = hdr_data[idx + 3];
-
-            let r_scaled = if r.is_finite() { r * white_scale } else { 0.0 };
-            let g_scaled = if g.is_finite() { g * white_scale } else { 0.0 };
-            let b_scaled = if b.is_finite() { b * white_scale } else { 0.0 };
-
-            let r_tm = reinhard(r_scaled.max(0.0));
-            let g_tm = reinhard(g_scaled.max(0.0));
-            let b_tm = reinhard(b_scaled.max(0.0));
-
-            let r_out = (linear_to_srgb(r_tm) * 255.0).clamp(0.0, 255.0) as u8;
-            let g_out = (linear_to_srgb(g_tm) * 255.0).clamp(0.0, 255.0) as u8;
-            let b_out = (linear_to_srgb(b_tm) * 255.0).clamp(0.0, 255.0) as u8;
-            let a_out = if a.is_finite() {
-                (a * 255.0).clamp(0.0, 255.0) as u8
-            } else {
-                255
-            };
-            result.put_pixel(x, y, Rgba([r_out, g_out, b_out, a_out]));
-        }
-    }
-    result
+fn effective_sdr_white(detected_nits: f32, override_nits: f32) -> f32 {
+    let pick = if override_nits > 0.0 { override_nits } else { detected_nits };
+    pick.max(80.0)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_reinhard_basic() {
-        assert!((reinhard(1.0) - 0.5).abs() < 0.001);
-        assert!((reinhard(0.0) - 0.0).abs() < 0.001);
+    fn solid(width: u32, height: u32, r: f32, g: f32, b: f32) -> Vec<f32> {
+        let mut v = vec![0.0f32; (width * height * 4) as usize];
+        for i in 0..(width * height) as usize {
+            v[i * 4] = r;
+            v[i * 4 + 1] = g;
+            v[i * 4 + 2] = b;
+            v[i * 4 + 3] = 1.0;
+        }
+        v
+    }
+
+    fn pq_for(nits: f32) -> f32 {
+        linear_to_pq_norm(nits / 10000.0)
     }
 
     #[test]
-    fn pq_roundtrip_is_stable() {
-        for nits_scrgb in [0.5_f32, 1.0, 2.5, 10.0, 50.0, 100.0, 124.0] {
-            let pq = linear_to_pq_scaled(nits_scrgb, PQ_MAX_SCRGB);
-            let back = pq_to_linear_scaled(pq, PQ_MAX_SCRGB);
-            assert!(
-                (back - nits_scrgb).abs() < 0.01,
-                "roundtrip {nits_scrgb} -> {pq} -> {back}"
-            );
+    fn pq_norm_roundtrip() {
+        for nits in [10.0_f32, 100.0, 250.0, 1000.0, 4000.0, 10000.0] {
+            let pq = pq_for(nits);
+            let back = pq_to_linear_norm(pq) * 10000.0;
+            assert!((back - nits).abs() / nits < 0.01, "{nits} -> {pq} -> {back}");
         }
     }
 
     #[test]
-    fn pq_max_value_maps_to_one() {
-        let pq = linear_to_pq_scaled(PQ_MAX_SCRGB, PQ_MAX_SCRGB);
-        assert!((pq - 1.0).abs() < 1e-4);
-    }
-
-    #[test]
-    fn ictcp_roundtrip_preserves_grey() {
-        let (r, g, b) = (0.5, 0.5, 0.5);
-        let (i, ct, cp) = rec709_to_ictcp(r, g, b);
-        let (r2, g2, b2) = ictcp_to_rec709(i, ct, cp);
-        assert!((r2 - r).abs() < 0.01, "r: {r} -> {r2}");
-        assert!((g2 - g).abs() < 0.01, "g: {g} -> {g2}");
-        assert!((b2 - b).abs() < 0.01, "b: {b} -> {b2}");
-    }
-
-    #[test]
-    fn ictcp_roundtrip_preserves_red() {
-        let (r, g, b) = (1.5, 0.1, 0.1);
-        let (i, ct, cp) = rec709_to_ictcp(r, g, b);
-        let (r2, g2, b2) = ictcp_to_rec709(i, ct, cp);
-        assert!((r2 - r).abs() < 0.05);
-        assert!((g2 - g).abs() < 0.05);
-        assert!((b2 - b).abs() < 0.05);
-    }
-
-    #[test]
-    fn skiv_tonemap_does_not_panic_on_black() {
-        let data = vec![0.0_f32; 16];
-        let img = scrgb_to_sdr_skiv(&data, 2, 2, SkivParams::default());
-        assert_eq!(img.width(), 2);
-        let pixel = img.get_pixel(0, 0);
-        assert_eq!(pixel[0], 0);
-        assert_eq!(pixel[1], 0);
-        assert_eq!(pixel[2], 0);
-    }
-
-    #[test]
-    fn skiv_tonemap_compresses_hdr_highlights() {
-        let mut data = vec![0.0_f32; 16];
-        for px in 0..4 {
-            data[px * 4] = 10.0;
-            data[px * 4 + 1] = 10.0;
-            data[px * 4 + 2] = 10.0;
-            data[px * 4 + 3] = 1.0;
+    fn eetf_identity_when_source_equals_display() {
+        // when source peak == display peak, EETF should be the identity
+        // function across the full range — there's nothing to compress.
+        let lw = pq_for(250.0);
+        for nits in [10.0_f32, 50.0, 125.0, 200.0, 250.0] {
+            let e = pq_for(nits);
+            let out = bt2390_eetf_pq(e, lw, lw);
+            assert!((out - e).abs() < 1e-4, "{nits} nits: {e} -> {out}");
         }
-        let img = scrgb_to_sdr_skiv(&data, 2, 2, SkivParams::default());
-        let pixel = img.get_pixel(0, 0);
-        assert!(pixel[0] > 200, "highlight should stay bright: {}", pixel[0]);
-        assert!(pixel[0] < 255, "highlight should not clip to 255 immediately: {}", pixel[0]);
     }
 
     #[test]
-    fn skiv_preserves_low_luminance_signal() {
-        let mut data = vec![0.0_f32; 16];
-        for px in 0..4 {
-            data[px * 4] = 0.5;
-            data[px * 4 + 1] = 0.5;
-            data[px * 4 + 2] = 0.5;
-            data[px * 4 + 3] = 1.0;
+    fn eetf_caps_at_display_peak() {
+        let lw = pq_for(250.0);
+        for src_nits in [400.0_f32, 1000.0, 4000.0] {
+            let lc = pq_for(src_nits);
+            let out = bt2390_eetf_pq(lc, lw, lc);
+            assert!((out - lw).abs() < 1e-4, "src {src_nits}: {lc} -> {out}, want {lw}");
         }
-        let img = scrgb_to_sdr_skiv(&data, 2, 2, SkivParams::default());
-        let pixel = img.get_pixel(0, 0);
-        assert!(pixel[0] > 100 && pixel[0] < 220, "mid-grey landed at {}", pixel[0]);
     }
 
     #[test]
-    fn skiv_p99_ignores_extreme_outlier() {
-        let mut data = vec![0.0_f32; 400 * 4];
-        for px in 0..399 {
-            data[px * 4] = 1.0;
-            data[px * 4 + 1] = 1.0;
-            data[px * 4 + 2] = 1.0;
-            data[px * 4 + 3] = 1.0;
+    fn eetf_monotonic_for_typical_hdr() {
+        let lw = pq_for(250.0);
+        let lc = pq_for(1000.0);
+        let mut prev = -1.0;
+        for i in 0..=1000 {
+            let nits = i as f32 * 1.0; // 0..1000 nits in 1-nit steps
+            let e = pq_for(nits);
+            let out = bt2390_eetf_pq(e, lw, lc);
+            assert!(out >= prev - 1e-6, "non-monotonic at {nits} nits: {out} < {prev}");
+            prev = out;
+        }
+    }
+
+    #[test]
+    fn eetf_monotonic_for_extreme_hdr() {
+        let lw = pq_for(250.0);
+        let lc = pq_for(10000.0);
+        let mut prev = -1.0;
+        for i in 0..=10000 {
+            let nits = i as f32;
+            let e = pq_for(nits);
+            let out = bt2390_eetf_pq(e, lw, lc);
+            assert!(out >= prev - 1e-6, "non-monotonic at {nits} nits: {out} < {prev}");
+            prev = out;
+        }
+    }
+
+    #[test]
+    fn sdr_pixels_pass_through_on_hdr_display() {
+        // 100% SDR white at scRGB sdr/80 on a display configured for 250-nit
+        // SDR white. with source peak == display peak (no HDR content), the
+        // EETF is the identity, so SDR white lands at sRGB 255.
+        let sdr_white = 250.0;
+        let scrgb = solid(2, 2, sdr_white / 80.0, sdr_white / 80.0, sdr_white / 80.0);
+        let img = scrgb_to_sdr_bt2390(&scrgb, 2, 2, sdr_white, TonemapParams::default());
+        let p = img.get_pixel(0, 0);
+        assert!(p[0] >= 250 && p[1] >= 250 && p[2] >= 250, "SDR white clipped: {p:?}");
+    }
+
+    #[test]
+    fn sdr_mid_grey_lands_unchanged_on_hdr_display() {
+        // sRGB 50% grey is linear ~0.21. on a 250-nit-SDR-white HDR display
+        // that pixel arrives as scRGB ~0.674. after working-space normalization
+        // the pixel sits at linear ~0.21, and since the image has no HDR
+        // content (source peak == SDR white), the EETF is identity. round-trip
+        // back to sRGB should land at ~128.
+        let sdr_white = 250.0;
+        let linear_50 = 0.21586_f32;
+        let scrgb_val = linear_50 * sdr_white / 80.0;
+        let scrgb = solid(2, 2, scrgb_val, scrgb_val, scrgb_val);
+        let img = scrgb_to_sdr_bt2390(&scrgb, 2, 2, sdr_white, TonemapParams::default());
+        let p = img.get_pixel(0, 0);
+        assert!(p[0] >= 120 && p[0] <= 136, "expected ~128, got {}", p[0]);
+    }
+
+    #[test]
+    fn hdr_highlight_is_compressed_not_clipped() {
+        // bright HDR signal: scRGB 8.0 on an 80-nit display. before this
+        // change the highlight would crush to 255 because cml=PQ(8) compressed
+        // to dml=PQ(8) (i.e. the entire image was rescaled to fit). under
+        // the new EETF, an isolated bright pixel competes with the rest of
+        // the image; with every pixel at scRGB 8.0 the curve maps 8.0 -> 1.0
+        // (255). use a more representative mixed-luminance test instead.
+        let mut data = vec![0.0f32; 100 * 4];
+        for i in 0..99 {
+            data[i * 4] = 0.5;
+            data[i * 4 + 1] = 0.5;
+            data[i * 4 + 2] = 0.5;
+            data[i * 4 + 3] = 1.0;
+        }
+        // one outlier highlight at scRGB 8.0
+        data[99 * 4] = 8.0;
+        data[99 * 4 + 1] = 8.0;
+        data[99 * 4 + 2] = 8.0;
+        data[99 * 4 + 3] = 1.0;
+        let img = scrgb_to_sdr_bt2390(&data, 10, 10, 80.0, TonemapParams::default());
+        // outlier pixel: should be bright but not necessarily 255
+        let hi = img.get_pixel(9, 9);
+        assert!(hi[0] >= 200, "outlier highlight should stay bright: {}", hi[0]);
+        // mid-grey: should be unaffected (well below knee)
+        let lo = img.get_pixel(0, 0);
+        assert!(lo[0] > 100 && lo[0] < 220, "mid-grey moved: {}", lo[0]);
+    }
+
+    #[test]
+    fn outlier_doesnt_crush_image_when_p99_enabled() {
+        // 399 pixels at scRGB 1.0 + 1 pixel at scRGB 100.0. with p99 the
+        // source peak drops the outlier and the rest of the image isn't
+        // compressed by its presence.
+        let mut data = vec![0.0f32; 400 * 4];
+        for i in 0..399 {
+            data[i * 4] = 1.0;
+            data[i * 4 + 1] = 1.0;
+            data[i * 4 + 2] = 1.0;
+            data[i * 4 + 3] = 1.0;
         }
         data[399 * 4] = 100.0;
         data[399 * 4 + 1] = 100.0;
         data[399 * 4 + 2] = 100.0;
         data[399 * 4 + 3] = 1.0;
-        let p99 = compute_max_cll_scrgb(&data, true);
-        let p100 = compute_max_cll_scrgb(&data, false);
-        assert!(p99 < 5.0, "p99 should drop the outlier: {p99}");
-        assert!(p100 > 99.0, "p100 should include the outlier: {p100}");
+        let p99 = p99_max_rgb(&data, true);
+        let p100 = p99_max_rgb(&data, false);
+        assert!(p99 < 5.0, "p99 should drop outlier: {p99}");
+        assert!(p100 > 99.0, "p100 should include outlier: {p100}");
     }
 
     #[test]
-    fn test_hdr10_to_sdr() {
-        let pq_data: Vec<u16> = vec![32768, 32768, 32768, 65535];
-        let result = hdr10_to_sdr(&pq_data, 1, 1, 203.0);
-        assert_eq!(result.width(), 1);
+    fn hue_is_preserved_through_eetf() {
+        // a pure-red highlight at scRGB 4.0 should stay red after tonemapping
+        // — channel ratios must be invariant under the maxRGB EETF.
+        let scrgb = solid(2, 2, 4.0, 0.0, 0.0);
+        let img = scrgb_to_sdr_bt2390(&scrgb, 2, 2, 80.0, TonemapParams::default());
+        let p = img.get_pixel(0, 0);
+        assert!(p[0] > 200, "red channel should land bright: {}", p[0]);
+        assert_eq!(p[1], 0, "green channel must stay 0: {}", p[1]);
+        assert_eq!(p[2], 0, "blue channel must stay 0: {}", p[2]);
+    }
+
+    #[test]
+    fn high_sdr_white_doesnt_blow_out_sdr_content() {
+        // regression: bright HDR displays report sdr_white = 300-400 nits;
+        // an SDR pixel at scRGB 4.0 (320 nits) used to be treated as an
+        // HDR highlight and survived the tonemap above sRGB 200. with
+        // SDR-white normalization it sits at exactly 1.0 in working space
+        // and lands at output white without being further amplified.
+        let sdr_white = 320.0;
+        let scrgb = solid(2, 2, 4.0, 4.0, 4.0);
+        let img = scrgb_to_sdr_bt2390(&scrgb, 2, 2, sdr_white, TonemapParams::default());
+        let p = img.get_pixel(0, 0);
+        assert!(p[0] >= 250, "SDR white on bright display should land at 255: {p:?}");
+    }
+
+    #[test]
+    fn black_stays_black() {
+        let scrgb = solid(2, 2, 0.0, 0.0, 0.0);
+        let img = scrgb_to_sdr_bt2390(&scrgb, 2, 2, 250.0, TonemapParams::default());
+        let p = img.get_pixel(0, 0);
+        assert_eq!(p[0], 0);
+        assert_eq!(p[1], 0);
+        assert_eq!(p[2], 0);
+    }
+
+    #[test]
+    fn hdr10_roundtrip_does_not_panic() {
+        let pq: Vec<u16> = vec![32768, 32768, 32768, 65535];
+        let img = hdr10_to_sdr_bt2390(&pq, 1, 1, 250.0, TonemapParams::default());
+        assert_eq!(img.width(), 1);
+    }
+
+    #[test]
+    fn override_takes_precedence_over_detected_white() {
+        // detected 80, override 250: a pixel at scRGB 250/80 should land at
+        // output white because the override (not the detected value) drives
+        // the normalization.
+        let params = TonemapParams { sdr_white_nits_override: 250.0, ..TonemapParams::default() };
+        let scrgb = solid(2, 2, 250.0 / 80.0, 250.0 / 80.0, 250.0 / 80.0);
+        let img = scrgb_to_sdr_bt2390(&scrgb, 2, 2, 80.0, params);
+        let p = img.get_pixel(0, 0);
+        assert!(p[0] >= 250, "override-driven SDR white clipped: {p:?}");
     }
 }
