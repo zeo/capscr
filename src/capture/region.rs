@@ -5,17 +5,18 @@ use xcap::Monitor;
 use super::hdr::HdrCapture;
 use super::{Capture, Rectangle};
 
-// CAPSCR_HDR_AWARE=1 in the environment re-enables the DXGI Desktop
-// Duplication + tonemap path that was disabled in 0.3.58 after producing
-// zeroed textures on real user setups. cached at startup so per-capture
-// cost is one atomic load. unset/0 keeps the fast GDI BitBlt default —
-// what 0.3.49 and 0.3.58 shipped.
+// HDR-aware capture is now default-on when an HDR display is detected,
+// because tauri-cli was sanitising the CAPSCR_HDR_AWARE env var out of
+// the child process env so the opt-in gate never tripped. CAPSCR_HDR_AWARE=0
+// forces the fast GDI BitBlt fallback (overblown but instant) if the new
+// DXGI Desktop Duplication pipeline regresses on someone's hardware.
 fn hdr_aware_enabled() -> bool {
     use std::sync::OnceLock;
     static GATE: OnceLock<bool> = OnceLock::new();
     *GATE.get_or_init(|| {
         let raw = std::env::var("CAPSCR_HDR_AWARE").unwrap_or_else(|_| "<unset>".to_string());
-        let enabled = matches!(raw.trim(), "1" | "true" | "TRUE" | "on");
+        let forced_off = matches!(raw.trim(), "0" | "false" | "FALSE" | "off");
+        let enabled = !forced_off;
         tracing::info!(
             "CAPSCR_HDR_AWARE env var = {:?} -> hdr_aware_enabled = {}",
             raw,

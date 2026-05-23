@@ -44,7 +44,8 @@ mod engine {
     use windows::Win32::Media::Audio::XAudio2::{
         IXAudio2, IXAudio2MasteringVoice, IXAudio2SourceVoice, IXAudio2VoiceCallback,
         XAudio2CreateWithVersionInfo, XAUDIO2_BUFFER, XAUDIO2_COMMIT_NOW,
-        XAUDIO2_DEFAULT_PROCESSOR, XAUDIO2_END_OF_STREAM, XAUDIO2_VOICE_STATE,
+        XAUDIO2_DEFAULT_PROCESSOR, XAUDIO2_END_OF_STREAM, XAUDIO2_LOOP_INFINITE,
+        XAUDIO2_VOICE_STATE,
     };
     use windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
     use windows::Win32::Foundation::{RPC_E_CHANGED_MODE, S_FALSE};
@@ -63,8 +64,12 @@ mod engine {
         _mastering_voice: IXAudio2MasteringVoice,
         screenshot: Mutex<PreparedSound>,
         upload: Mutex<PreparedSound>,
-        keepalive: IXAudio2SourceVoice,
-        keepalive_silence: &'static [u8],
+        // held to keep the infinite-loop silence playing on the WASAPI
+        // output endpoint — dropping these would stop the keep-alive and
+        // re-introduce the 50-200 ms device-wake penalty on the first
+        // capture cue after the OS lets the endpoint idle.
+        _keepalive_voice: IXAudio2SourceVoice,
+        _keepalive_silence: &'static [u8],
     }
 
     // SAFETY: IXAudio2 + voices are COM objects documented to be safe to
@@ -82,50 +87,13 @@ mod engine {
             let result = init();
             let elapsed_ms = started.elapsed().as_millis();
             match &result {
-                Some(_) => {
-                    tracing::info!("xaudio2 engine init ok in {elapsed_ms}ms");
-                    // start the keep-alive heartbeat after init so the
-                    // global ENGINE OnceLock is populated and the thread
-                    // can resolve it.
-                    std::thread::spawn(keepalive_loop);
-                }
+                Some(_) => tracing::info!("xaudio2 engine init ok in {elapsed_ms}ms"),
                 None => tracing::warn!(
                     "xaudio2 engine init FAILED after {elapsed_ms}ms — sounds will be dropped"
                 ),
             }
             result
         });
-    }
-
-    // device keep-alive heartbeat. WASAPI shared-mode output devices sleep
-    // after ~5-10s of silence, and the first play after the device idles
-    // pays a 50-200ms wake penalty — that was the entire perceptible
-    // "sound is delayed" lag for capture cues that fire sporadically.
-    // submitting a near-silent buffer every 2 seconds keeps the device
-    // active. ENGINE lives forever in a OnceLock so referencing it from
-    // this thread is sound.
-    fn keepalive_loop() {
-        loop {
-            std::thread::sleep(std::time::Duration::from_millis(2000));
-            let Some(Some(engine)) = ENGINE.get() else { return };
-            let mut state = XAUDIO2_VOICE_STATE::default();
-            unsafe { engine.keepalive.GetState(&mut state, 0) };
-            if state.BuffersQueued > 0 {
-                continue;
-            }
-            let buffer = XAUDIO2_BUFFER {
-                Flags: XAUDIO2_END_OF_STREAM,
-                AudioBytes: engine.keepalive_silence.len() as u32,
-                pAudioData: engine.keepalive_silence.as_ptr(),
-                PlayBegin: 0,
-                PlayLength: 0,
-                LoopBegin: 0,
-                LoopLength: 0,
-                LoopCount: 0,
-                pContext: std::ptr::null_mut(),
-            };
-            let _ = unsafe { engine.keepalive.SubmitSourceBuffer(&buffer, None) };
-        }
     }
 
     pub fn play(sound: Sound) {
@@ -254,12 +222,32 @@ mod engine {
                 return None;
             }
 
-            // one frame of zeros is enough to keep the WASAPI device awake.
-            // leak the boxed slice so the pointer we hand XAUDIO2_BUFFER
-            // stays valid for the engine's lifetime (process lifetime).
-            let silence_bytes = (fmt.nBlockAlign as usize).max(4);
+            // a small slab of zeros (one WASAPI quantum's worth) queued on
+            // an XAUDIO2_LOOP_INFINITE loop keeps the shared-mode output
+            // device permanently scheduled — no idle, no wake penalty, no
+            // periodic heartbeat thread. ~10 ms at the default device rate
+            // is plenty. leak the boxed slice so the pointer we hand
+            // XAUDIO2_BUFFER stays valid for the engine's lifetime
+            // (process lifetime).
+            let quantum_frames = ((fmt.nSamplesPerSec as usize) / 100).max(64);
+            let silence_bytes = quantum_frames * (fmt.nBlockAlign as usize);
             let keepalive_silence: &'static [u8] =
                 Box::leak(vec![0u8; silence_bytes].into_boxed_slice());
+
+            let keepalive_buffer = XAUDIO2_BUFFER {
+                Flags: 0,
+                AudioBytes: keepalive_silence.len() as u32,
+                pAudioData: keepalive_silence.as_ptr(),
+                PlayBegin: 0,
+                PlayLength: 0,
+                LoopBegin: 0,
+                LoopLength: 0,
+                LoopCount: XAUDIO2_LOOP_INFINITE,
+                pContext: std::ptr::null_mut(),
+            };
+            if let Err(e) = keepalive_voice.SubmitSourceBuffer(&keepalive_buffer, None) {
+                tracing::warn!("keepalive infinite-loop submit failed: {e}");
+            }
 
             Some(Engine {
                 _xaudio2: xaudio2,
@@ -272,8 +260,8 @@ mod engine {
                     pcm: upload_pcm,
                     voice: upload_voice,
                 }),
-                keepalive: keepalive_voice,
-                keepalive_silence,
+                _keepalive_voice: keepalive_voice,
+                _keepalive_silence: keepalive_silence,
             })
         }
     }
