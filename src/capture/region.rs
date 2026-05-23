@@ -75,9 +75,34 @@ impl Capture for RegionCapture {
             hdr_avail,
             use_hdr,
         );
+
+        // selection bounds in virtual-screen coords. used to skip monitors
+        // that don't overlap the region — for a 100x331 region on monitor A,
+        // there's no point spending 500ms-2s capturing monitor B (especially
+        // when monitor B is 4K and would dominate the screenshot delay the
+        // user reported as "screenshot taking a while").
+        let region_x0 = self.region.x;
+        let region_y0 = self.region.y;
+        let region_x1 = self.region.x + self.region.width as i32;
+        let region_y1 = self.region.y + self.region.height as i32;
         let mut combined = RgbaImage::new(total_width, total_height);
 
         for monitor in &monitors {
+            // skip monitors entirely outside the selection region.
+            let mx0 = monitor.x();
+            let my0 = monitor.y();
+            let mx1 = mx0 + monitor.width() as i32;
+            let my1 = my0 + monitor.height() as i32;
+            let overlaps = mx0 < region_x1 && mx1 > region_x0
+                && my0 < region_y1 && my1 > region_y0;
+            if !overlaps {
+                tracing::info!(
+                    "RegionCapture: skipping non-overlapping monitor {}x{}+{}+{}",
+                    monitor.width(), monitor.height(), mx0, my0,
+                );
+                continue;
+            }
+
             let img_result: Result<RgbaImage> = if use_hdr {
                 let center = (
                     monitor.x() + (monitor.width() as i32) / 2,

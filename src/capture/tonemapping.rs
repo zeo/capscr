@@ -334,7 +334,13 @@ pub fn hlg_to_sdr_bt2390(
 }
 
 fn effective_sdr_white(detected_nits: f32, override_nits: f32) -> f32 {
-    let pick = if override_nits > 0.0 { override_nits } else { detected_nits };
+    // ignore the legacy 80.0 default that 0.3.53-era configs stamped into
+    // capture.hdr.brightness_nits — it would override the auto-detected
+    // SDR-white from DISPLAYCONFIG with the wrong value (80 instead of the
+    // user's actual ~240 nits) and re-introduce HDR overblowing. only an
+    // explicit override above 80 is treated as a real override now.
+    let real_override = override_nits > 80.5;
+    let pick = if real_override { override_nits } else { detected_nits };
     pick.max(80.0)
 }
 
