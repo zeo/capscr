@@ -3,28 +3,7 @@ use image::RgbaImage;
 use xcap::Monitor;
 
 use super::hdr::HdrCapture;
-use super::{Capture, Rectangle};
-
-// HDR-aware capture is now default-on when an HDR display is detected,
-// because tauri-cli was sanitising the CAPSCR_HDR_AWARE env var out of
-// the child process env so the opt-in gate never tripped. CAPSCR_HDR_AWARE=0
-// forces the fast GDI BitBlt fallback (overblown but instant) if the new
-// DXGI Desktop Duplication pipeline regresses on someone's hardware.
-fn hdr_aware_enabled() -> bool {
-    use std::sync::OnceLock;
-    static GATE: OnceLock<bool> = OnceLock::new();
-    *GATE.get_or_init(|| {
-        let raw = std::env::var("CAPSCR_HDR_AWARE").unwrap_or_else(|_| "<unset>".to_string());
-        let forced_off = matches!(raw.trim(), "0" | "false" | "FALSE" | "off");
-        let enabled = !forced_off;
-        tracing::info!(
-            "CAPSCR_HDR_AWARE env var = {:?} -> hdr_aware_enabled = {}",
-            raw,
-            enabled,
-        );
-        enabled
-    })
-}
+use super::{hdr_aware_enabled, Capture, Rectangle};
 
 pub struct RegionCapture {
     region: Rectangle,

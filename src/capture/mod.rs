@@ -28,6 +28,24 @@ pub fn current_tonemap_params() -> TonemapParams {
     TONEMAP_OVERRIDE.get().copied().unwrap_or_default()
 }
 
+// HDR-aware capture gate, shared by all capture entry points (region,
+// screen, active-monitor, overlay preview). default-on when an HDR display
+// is present; CAPSCR_HDR_AWARE=0 forces the GDI BitBlt fallback.
+pub fn hdr_aware_enabled() -> bool {
+    static GATE: OnceLock<bool> = OnceLock::new();
+    *GATE.get_or_init(|| {
+        let raw = std::env::var("CAPSCR_HDR_AWARE").unwrap_or_else(|_| "<unset>".to_string());
+        let forced_off = matches!(raw.trim(), "0" | "false" | "FALSE" | "off");
+        let enabled = !forced_off;
+        tracing::info!(
+            "CAPSCR_HDR_AWARE env var = {:?} -> hdr_aware_enabled = {}",
+            raw,
+            enabled,
+        );
+        enabled
+    })
+}
+
 use anyhow::Result;
 use image::RgbaImage;
 
