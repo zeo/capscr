@@ -151,13 +151,19 @@ fn p99_max_rgb(working: &[f32], use_p99: bool) -> f32 {
     if samples.is_empty() {
         return 1.0;
     }
-    samples.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    let idx = if use_p99 {
+    // quickselect-based percentile picker — O(n) instead of O(n log n).
+    // sorting 8M+ samples for every 4K HDR capture was multi-second on the
+    // user's machine and the dominant slice of "huge delay when pressing
+    // my screenshot key" (0.3.55 report).
+    let target_idx = if use_p99 {
         ((samples.len() as f32 - 1.0) * 0.99).round() as usize
     } else {
         samples.len() - 1
     };
-    samples[idx.min(samples.len() - 1)].max(1.0)
+    let idx = target_idx.min(samples.len() - 1);
+    let (_, nth, _) = samples
+        .select_nth_unstable_by(idx, |a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    nth.max(1.0)
 }
 
 pub fn scrgb_to_sdr_bt2390(
@@ -207,14 +213,31 @@ pub fn scrgb_to_sdr_bt2390(
     let l_src = p99_max_rgb(&working, params.use_p99_max_cll);
     let needs_compression = l_src > 1.0 + 1e-4;
 
-    tracing::debug!(
-        "tonemap: {}x{} sdr_white={:.0}nits l_src={:.3} (peak {:.0}nits) compress={}",
+    // diagnostic: sample 8 pixels spread across the frame so we can verify
+    // the decode pipeline actually delivers HDR values (and isn't silently
+    // producing all-zero output). re-demote to debug once HDR captures are
+    // visually confirmed end-to-end.
+    let mut sample_str = String::new();
+    let stride = (pixel_count / 8).max(1);
+    for k in 0..8 {
+        let i = (k * stride).min(pixel_count - 1);
+        let r = scrgb[i * 4];
+        let g = scrgb[i * 4 + 1];
+        let b = scrgb[i * 4 + 2];
+        sample_str.push_str(&format!(
+            " [{}: scRGB={:.2},{:.2},{:.2}]",
+            i, r, g, b
+        ));
+    }
+    tracing::info!(
+        "tonemap: {}x{} sdr_white={:.0}nits l_src={:.3} (peak {:.0}nits) compress={} samples:{}",
         width,
         height,
         sdr_white,
         l_src,
         l_src * sdr_white,
         needs_compression,
+        sample_str,
     );
 
     let mut out = RgbaImage::new(width, height);
