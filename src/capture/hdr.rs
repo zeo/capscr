@@ -7,6 +7,60 @@ use super::current_tonemap_params;
 const MAX_HDR_DIMENSION: u32 = 16384;
 const MAX_HDR_PIXELS: usize = 256 * 1024 * 1024;
 
+// IEEE 754 binary16 -> binary32 conversion. used to decode scRGB pixels from
+// the DXGI desktop duplication texture (R16G16B16A16_FLOAT). manual unpack
+// to avoid pulling in the `half` crate for one function.
+fn f16_to_f32(bits: u16) -> f32 {
+    let sign = ((bits >> 15) & 0x1) as u32;
+    let exp = ((bits >> 10) & 0x1F) as u32;
+    let mant = (bits & 0x3FF) as u32;
+    let out_bits: u32 = if exp == 0 {
+        if mant == 0 {
+            sign << 31
+        } else {
+            // subnormal -> normalize
+            let mut m = mant;
+            let mut e: i32 = 1;
+            while (m & 0x400) == 0 {
+                m <<= 1;
+                e -= 1;
+            }
+            m &= 0x3FF;
+            (sign << 31) | (((e + 127 - 15) as u32) << 23) | (m << 13)
+        }
+    } else if exp == 0x1F {
+        // inf / nan
+        (sign << 31) | (0xFF << 23) | (mant << 13)
+    } else {
+        // normal
+        (sign << 31) | (((exp + 127 - 15) as u32) << 23) | (mant << 13)
+    };
+    f32::from_bits(out_bits)
+}
+
+#[cfg(test)]
+mod f16_tests {
+    use super::f16_to_f32;
+    #[test]
+    fn zero() { assert_eq!(f16_to_f32(0x0000), 0.0); }
+    #[test]
+    fn one() { assert!((f16_to_f32(0x3C00) - 1.0).abs() < 1e-6); }
+    #[test]
+    fn two() { assert!((f16_to_f32(0x4000) - 2.0).abs() < 1e-6); }
+    #[test]
+    fn negative_one() { assert!((f16_to_f32(0xBC00) - -1.0).abs() < 1e-6); }
+    #[test]
+    fn half() { assert!((f16_to_f32(0x3800) - 0.5).abs() < 1e-6); }
+    #[test]
+    fn srgb_white_on_hdr_display_via_scrgb() {
+        // 3.125 in half-float (scRGB value for SDR-white at 250 nits)
+        // 3.125 = 1.5625 * 2^1 -> half-float bits: sign=0 exp=16 (1+15) mant=0x240
+        let bits = 0x4240;
+        let v = f16_to_f32(bits);
+        assert!((v - 3.125).abs() < 1e-3, "{v}");
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HdrFormat {
     Sdr,
@@ -151,29 +205,57 @@ impl HdrCapture {
 
         match format {
             HdrFormat::ScRgb => {
-                let expected_bytes = pixel_count.saturating_mul(16);
+                // DXGI desktop duplication delivers scRGB as R16G16B16A16_FLOAT
+                // (IEEE 754 binary16 half-floats), 8 bytes per pixel. previously
+                // we expected 16 bytes/pixel (R32G32B32A32) and the length check
+                // returned a blank RgbaImage for every HDR capture — that's
+                // what produced the all-black screenshot in 0.3.54.
+                let expected_bytes = pixel_count.saturating_mul(8);
                 if raw_data.len() < expected_bytes {
+                    tracing::warn!(
+                        "scrgb capture: raw_data {} bytes < expected {}",
+                        raw_data.len(),
+                        expected_bytes
+                    );
                     return RgbaImage::new(width, height);
                 }
-                let float_data: Vec<f32> = raw_data
-                    .chunks_exact(4)
+                let float_data: Vec<f32> = raw_data[..expected_bytes]
+                    .chunks_exact(2)
                     .map(|chunk| {
-                        let bytes = [chunk[0], chunk[1], chunk[2], chunk[3]];
-                        let val = f32::from_le_bytes(bytes);
-                        if val.is_finite() { val } else { 0.0 }
+                        let bits = u16::from_le_bytes([chunk[0], chunk[1]]);
+                        let v = f16_to_f32(bits);
+                        if v.is_finite() { v } else { 0.0 }
                     })
                     .collect();
                 scrgb_to_sdr_bt2390(&float_data, width, height, sdr_white, params)
             }
             HdrFormat::Hdr10 => {
-                let expected_bytes = pixel_count.saturating_mul(8);
+                // DXGI desktop duplication delivers HDR10 as R10G10B10A2_UNORM,
+                // 4 bytes per pixel, packed: r=bits 0-9, g=10-19, b=20-29, a=30-31.
+                // unpack into PQ-normalized u16 quads for hdr10_to_sdr_bt2390.
+                let expected_bytes = pixel_count.saturating_mul(4);
                 if raw_data.len() < expected_bytes {
+                    tracing::warn!(
+                        "hdr10 capture: raw_data {} bytes < expected {}",
+                        raw_data.len(),
+                        expected_bytes
+                    );
                     return RgbaImage::new(width, height);
                 }
-                let u16_data: Vec<u16> = raw_data
-                    .chunks_exact(2)
-                    .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
-                    .collect();
+                let mut u16_data: Vec<u16> = Vec::with_capacity(pixel_count * 4);
+                for chunk in raw_data[..expected_bytes].chunks_exact(4) {
+                    let packed = u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+                    let r = (packed & 0x3FF) as u16; // 10 bits
+                    let g = ((packed >> 10) & 0x3FF) as u16;
+                    let b = ((packed >> 20) & 0x3FF) as u16;
+                    let a = ((packed >> 30) & 0x3) as u16; // 2 bits
+                    // hdr10_to_sdr_bt2390 normalises by 65535.0, so map our
+                    // 10-bit and 2-bit channels into the 16-bit space.
+                    u16_data.push(r << 6 | r >> 4); // 10-bit -> 16-bit via bit replication
+                    u16_data.push(g << 6 | g >> 4);
+                    u16_data.push(b << 6 | b >> 4);
+                    u16_data.push((a * 0x5555) & 0xFFFF); // 2-bit -> 16-bit via repeat
+                }
                 hdr10_to_sdr_bt2390(&u16_data, width, height, sdr_white, params)
             }
             HdrFormat::Hlg => {
@@ -527,7 +609,10 @@ mod windows_hdr {
                 _ => HdrFormat::Sdr,
             };
 
-            tracing::debug!(
+            // kept at info temporarily for 0.3.55 — re-demote to debug once
+            // the user has confirmed the half-float decode actually delivers
+            // the expected HDR pixels on their display.
+            tracing::info!(
                 "capture_hdr_screen: {}x{} dxgi_format={:?} -> {:?}",
                 width,
                 height,
