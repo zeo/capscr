@@ -1,6 +1,6 @@
 [package]
 name = "capscr"
-version = "0.3.69"
+version = "0.3.70"
 edition = "2021"
 description = "Fast HDR-aware Windows screen capture — tray-first, signed updates, no telemetry."
 authors = ["rot <96458554+rotlove@users.noreply.github.com>"]
@@ -125,6 +125,9 @@ windows = { version = "0.58", features = [
     "Win32_System_Com",
     "Win32_System_Com_StructuredStorage",
     "Win32_System_Variant",
+    "Win32_System_WinRT",
+    "Win32_System_WinRT_Direct3D11",
+    "Win32_System_WinRT_Graphics_Capture",
     "Win32_Graphics_Gdi",
     "Win32_Graphics_Dxgi",
     "Win32_Graphics_Dxgi_Common",
