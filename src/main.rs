@@ -64,7 +64,10 @@ fn main() {
     #[cfg(windows)]
     win_darkmode::enable_dark_menus();
     tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env())
+        .with_env_filter(
+            EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| EnvFilter::new("info,wry=warn,tao=warn,tauri=warn,hyper=warn,reqwest=warn")),
+        )
         .init();
 
     let config = config::Config::load().unwrap_or_default();

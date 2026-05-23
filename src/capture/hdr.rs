@@ -78,10 +78,14 @@ impl HdrCapture {
             let hdr_info = Self::get_display_hdr_info()?;
 
             if !hdr_info.is_hdr_enabled {
+                tracing::debug!("capture_with_hdr_at: hdr not enabled, falling back to SDR");
                 return Ok((self.capture_sdr_fallback_at(target)?, None));
             }
 
-            let (raw_data, width, height, format) = self.capture_raw(target)?;
+            let (raw_data, width, height, format) = self.capture_raw(target).map_err(|e| {
+                tracing::warn!("capture_with_hdr_at: capture_raw failed — falling back: {e:#}");
+                e
+            })?;
 
             if width == 0 || height == 0 {
                 return Err(anyhow!("Invalid capture dimensions"));
@@ -251,6 +255,13 @@ mod windows_hdr {
                                         }
                                     });
 
+                                tracing::debug!(
+                                    "hdr display info: colorspace={} sdr_white={:.0}nits max_lum={:.0}nits dxgi_max_full_frame={:.0}nits",
+                                    color_space.0,
+                                    sdr_white_level,
+                                    desc1.MaxLuminance,
+                                    desc1.MaxFullFrameLuminance,
+                                );
                                 return Ok(HdrDisplayInfo {
                                     is_hdr_enabled: true,
                                     format: match color_space.0 {
@@ -393,7 +404,8 @@ mod windows_hdr {
     pub fn capture_hdr_screen(
         target: Option<(i32, i32)>,
     ) -> Result<(Vec<u8>, u32, u32, HdrFormat)> {
-        use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_HARDWARE;
+        tracing::debug!("capture_hdr_screen: entering with target={target:?}");
+        use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_UNKNOWN;
         use windows::Win32::Graphics::Direct3D11::{
             D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext, ID3D11Texture2D,
             D3D11_CPU_ACCESS_READ, D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_MAP_READ,
@@ -428,9 +440,14 @@ mod windows_hdr {
             let mut device: Option<ID3D11Device> = None;
             let mut context: Option<ID3D11DeviceContext> = None;
 
+            // when pAdapter is non-null, DriverType MUST be UNKNOWN — passing
+            // HARDWARE returns E_INVALIDARG, which we silently swallowed all
+            // through 0.3.50–0.3.53 and fell back to xcap GDI BitBlt, which
+            // clips HDR luminance to 8-bit sRGB. that's the root cause of
+            // every "still overblown" HDR capture the user reported.
             D3D11CreateDevice(
                 &adapter,
-                D3D_DRIVER_TYPE_HARDWARE,
+                D3D_DRIVER_TYPE_UNKNOWN,
                 None,
                 D3D11_CREATE_DEVICE_BGRA_SUPPORT,
                 None,
@@ -509,6 +526,14 @@ mod windows_hdr {
                 DXGI_FORMAT_R10G10B10A2_UNORM => HdrFormat::Hdr10,
                 _ => HdrFormat::Sdr,
             };
+
+            tracing::debug!(
+                "capture_hdr_screen: {}x{} dxgi_format={:?} -> {:?}",
+                width,
+                height,
+                tex_desc.Format,
+                hdr_format,
+            );
 
             let bytes_per_pixel = get_bytes_per_pixel(tex_desc.Format);
 

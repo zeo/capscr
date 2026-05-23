@@ -2,6 +2,7 @@ use anyhow::{anyhow, Result};
 use image::RgbaImage;
 use xcap::Monitor;
 
+use super::hdr::HdrCapture;
 use super::{Capture, Rectangle};
 
 pub struct RegionCapture {
@@ -51,10 +52,33 @@ impl Capture for RegionCapture {
         let total_width = (max_x - min_x) as u32;
         let total_height = (max_y - min_y) as u32;
 
+        // when any monitor in the desktop has HDR enabled, GDI BitBlt
+        // (xcap::Monitor::capture_image's default path on Windows) hands
+        // back the SDR-clipped composition of HDR pixels — magenta/cyan
+        // HDR highlights crush to pure 255-channel sRGB and the result
+        // looks blown out. take the slower HDR-aware path on a per-monitor
+        // basis: HdrCapture uses DXGI Desktop Duplication, then runs the
+        // BT.2390 tonemap so the captured pixels match what the user
+        // perceives on screen.
+        let any_hdr = HdrCapture::is_hdr_available();
+
         let mut combined = RgbaImage::new(total_width, total_height);
 
         for monitor in &monitors {
-            if let Ok(img) = monitor.capture_image() {
+            let img_result = if any_hdr {
+                let center = (
+                    monitor.x() + (monitor.width() as i32) / 2,
+                    monitor.y() + (monitor.height() as i32) / 2,
+                );
+                HdrCapture::new()
+                    .capture_with_hdr_at(Some(center))
+                    .map(|(img, _)| img)
+                    .or_else(|_| monitor.capture_image().map_err(|e| anyhow!("{e}")))
+            } else {
+                monitor.capture_image().map_err(|e| anyhow!("{e}"))
+            };
+
+            if let Ok(img) = img_result {
                 let offset_x = (monitor.x() - min_x) as u32;
                 let offset_y = (monitor.y() - min_y) as u32;
 

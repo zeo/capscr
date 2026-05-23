@@ -39,13 +39,15 @@ mod engine {
     use super::Sound;
     use std::sync::{Mutex, OnceLock};
     use windows::Win32::Media::Audio::{
-        AudioCategory_GameEffects, WAVEFORMATEX, WAVE_FORMAT_PCM,
+        AudioCategory_SoundEffects, WAVEFORMATEX, WAVE_FORMAT_PCM,
     };
     use windows::Win32::Media::Audio::XAudio2::{
         IXAudio2, IXAudio2MasteringVoice, IXAudio2SourceVoice, IXAudio2VoiceCallback,
         XAudio2CreateWithVersionInfo, XAUDIO2_BUFFER, XAUDIO2_COMMIT_NOW,
         XAUDIO2_DEFAULT_PROCESSOR, XAUDIO2_END_OF_STREAM, XAUDIO2_VOICE_STATE,
     };
+    use windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
+    use windows::Win32::Foundation::{RPC_E_CHANGED_MODE, S_FALSE};
 
     // NTDDI_WIN8 = 0x06020000 — XAudio2 ships in Windows 8+, and the
     // 2.8 DLL (xaudio2_8.dll) is the one bound by the windows crate.
@@ -151,6 +153,18 @@ mod engine {
         }
 
         unsafe {
+            // XAudio2's CreateMasteringVoice internally uses WASAPI, which
+            // requires the calling thread to have COM initialized. our warm-
+            // up thread is fresh, so initialise here with MTA — that's also
+            // what tauri's main thread uses, so subsequent voice calls from
+            // any thread are happy. RPC_E_CHANGED_MODE / S_FALSE mean COM is
+            // already initialised in a different/same mode, both fine.
+            let co = CoInitializeEx(None, COINIT_MULTITHREADED);
+            if co.is_err() && co != RPC_E_CHANGED_MODE && co != S_FALSE {
+                tracing::warn!("CoInitializeEx failed: {co:?}");
+                return None;
+            }
+
             let mut xaudio2_opt: Option<IXAudio2> = None;
             if let Err(e) = XAudio2CreateWithVersionInfo(
                 &mut xaudio2_opt,
@@ -165,7 +179,10 @@ mod engine {
 
             // mastering voice: input-channels=0 and input-rate=0 mean
             // "match the default device", letting XAudio2 pick whatever the
-            // OS-selected output endpoint runs at.
+            // OS-selected output endpoint runs at. category is SoundEffects
+            // (UI feedback) so we skip xbox game-bar's game-stream pipeline
+            // that GameEffects routes through — that pipeline adds noticeable
+            // latency to short cues on Win10/Win11.
             let mut mastering_opt: Option<IXAudio2MasteringVoice> = None;
             if let Err(e) = xaudio2.CreateMasteringVoice(
                 &mut mastering_opt,
@@ -174,7 +191,7 @@ mod engine {
                 0,
                 windows::core::PCWSTR::null(),
                 None,
-                AudioCategory_GameEffects,
+                AudioCategory_SoundEffects,
             ) {
                 tracing::warn!("CreateMasteringVoice failed: {e}");
                 return None;
@@ -256,7 +273,40 @@ mod engine {
                     });
                 }
                 b"data" => {
-                    pcm = Some(payload);
+                    // trim leading near-silence so the cue is audible
+                    // immediately after SubmitSourceBuffer. both bundled WAVs
+                    // ship with ~35-60ms of dead air at the start, which on
+                    // top of WASAPI shared-mode quantum is the entire
+                    // perceptible "sound is delayed" lag the user reports.
+                    // assumption: 16-bit PCM (asserted at engine init).
+                    if let Some(f) = fmt.as_ref() {
+                        let bytes_per_frame =
+                            (f.nChannels as usize) * (f.wBitsPerSample as usize / 8);
+                        if bytes_per_frame > 0 && f.wBitsPerSample == 16 {
+                            const SILENCE_THRESHOLD_I16: i16 = 200; // ~ -44 dBFS
+                            let mut offset = 0usize;
+                            while offset + bytes_per_frame <= payload.len() {
+                                let mut any_loud = false;
+                                for ch in 0..f.nChannels as usize {
+                                    let so = offset + ch * 2;
+                                    let s = i16::from_le_bytes([payload[so], payload[so + 1]]);
+                                    if s.unsigned_abs() > SILENCE_THRESHOLD_I16 as u16 {
+                                        any_loud = true;
+                                        break;
+                                    }
+                                }
+                                if any_loud {
+                                    break;
+                                }
+                                offset += bytes_per_frame;
+                            }
+                            pcm = Some(&payload[offset..]);
+                        } else {
+                            pcm = Some(payload);
+                        }
+                    } else {
+                        pcm = Some(payload);
+                    }
                 }
                 _ => {}
             }

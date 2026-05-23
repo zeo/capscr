@@ -1,14 +1,22 @@
 // HDR -> SDR tonemap pipeline.
 //
-// the runtime tonemap is a per-pixel maxRGB BT.2390 EETF operating in
-// PQ-encoded space. inputs are normalized so the OS-reported SDR white
-// level maps to 1.0 in working space; the source peak (p99 of maxRGB) is
-// PQ-encoded and used as the EETF's Lc; the SDR-white target is the EETF's
-// Lw. the cubic Hermite knee starts at KS = 1.5·Lw - 0.5·Lc (in absolute
-// PQ), so SDR-range pixels pass through nearly untouched while HDR
-// highlights are smoothly rolled off. monotonic by construction because PQ
-// compresses bright values into a small fraction of the [0,1] range, which
-// keeps the cubic well-behaved no matter how bright the source.
+// the runtime tonemap is per-pixel maxRGB Reinhard-extended:
+//   y(x) = x · (1 + x/w²) / (1 + x)        where w = scene peak in working space.
+// when w = 1 (no HDR content) it reduces to the identity, so pure SDR
+// captures pass through pixel-perfect. when w > 1 (HDR highlights present)
+// it compresses the whole range so the peak lands at output white and
+// brighter inputs stay distinctly brighter on output — the camera-like
+// "global tonemap" behaviour. BT.2390 was tried first; it preserves SDR
+// midtones better but maps everything brighter than display white into a
+// tiny band near peak, so a 300-nit pixel and a 1500-nit pixel landed
+// within a few sRGB steps of each other and the user reported all bright
+// HDR content looking identically blown out. Reinhard-extended trades a
+// little SDR-midtone brightness for a usefully wider HDR rolloff range.
+//
+// inputs are first rescaled so the OS-reported SDR white level maps to 1.0
+// in working space — that way SDR-on-HDR pixels sit at exactly 1.0 and the
+// p99 of maxRGB is 1.0 whenever there is no HDR content, which makes the
+// tonemap the identity and preserves SDR pixel-for-pixel.
 
 use image::{Rgba, RgbaImage};
 
@@ -104,57 +112,27 @@ fn pq_to_linear_norm(pq: f32) -> f32 {
     (num / den).powf(1.0 / PQ_N)
 }
 
-// BT.2390 EETF: maps PQ-encoded source pixel to PQ-encoded display pixel.
-//   e1: input PQ value (in [0, lc_pq])
-//   lw_pq: display peak in PQ
-//   lc_pq: source peak in PQ (>= lw_pq)
-// returns: tonemapped PQ value (in [0, lw_pq])
-fn bt2390_eetf_pq(e1: f32, lw_pq: f32, lc_pq: f32) -> f32 {
-    if lc_pq <= 0.0 {
+// Reinhard-extended global tonemap. monotonic, smooth, identity when
+// l_src == 1.0 (no HDR content), maps l_src -> 1.0 exactly.
+fn reinhard_extended(x: f32, l_src: f32) -> f32 {
+    let w2 = l_src * l_src;
+    if w2 <= f32::EPSILON {
         return 0.0;
     }
-    // normalize so source peak is 1.0 in working space
-    let e1n = (e1 / lc_pq).clamp(0.0, 1.0);
-    let lw_n = (lw_pq / lc_pq).clamp(0.0, 1.0);
-    let ks = (1.5 * lw_n - 0.5).max(0.0);
-    let e2n = if e1n < ks || (1.0 - ks) <= f32::EPSILON {
-        e1n
-    } else {
-        let t = (e1n - ks) / (1.0 - ks);
-        let t2 = t * t;
-        let t3 = t2 * t;
-        let h00 = 2.0 * t3 - 3.0 * t2 + 1.0;
-        let h10 = t3 - 2.0 * t2 + t;
-        let h01 = -2.0 * t3 + 3.0 * t2;
-        h00 * ks + h10 * (1.0 - ks) + h01 * lw_n
-    };
-    (e2n * lc_pq).clamp(0.0, lw_pq)
+    let y = x * (1.0 + x / w2) / (1.0 + x);
+    y.clamp(0.0, 1.0)
 }
 
-// per-pixel hue-preserving tonemap: compress maxRGB through the EETF in PQ
-// space, then scale all three channels by the same ratio. this is the
-// maxRGB flavour recommended by ITU-R BT.2390 for content where chroma
-// fidelity matters more than perfect luminance reproduction — the right
-// trade for screen-capture content (UI, text, photos).
-fn tonemap_pixel(
-    r: f32,
-    g: f32,
-    b: f32,
-    sdr_white_nits: f32,
-    lw_pq: f32,
-    lc_pq: f32,
-) -> (f32, f32, f32) {
+// per-pixel hue-preserving tonemap: compress maxRGB, then scale all three
+// channels by the same ratio. the maxRGB approach preserves channel ratios
+// (hence hue and chroma) at the cost of slightly desaturating very bright
+// highlights — the right trade for screen-capture content.
+fn tonemap_pixel(r: f32, g: f32, b: f32, l_src: f32) -> (f32, f32, f32) {
     let m = r.max(g).max(b);
     if m <= f32::EPSILON {
         return (0.0, 0.0, 0.0);
     }
-    // working space (1.0 = SDR white) -> absolute PQ
-    let m_nits = m * sdr_white_nits;
-    let m_pq = linear_to_pq_norm(m_nits / 10000.0);
-    let out_pq = bt2390_eetf_pq(m_pq, lw_pq, lc_pq);
-    let out_nits = pq_to_linear_norm(out_pq) * 10000.0;
-    // absolute nits -> working space
-    let m_out = out_nits / sdr_white_nits;
+    let m_out = reinhard_extended(m, l_src);
     let scale = m_out / m;
     (r * scale, g * scale, b * scale)
 }
@@ -229,15 +207,15 @@ pub fn scrgb_to_sdr_bt2390(
     let l_src = p99_max_rgb(&working, params.use_p99_max_cll);
     let needs_compression = l_src > 1.0 + 1e-4;
 
-    // pre-compute PQ peaks. lc_pq is the source content peak (p99 maxRGB);
-    // lw_pq is the display SDR-white target. both expressed against the PQ
-    // reference of 10000 nits.
-    let lw_pq = linear_to_pq_norm(sdr_white / 10000.0);
-    let lc_pq = if needs_compression {
-        linear_to_pq_norm((l_src * sdr_white).min(10000.0) / 10000.0)
-    } else {
-        lw_pq
-    };
+    tracing::debug!(
+        "tonemap: {}x{} sdr_white={:.0}nits l_src={:.3} (peak {:.0}nits) compress={}",
+        width,
+        height,
+        sdr_white,
+        l_src,
+        l_src * sdr_white,
+        needs_compression,
+    );
 
     let mut out = RgbaImage::new(width, height);
     for y in 0..height {
@@ -249,7 +227,7 @@ pub fn scrgb_to_sdr_bt2390(
             let a = working[idx + 3];
 
             let (r_tm, g_tm, b_tm) = if needs_compression {
-                tonemap_pixel(r, g, b, sdr_white, lw_pq, lc_pq)
+                tonemap_pixel(r, g, b, l_src)
             } else {
                 (r, g, b)
             };
@@ -366,53 +344,49 @@ mod tests {
     }
 
     #[test]
-    fn eetf_identity_when_source_equals_display() {
-        // when source peak == display peak, EETF should be the identity
-        // function across the full range — there's nothing to compress.
-        let lw = pq_for(250.0);
-        for nits in [10.0_f32, 50.0, 125.0, 200.0, 250.0] {
-            let e = pq_for(nits);
-            let out = bt2390_eetf_pq(e, lw, lw);
-            assert!((out - e).abs() < 1e-4, "{nits} nits: {e} -> {out}");
+    fn reinhard_identity_when_no_hdr() {
+        // when l_src == 1.0 (no HDR content), Reinhard-extended reduces
+        // to y(x) = x · (1 + x) / (1 + x) = x exactly. SDR captures must
+        // pass through unchanged.
+        for x in [0.0_f32, 0.25, 0.5, 0.75, 1.0] {
+            let y = reinhard_extended(x, 1.0);
+            assert!((y - x).abs() < 1e-5, "{x} -> {y} (should be identity)");
         }
     }
 
     #[test]
-    fn eetf_caps_at_display_peak() {
-        let lw = pq_for(250.0);
-        for src_nits in [400.0_f32, 1000.0, 4000.0] {
-            let lc = pq_for(src_nits);
-            let out = bt2390_eetf_pq(lc, lw, lc);
-            assert!((out - lw).abs() < 1e-4, "src {src_nits}: {lc} -> {out}, want {lw}");
+    fn reinhard_maps_peak_to_one() {
+        // by construction, reinhard_extended(l_src, l_src) == 1.0.
+        for w in [1.0_f32, 1.5, 2.0, 4.0, 8.0, 18.75] {
+            let y = reinhard_extended(w, w);
+            assert!((y - 1.0).abs() < 1e-4, "peak {w} -> {y}");
         }
     }
 
     #[test]
-    fn eetf_monotonic_for_typical_hdr() {
-        let lw = pq_for(250.0);
-        let lc = pq_for(1000.0);
-        let mut prev = -1.0;
-        for i in 0..=1000 {
-            let nits = i as f32 * 1.0; // 0..1000 nits in 1-nit steps
-            let e = pq_for(nits);
-            let out = bt2390_eetf_pq(e, lw, lc);
-            assert!(out >= prev - 1e-6, "non-monotonic at {nits} nits: {out} < {prev}");
-            prev = out;
+    fn reinhard_monotonic_for_all_inputs() {
+        let mut prev = -1.0_f32;
+        for i in 0..=2000 {
+            let x = i as f32 * 0.01;
+            let y = reinhard_extended(x, 18.75);
+            assert!(y >= prev - 1e-6, "non-monotonic at {x}: {y} < {prev}");
+            prev = y;
         }
     }
 
     #[test]
-    fn eetf_monotonic_for_extreme_hdr() {
-        let lw = pq_for(250.0);
-        let lc = pq_for(10000.0);
-        let mut prev = -1.0;
-        for i in 0..=10000 {
-            let nits = i as f32;
-            let e = pq_for(nits);
-            let out = bt2390_eetf_pq(e, lw, lc);
-            assert!(out >= prev - 1e-6, "non-monotonic at {nits} nits: {out} < {prev}");
-            prev = out;
-        }
+    fn reinhard_differentiates_wcg_and_hdr() {
+        // headline regression: a 300-nit "WCG" pixel and a 1000-nit "HDR"
+        // pixel must encode to distinctly different sRGB values, not both
+        // clamp to 255. previously BT.2390 mapped both into a ~5-step band
+        // near display white.
+        let wcg = reinhard_extended(1.2, 4.0); // 300 nits / 250 sdr-white
+        let hdr = reinhard_extended(4.0, 4.0); // 1000 nits / 250 sdr-white
+        assert!(
+            hdr - wcg > 0.1,
+            "WCG {wcg:.3} vs HDR {hdr:.3} — must differ by >0.1 in linear (~25 sRGB steps)"
+        );
+        assert!((hdr - 1.0).abs() < 1e-4, "HDR peak must hit 1.0 exactly: {hdr}");
     }
 
     #[test]
