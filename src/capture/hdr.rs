@@ -522,11 +522,12 @@ mod windows_hdr {
             D3D11_MAPPED_SUBRESOURCE, D3D11_SDK_VERSION, D3D11_TEXTURE2D_DESC, D3D11_USAGE_STAGING,
         };
         use windows::Win32::Graphics::Dxgi::{
-            IDXGIOutput1, IDXGIResource, IDXGIOutputDuplication, DXGI_OUTDUPL_FRAME_INFO,
-            DXGI_ERROR_ACCESS_LOST, DXGI_ERROR_WAIT_TIMEOUT,
+            IDXGIOutput1, IDXGIOutput5, IDXGIResource, IDXGIOutputDuplication,
+            DXGI_OUTDUPL_FRAME_INFO, DXGI_ERROR_ACCESS_LOST, DXGI_ERROR_WAIT_TIMEOUT,
         };
         use windows::Win32::Graphics::Dxgi::Common::{
-            DXGI_FORMAT_R10G10B10A2_UNORM, DXGI_FORMAT_R16G16B16A16_FLOAT,
+            DXGI_FORMAT, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_R10G10B10A2_UNORM,
+            DXGI_FORMAT_R16G16B16A16_FLOAT,
         };
 
         struct FrameGuard<'a> {
@@ -570,15 +571,49 @@ mod windows_hdr {
             let device = device.ok_or_else(|| anyhow!("Failed to create D3D11 device"))?;
             let context = context.ok_or_else(|| anyhow!("Failed to get device context"))?;
 
-            let mut duplication = match output1.DuplicateOutput(&device) {
+            // prefer IDXGIOutput5::DuplicateOutput1 with an HDR-first format
+            // list so DXGI hands us R16G16B16A16_FLOAT (scRGB) on HDR
+            // displays instead of B8G8R8A8_UNORM (already-tonemapped SDR).
+            // when the user reported "still overblown" through 0.3.55-0.3.64,
+            // the cause was that IDXGIOutput1::DuplicateOutput was giving
+            // us SDR pixels even on HDR displays — my tonemap was running
+            // on already-clipped data.
+            let supported_formats: [DXGI_FORMAT; 3] = [
+                DXGI_FORMAT_R16G16B16A16_FLOAT,
+                DXGI_FORMAT_R10G10B10A2_UNORM,
+                DXGI_FORMAT_B8G8R8A8_UNORM,
+            ];
+
+            fn duplicate_with_formats(
+                output1: &IDXGIOutput1,
+                device: &ID3D11Device,
+                supported_formats: &[DXGI_FORMAT],
+            ) -> Result<IDXGIOutputDuplication> {
+                // try Output5 first (HDR-aware), fall back to Output1.
+                if let Ok(output5) = output1.cast::<IDXGIOutput5>() {
+                    match unsafe { output5.DuplicateOutput1(device, 0, supported_formats) } {
+                        Ok(d) => return Ok(d),
+                        Err(e) => tracing::warn!(
+                            "DuplicateOutput1 failed — falling back to DuplicateOutput: {e}"
+                        ),
+                    }
+                }
+                unsafe {
+                    output1
+                        .DuplicateOutput(device)
+                        .map_err(|e| anyhow!("DuplicateOutput failed: {e}"))
+                }
+            }
+
+            let mut duplication = match duplicate_with_formats(&output1, &device, &supported_formats) {
                 Ok(d) => d,
-                Err(e) if e.code() == DXGI_ERROR_ACCESS_LOST => {
+                Err(e) if e.downcast_ref::<windows::core::Error>().map(|w| w.code()) == Some(DXGI_ERROR_ACCESS_LOST) => {
                     std::thread::sleep(std::time::Duration::from_millis(200));
-                    output1.DuplicateOutput(&device).map_err(|e2| {
+                    duplicate_with_formats(&output1, &device, &supported_formats).map_err(|e2| {
                         anyhow!("Display capture is locked by another app: {e2}")
                     })?
                 }
-                Err(e) => return Err(anyhow!("DuplicateOutput failed: {e}")),
+                Err(e) => return Err(e),
             };
 
             let mut frame_info = DXGI_OUTDUPL_FRAME_INFO::default();
