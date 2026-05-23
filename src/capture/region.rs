@@ -14,9 +14,14 @@ fn hdr_aware_enabled() -> bool {
     use std::sync::OnceLock;
     static GATE: OnceLock<bool> = OnceLock::new();
     *GATE.get_or_init(|| {
-        std::env::var("CAPSCR_HDR_AWARE")
-            .map(|v| matches!(v.trim(), "1" | "true" | "TRUE" | "on"))
-            .unwrap_or(false)
+        let raw = std::env::var("CAPSCR_HDR_AWARE").unwrap_or_else(|_| "<unset>".to_string());
+        let enabled = matches!(raw.trim(), "1" | "true" | "TRUE" | "on");
+        tracing::info!(
+            "CAPSCR_HDR_AWARE env var = {:?} -> hdr_aware_enabled = {}",
+            raw,
+            enabled,
+        );
+        enabled
     })
 }
 
@@ -77,7 +82,15 @@ impl Capture for RegionCapture {
         let total_width = (max_x - min_x) as u32;
         let total_height = (max_y - min_y) as u32;
 
-        let use_hdr = hdr_aware_enabled() && HdrCapture::is_hdr_available();
+        let env_on = hdr_aware_enabled();
+        let hdr_avail = HdrCapture::is_hdr_available();
+        let use_hdr = env_on && hdr_avail;
+        tracing::info!(
+            "RegionCapture: env_on={} hdr_avail={} -> use_hdr={}",
+            env_on,
+            hdr_avail,
+            use_hdr,
+        );
         let mut combined = RgbaImage::new(total_width, total_height);
 
         for monitor in &monitors {
