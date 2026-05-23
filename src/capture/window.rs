@@ -76,6 +76,23 @@ impl WindowCapture {
 
 impl Capture for WindowCapture {
     fn capture(&self) -> Result<RgbaImage> {
+        tracing::info!("WindowCapture::capture entry: window_id={}", self.window_id);
+
+        // HDR-aware path: when an HDR display is in play and the gate is
+        // on, capture the screen via DXGI Desktop Duplication and crop to
+        // the window's DWM frame bounds. matches what RegionCapture +
+        // ScreenCapture do, so the per-window output isn't mismatched
+        // against region/full-screen captures of the same HDR content.
+        #[cfg(windows)]
+        if super::hdr_aware_enabled() && super::HdrCapture::is_hdr_available() {
+            match self_capture_screen_region(self.window_id) {
+                Ok(img) => return Ok(img),
+                Err(e) => tracing::warn!(
+                    "WindowCapture HDR path failed — GDI fallback: {e:#}"
+                ),
+            }
+        }
+
         match self.find_window() {
             Ok(window) => {
                 let img = window.capture_image()?;

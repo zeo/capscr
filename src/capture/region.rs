@@ -39,6 +39,10 @@ impl RegionCapture {
 
 impl Capture for RegionCapture {
     fn capture(&self) -> Result<RgbaImage> {
+        tracing::info!(
+            "RegionCapture::capture entry: region={}x{}+{}+{}",
+            self.region.width, self.region.height, self.region.x, self.region.y
+        );
         // intentionally GDI BitBlt via xcap::Monitor::capture_image. the
         // DXGI Desktop Duplication path (HdrCapture) was tried in 0.3.50-0.3.57
         // for HDR-correct rendering of bright pixels; on real user setups it

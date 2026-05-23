@@ -281,6 +281,8 @@ fn run_capture_pipeline_inner(
         }
     }
 
+    tracing::info!("run_capture_pipeline_inner: selection = {selection:?}");
+
     let (mut image, hdr_bitmap, screen_origin): (image::RgbaImage, Option<crate::capture::HdrBitmap>, Option<(i32, i32)>) = match selection {
         SelectionResult::Cancelled => return Ok(()),
         SelectionResult::Region(rect) => (
@@ -482,6 +484,7 @@ fn build_upload_service_for_target(
 // hardcoded and surprised multi-display users.
 fn capture_active_monitor_with_hdr(
 ) -> anyhow::Result<(RgbaImage, Option<crate::capture::HdrBitmap>)> {
+    tracing::info!("capture_active_monitor_with_hdr entry");
     use crate::capture::HdrCapture;
     let target = cursor_position();
     if crate::capture::hdr_aware_enabled() && HdrCapture::is_hdr_available() {

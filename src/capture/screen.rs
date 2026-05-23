@@ -139,6 +139,7 @@ const MAX_CAPTURE_PIXELS: u64 = 256 * 1024 * 1024;
 
 impl Capture for ScreenCapture {
     fn capture(&self) -> Result<RgbaImage> {
+        tracing::info!("ScreenCapture::capture entry");
         // HDR-aware path, gated by super::hdr_aware_enabled() (default-on,
         // CAPSCR_HDR_AWARE=0 forces GDI). on any HDR capture error, fall
         // through to GDI so a hardware quirk never breaks captures entirely.
