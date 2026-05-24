@@ -40,7 +40,8 @@ mod windows_impl {
                     GWL_STYLE, MSG, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN,
                     SM_YVIRTUALSCREEN, SetForegroundWindow, SW_SHOWNORMAL, WM_DESTROY, WM_KEYDOWN,
                     WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_PAINT, WM_RBUTTONDOWN,
-                    WNDCLASSW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP, WS_VISIBLE,
+                    WNDCLASSW, WS_EX_LAYERED, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP, WS_VISIBLE,
+                    SetLayeredWindowAttributes, LWA_ALPHA, LWA_COLORKEY,
                 },
             },
         },
@@ -50,6 +51,17 @@ mod windows_impl {
     const MIN_SELECTION_SIZE: i32 = 5;
     const MAGNIFIER_SIZE: i32 = 120;
     const MAGNIFIER_ZOOM: i32 = 2;
+
+    // layered-window dim alpha (0=fully transparent, 255=fully opaque).
+    // 180 = ~70% dim — matches the previous AlphaBlend SourceConstantAlpha
+    // value, so the perceived dim level is the same as before the
+    // BitBlt-snapshot approach was replaced by DWM compositing.
+    const OVERLAY_ALPHA: u8 = 180;
+    // colorkey for "punch-through" areas in the overlay (selection rect
+    // interior). RGB 0x00FF80 — an unnatural mid-green not likely to be
+    // produced by any actual rendered content, so we don't accidentally
+    // make legitimate green pixels in the dim layer transparent.
+    const OVERLAY_COLORKEY: u32 = 0x0080FF00; // BGR for COLORREF: 00, 80, FF -> green channel high
 
     static SELECTING: AtomicBool = AtomicBool::new(false);
     static START_X: AtomicI32 = AtomicI32::new(0);
@@ -333,7 +345,7 @@ mod windows_impl {
             RegisterClassW(&wc);
 
             let hwnd = match CreateWindowExW(
-                WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
+                WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_LAYERED,
                 PCWSTR(class_name.as_ptr()),
                 PCWSTR::null(),
                 WS_POPUP,
@@ -358,6 +370,23 @@ mod windows_impl {
                     return SelectionResult::Cancelled;
                 }
             };
+
+            // layered-window attributes: black background paints at 70%
+            // alpha (dim layer over live HDR desktop), magic green colorkey
+            // (#00FF80) becomes fully transparent (live desktop fully
+            // visible inside the selection rectangle). before this, the
+            // overlay BitBlt'd a snapshot of the desktop and displayed it
+            // as a dim layer — on HDR displays that snapshot was the
+            // SDR-tonemapped (overblown) view, and the user perceived the
+            // entire screen as overblown the instant screenshot mode
+            // started. now DWM composites the dim over the live HDR
+            // framebuffer directly.
+            let _ = SetLayeredWindowAttributes(
+                hwnd,
+                windows::Win32::Foundation::COLORREF(OVERLAY_COLORKEY),
+                OVERLAY_ALPHA,
+                LWA_ALPHA | LWA_COLORKEY,
+            );
 
             let _ = ShowWindow(hwnd, SW_SHOWNORMAL);
             // grab foreground + keyboard focus so VK_ESCAPE actually reaches
@@ -459,13 +488,15 @@ mod windows_impl {
                     )
                 };
 
-                if let Some(dc) = *SCREEN_DC.lock().unwrap() {
-                    if let Some(bmp) = *SCREEN_BITMAP.lock().unwrap() {
-                        let mem_dc = HDC(dc as *mut _);
-                        let old_bmp = SelectObject(mem_dc, HBITMAP(bmp as *mut _));
-                        let _ = StretchBlt(back_dc, 0, 0, width, height, mem_dc, 0, 0, width, height, SRCCOPY);
-                        SelectObject(mem_dc, old_bmp);
-                    }
+                // base = solid black. layered-window LWA_ALPHA makes it
+                // 70% opaque over the live HDR desktop (composited by DWM),
+                // so the user sees the *actual* screen tinted dark instead
+                // of an SDR-tonemapped (overblown) BitBlt snapshot.
+                {
+                    let black_brush = CreateSolidBrush(windows::Win32::Foundation::COLORREF(0x00000000));
+                    let full = RECT { left: 0, top: 0, right: width, bottom: height };
+                    FillRect(back_dc, &full, black_brush);
+                    let _ = DeleteObject(black_brush);
                 }
 
                 let mouse_down = MOUSE_DOWN.load(Ordering::SeqCst);
@@ -482,26 +513,16 @@ mod windows_impl {
                     let right = (sx.max(ex)) - virt_x;
                     let bottom = (sy.max(ey)) - virt_y;
 
-                    // fast path: BitBlt the pre-darkened bitmap over the
-                    // whole back buffer, then BitBlt the bright original
-                    // back into the selection rect. Two memcpy-style ops
-                    // instead of a software AlphaBlend per WM_PAINT — keeps
-                    // the selection responsive at high mouse-poll rates.
-                    if let Some(dim_dc) = *DIM_DC.lock().unwrap() {
-                        let dim_hdc = HDC(dim_dc as *mut _);
-                        let _ = BitBlt(back_dc, 0, 0, width, height, dim_hdc, 0, 0, SRCCOPY);
-                    } else {
-                        let dim_brush = CreateSolidBrush(windows::Win32::Foundation::COLORREF(0x00000000));
-                        let full = RECT { left: 0, top: 0, right: width, bottom: height };
-                        FillRect(back_dc, &full, dim_brush);
-                        let _ = DeleteObject(dim_brush);
-                    }
-                    if let Some(dc) = *SCREEN_DC.lock().unwrap() {
-                        let mem_dc = HDC(dc as *mut _);
-                        let sel_w = (right - left).max(1);
-                        let sel_h = (bottom - top).max(1);
-                        let _ = BitBlt(back_dc, left, top, sel_w, sel_h, mem_dc, left, top, SRCCOPY);
-                    }
+                    // back buffer is already solid black above, so the
+                    // dim layer is in place. paint the selection-rect
+                    // interior with the layered-window colorkey colour so
+                    // DWM punches through to the live HDR desktop inside
+                    // the selection (no SDR tonemap, what-you-see-is-
+                    // what-you-get).
+                    let key_brush = CreateSolidBrush(windows::Win32::Foundation::COLORREF(OVERLAY_COLORKEY));
+                    let sel_rect = RECT { left, top, right, bottom };
+                    FillRect(back_dc, &sel_rect, key_brush);
+                    let _ = DeleteObject(key_brush);
 
                     // 1px solid white selection border — greyscale, no chroma.
                     let border_pen = CreatePen(PS_SOLID, 1, windows::Win32::Foundation::COLORREF(0x00FFFFFF));
