@@ -82,6 +82,7 @@ pub enum TaskPostAction {
     SaveAndClipboard,
     OpenEditor,
     Prompt,
+    DoNothing,
 }
 
 impl TaskPostAction {
@@ -93,6 +94,7 @@ impl TaskPostAction {
             TaskPostAction::SaveAndClipboard => "Save and copy",
             TaskPostAction::OpenEditor => "Open editor",
             TaskPostAction::Prompt => "Ask each time",
+            TaskPostAction::DoNothing => "Do nothing",
         }
     }
 }
@@ -296,6 +298,7 @@ pub enum PostCaptureAction {
     SaveAndCopy,
     Upload,
     PromptUser,
+    DoNothing,
 }
 
 impl PostCaptureAction {
@@ -306,6 +309,7 @@ impl PostCaptureAction {
             PostCaptureAction::SaveAndCopy,
             PostCaptureAction::Upload,
             PostCaptureAction::PromptUser,
+            PostCaptureAction::DoNothing,
         ]
     }
 
@@ -316,6 +320,7 @@ impl PostCaptureAction {
             PostCaptureAction::SaveAndCopy => "Save and copy",
             PostCaptureAction::Upload => "Upload to web",
             PostCaptureAction::PromptUser => "Ask me each time",
+            PostCaptureAction::DoNothing => "Do nothing",
         }
     }
 }
