@@ -22,8 +22,6 @@
 //   https://learn.microsoft.com/en-us/windows/win32/direct2d/white-level-adjustment-effect
 //   https://learn.microsoft.com/en-us/windows/win32/direct3darticles/high-dynamic-range
 
-#![cfg(windows)]
-
 use anyhow::{anyhow, Result};
 use image::RgbaImage;
 use windows::core::Interface;
@@ -473,12 +471,14 @@ fn query_displayconfig_sdr_white(device_name: &[u16; 32]) -> Option<f32> {
         paths.truncate(path_count as usize);
 
         for path in &paths {
-            let mut source_name = DISPLAYCONFIG_SOURCE_DEVICE_NAME::default();
-            source_name.header = DISPLAYCONFIG_DEVICE_INFO_HEADER {
-                r#type: DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME,
-                size: std::mem::size_of::<DISPLAYCONFIG_SOURCE_DEVICE_NAME>() as u32,
-                adapterId: path.sourceInfo.adapterId,
-                id: path.sourceInfo.id,
+            let mut source_name = DISPLAYCONFIG_SOURCE_DEVICE_NAME {
+                header: DISPLAYCONFIG_DEVICE_INFO_HEADER {
+                    r#type: DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME,
+                    size: std::mem::size_of::<DISPLAYCONFIG_SOURCE_DEVICE_NAME>() as u32,
+                    adapterId: path.sourceInfo.adapterId,
+                    id: path.sourceInfo.id,
+                },
+                ..Default::default()
             };
             let rc = WIN32_ERROR(DisplayConfigGetDeviceInfo(&mut source_name.header) as u32);
             if rc != ERROR_SUCCESS {
@@ -488,14 +488,16 @@ fn query_displayconfig_sdr_white(device_name: &[u16; 32]) -> Option<f32> {
                 continue;
             }
 
-            let mut sdr_white = DISPLAYCONFIG_SDR_WHITE_LEVEL::default();
-            sdr_white.header = DISPLAYCONFIG_DEVICE_INFO_HEADER {
-                r#type: windows::Win32::Devices::Display::DISPLAYCONFIG_DEVICE_INFO_TYPE(
-                    DISPLAYCONFIG_DEVICE_INFO_GET_SDR_WHITE_LEVEL,
-                ),
-                size: std::mem::size_of::<DISPLAYCONFIG_SDR_WHITE_LEVEL>() as u32,
-                adapterId: path.targetInfo.adapterId,
-                id: path.targetInfo.id,
+            let mut sdr_white = DISPLAYCONFIG_SDR_WHITE_LEVEL {
+                header: DISPLAYCONFIG_DEVICE_INFO_HEADER {
+                    r#type: windows::Win32::Devices::Display::DISPLAYCONFIG_DEVICE_INFO_TYPE(
+                        DISPLAYCONFIG_DEVICE_INFO_GET_SDR_WHITE_LEVEL,
+                    ),
+                    size: std::mem::size_of::<DISPLAYCONFIG_SDR_WHITE_LEVEL>() as u32,
+                    adapterId: path.targetInfo.adapterId,
+                    id: path.targetInfo.id,
+                },
+                ..Default::default()
             };
             let rc = WIN32_ERROR(DisplayConfigGetDeviceInfo(&mut sdr_white.header) as u32);
             if rc != ERROR_SUCCESS {

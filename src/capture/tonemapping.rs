@@ -111,7 +111,7 @@ fn srgb_lut() -> &'static [u8; SRGB_LUT_SIZE] {
 
 #[inline]
 fn linear_to_srgb_u8(linear: f32) -> u8 {
-    let clamped = linear.max(0.0).min(1.0);
+    let clamped = linear.clamp(0.0, 1.0);
     let idx = (clamped * ((SRGB_LUT_SIZE - 1) as f32)) as usize;
     srgb_lut()[idx.min(SRGB_LUT_SIZE - 1)]
 }

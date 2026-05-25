@@ -9,8 +9,6 @@
 // instead of our own, and we can't tune it. for screen-capture content
 // that's the right trade — speed + OS consistency over a custom look.
 
-#![cfg(windows)]
-
 use anyhow::{anyhow, Result};
 use image::RgbaImage;
 use windows::core::Interface;

@@ -187,8 +187,10 @@ fn d2d_window_capture(hwnd_u32: u32) -> Result<RgbaImage> {
         if hmon.is_invalid() {
             return Err(anyhow!("MonitorFromWindow returned null"));
         }
-        let mut mi = MONITORINFO::default();
-        mi.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
+        let mut mi = MONITORINFO {
+            cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+            ..Default::default()
+        };
         if !GetMonitorInfoW(hmon, &mut mi as *mut _).as_bool() {
             return Err(anyhow!("GetMonitorInfoW failed"));
         }

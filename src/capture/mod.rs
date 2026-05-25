@@ -160,20 +160,27 @@ fn current_monitor_rotation_at(x: i32, y: i32) -> MonitorRotation {
     use windows::Win32::Foundation::POINT;
     use windows::Win32::Graphics::Gdi::{
         EnumDisplaySettingsW, GetMonitorInfoW, MonitorFromPoint, DEVMODEW,
-        ENUM_CURRENT_SETTINGS, MONITORINFOEXW, MONITOR_DEFAULTTONULL,
+        ENUM_CURRENT_SETTINGS, MONITORINFOEXW, MONITORINFO, MONITOR_DEFAULTTONULL,
     };
     unsafe {
         let hmon = MonitorFromPoint(POINT { x, y }, MONITOR_DEFAULTTONULL);
         if hmon.is_invalid() {
             return MonitorRotation::Unknown;
         }
-        let mut info = MONITORINFOEXW::default();
-        info.monitorInfo.cbSize = std::mem::size_of::<MONITORINFOEXW>() as u32;
+        let mut info = MONITORINFOEXW {
+            monitorInfo: MONITORINFO {
+                cbSize: std::mem::size_of::<MONITORINFOEXW>() as u32,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
         if !GetMonitorInfoW(hmon, &mut info.monitorInfo as *mut _).as_bool() {
             return MonitorRotation::Unknown;
         }
-        let mut devmode = DEVMODEW::default();
-        devmode.dmSize = std::mem::size_of::<DEVMODEW>() as u16;
+        let mut devmode = DEVMODEW {
+            dmSize: std::mem::size_of::<DEVMODEW>() as u16,
+            ..Default::default()
+        };
         let ok = EnumDisplaySettingsW(
             windows::core::PCWSTR(info.szDevice.as_ptr()),
             ENUM_CURRENT_SETTINGS,

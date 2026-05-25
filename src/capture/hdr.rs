@@ -33,7 +33,7 @@ fn f16_to_f32(bits: u16) -> f32 {
         (sign << 31) | (0xFF << 23) | (mant << 13)
     } else {
         // normal
-        (sign << 31) | (((exp + 127 - 15) as u32) << 23) | (mant << 13)
+        (sign << 31) | ((exp + 127 - 15) << 23) | (mant << 13)
     };
     f32::from_bits(out_bits)
 }
@@ -282,7 +282,7 @@ impl HdrCapture {
                     u16_data.push(r << 6 | r >> 4); // 10-bit -> 16-bit via bit replication
                     u16_data.push(g << 6 | g >> 4);
                     u16_data.push(b << 6 | b >> 4);
-                    u16_data.push((a * 0x5555) & 0xFFFF); // 2-bit -> 16-bit via repeat
+                    u16_data.push(a * 0x5555); // 2-bit -> 16-bit via repeat
                 }
                 hdr10_to_sdr_bt2390(&u16_data, width, height, sdr_white, params)
             }
@@ -453,12 +453,14 @@ mod windows_hdr {
                 // resolve the path's source GDI device name and match it
                 // against the DXGI output's DeviceName so we read SDR white
                 // for the correct monitor (not just the first one).
-                let mut source_name = DISPLAYCONFIG_SOURCE_DEVICE_NAME::default();
-                source_name.header = DISPLAYCONFIG_DEVICE_INFO_HEADER {
-                    r#type: DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME,
-                    size: std::mem::size_of::<DISPLAYCONFIG_SOURCE_DEVICE_NAME>() as u32,
-                    adapterId: path.sourceInfo.adapterId,
-                    id: path.sourceInfo.id,
+                let mut source_name = DISPLAYCONFIG_SOURCE_DEVICE_NAME {
+                    header: DISPLAYCONFIG_DEVICE_INFO_HEADER {
+                        r#type: DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME,
+                        size: std::mem::size_of::<DISPLAYCONFIG_SOURCE_DEVICE_NAME>() as u32,
+                        adapterId: path.sourceInfo.adapterId,
+                        id: path.sourceInfo.id,
+                    },
+                    ..Default::default()
                 };
                 let rc = WIN32_ERROR(
                     DisplayConfigGetDeviceInfo(&mut source_name.header as *mut _) as u32,
@@ -470,14 +472,16 @@ mod windows_hdr {
                     continue;
                 }
 
-                let mut sdr_white = DISPLAYCONFIG_SDR_WHITE_LEVEL::default();
-                sdr_white.header = DISPLAYCONFIG_DEVICE_INFO_HEADER {
-                    r#type: windows::Win32::Devices::Display::DISPLAYCONFIG_DEVICE_INFO_TYPE(
-                        DISPLAYCONFIG_DEVICE_INFO_GET_SDR_WHITE_LEVEL,
-                    ),
-                    size: std::mem::size_of::<DISPLAYCONFIG_SDR_WHITE_LEVEL>() as u32,
-                    adapterId: path.targetInfo.adapterId,
-                    id: path.targetInfo.id,
+                let mut sdr_white = DISPLAYCONFIG_SDR_WHITE_LEVEL {
+                    header: DISPLAYCONFIG_DEVICE_INFO_HEADER {
+                        r#type: windows::Win32::Devices::Display::DISPLAYCONFIG_DEVICE_INFO_TYPE(
+                            DISPLAYCONFIG_DEVICE_INFO_GET_SDR_WHITE_LEVEL,
+                        ),
+                        size: std::mem::size_of::<DISPLAYCONFIG_SDR_WHITE_LEVEL>() as u32,
+                        adapterId: path.targetInfo.adapterId,
+                        id: path.targetInfo.id,
+                    },
+                    ..Default::default()
                 };
                 let rc = WIN32_ERROR(
                     DisplayConfigGetDeviceInfo(&mut sdr_white.header as *mut _) as u32,
@@ -490,7 +494,7 @@ mod windows_hdr {
                 }
                 // 1000 == 80 nits (the Windows SDR reference)
                 let nits = (sdr_white.SDRWhiteLevel as f32) * 80.0 / 1000.0;
-                if nits >= 80.0 && nits <= 10000.0 {
+                if (80.0..=10000.0).contains(&nits) {
                     return Some(nits);
                 }
             }
