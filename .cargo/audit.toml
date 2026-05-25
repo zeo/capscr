@@ -1,5 +1,42 @@
-# Security audit configuration
-# https://rustsec.org/
+# cargo-audit configuration.
+#
+# every advisory ignored here has a one-line rationale next to it explaining
+# why it doesn't apply to capscr's threat model. when the underlying dep ships
+# a fix or when our usage changes, the entry should be re-evaluated.
 
 [advisories]
-ignore = []
+ignore = [
+    # rsa Marvin Attack (timing side-channel during RSA private-key decryption).
+    # we don't perform RSA private-key operations: SFTP path uses password auth
+    # only, and the host-key TOFU path only does public-key signature
+    # verification (which the attack does not affect). pulled in transitively
+    # via russh; no fix exists upstream.
+    "RUSTSEC-2023-0071",
+
+    # the gtk/gdk/atk/glib/cairo/javascriptcore/webkit2gtk family is wry's
+    # linux backend. capscr is Windows-only — these crates are never linked
+    # into our shipping binary. unmaintained warnings (yellow), not vulns.
+    "RUSTSEC-2024-0411",  # gdkwayland-sys
+    "RUSTSEC-2024-0412",  # gdk
+    "RUSTSEC-2024-0413",  # atk
+    "RUSTSEC-2024-0414",  # gdkx11-sys
+    "RUSTSEC-2024-0415",  # gtk
+    "RUSTSEC-2024-0416",  # atk-sys
+    "RUSTSEC-2024-0417",  # gdkx11
+    "RUSTSEC-2024-0418",  # gdk-sys
+    "RUSTSEC-2024-0419",  # gtk3-macros
+    "RUSTSEC-2024-0420",  # gtk-sys
+    "RUSTSEC-2024-0429",  # glib (gtk family)
+
+    # paste / proc-macro-error are build-time proc macros; no runtime exposure.
+    "RUSTSEC-2024-0436",  # paste unmaintained
+    "RUSTSEC-2024-0370",  # proc-macro-error unmaintained
+
+    # unic-* family is unicode data tables pulled in transitively by the linux
+    # webkit2gtk text-shaping path. unused on Windows.
+    "RUSTSEC-2025-0075",  # unic-char-range
+    "RUSTSEC-2025-0080",  # unic-common
+    "RUSTSEC-2025-0081",  # unic-char-property
+    "RUSTSEC-2025-0098",  # unic-ucd-version
+    "RUSTSEC-2025-0100",  # unic-ucd-ident
+]
