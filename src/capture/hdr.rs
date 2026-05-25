@@ -616,6 +616,9 @@ mod windows_hdr {
                 Err(e) => return Err(e),
             };
 
+            // Sleep briefly to let the DWM compositor populate the initial duplication texture
+            std::thread::sleep(std::time::Duration::from_millis(10));
+
             let mut frame_info = DXGI_OUTDUPL_FRAME_INFO::default();
             let mut desktop_resource: Option<IDXGIResource> = None;
 
@@ -630,7 +633,7 @@ mod windows_hdr {
             let mut acquired = false;
             for attempt in 0..30 {
                 let res = duplication.AcquireNextFrame(
-                    250,
+                    10,
                     &mut frame_info,
                     &mut desktop_resource,
                 );
@@ -638,7 +641,7 @@ mod windows_hdr {
                     Ok(()) => {
                         let real_frame = frame_info.LastPresentTime != 0
                             || frame_info.AccumulatedFrames > 0
-                            || (attempt >= 5 && desktop_resource.is_some());
+                            || (attempt >= 1 && desktop_resource.is_some());
                         if real_frame {
                             acquired = true;
                             break;
@@ -647,19 +650,19 @@ mod windows_hdr {
                         // is required after every successful AcquireNextFrame.
                         let _ = duplication.ReleaseFrame();
                         desktop_resource = None;
-                        std::thread::sleep(std::time::Duration::from_millis(16));
+                        std::thread::sleep(std::time::Duration::from_millis(2));
                     }
                     Err(e) if e.code() == DXGI_ERROR_ACCESS_LOST && attempt < 29 => {
                         if let Ok(fresh) = output1.DuplicateOutput(&device) {
                             duplication = fresh;
                         }
-                        std::thread::sleep(std::time::Duration::from_millis(100));
+                        std::thread::sleep(std::time::Duration::from_millis(10));
                     }
                     Err(e) if e.code() == DXGI_ERROR_WAIT_TIMEOUT => {
-                        std::thread::sleep(std::time::Duration::from_millis(16));
+                        std::thread::sleep(std::time::Duration::from_millis(2));
                     }
                     Err(_) => {
-                        std::thread::sleep(std::time::Duration::from_millis(50));
+                        std::thread::sleep(std::time::Duration::from_millis(5));
                     }
                 }
             }
