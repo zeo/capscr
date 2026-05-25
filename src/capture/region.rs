@@ -1,5 +1,5 @@
 use anyhow::{anyhow, Result};
-use image::RgbaImage;
+use image::{GenericImage, RgbaImage};
 use xcap::Monitor;
 
 use super::hdr::HdrCapture;
@@ -27,6 +27,14 @@ impl RegionCapture {
     }
 
     fn get_virtual_screen_origin() -> (i32, i32) {
+        #[cfg(windows)]
+        {
+            if let Ok(monitors) = super::fast_list_monitors() {
+                let min_x = monitors.iter().map(|m| m.x).min().unwrap_or(0);
+                let min_y = monitors.iter().map(|m| m.y).min().unwrap_or(0);
+                return (min_x, min_y);
+            }
+        }
         if let Ok(monitors) = Monitor::all() {
             let min_x = monitors.iter().map(|m| m.x()).min().unwrap_or(0);
             let min_y = monitors.iter().map(|m| m.y()).min().unwrap_or(0);
@@ -43,25 +51,31 @@ impl Capture for RegionCapture {
             "RegionCapture::capture entry: region={}x{}+{}+{}",
             self.region.width, self.region.height, self.region.x, self.region.y
         );
-        // intentionally GDI BitBlt via xcap::Monitor::capture_image. the
-        // DXGI Desktop Duplication path (HdrCapture) was tried in 0.3.50-0.3.57
-        // for HDR-correct rendering of bright pixels; on real user setups it
-        // produced zeroed textures (overlay/compositor interaction) and added
-        // multi-second CPU tonemap latency. reverted here so captures are
-        // instant again — HDR content reads as overblown-but-visible (sRGB
-        // 255 across bright channels) just like Snipping Tool and other
-        // GDI-based capture tools. HDR-aware capture is future work; it
-        // needs a GPU shader tonemap and a way to coexist with capscr's
-        // own dim overlay.
-        let monitors = Monitor::all()?;
+        
+        #[cfg(windows)]
+        let monitors = super::fast_list_monitors()?;
+        #[cfg(not(windows))]
+        let monitors = {
+            let screens = Monitor::all()?;
+            screens.into_iter().map(|s| super::MonitorInfo {
+                id: s.id(),
+                name: s.name().to_string(),
+                x: s.x(),
+                y: s.y(),
+                width: s.width(),
+                height: s.height(),
+                is_primary: s.is_primary(),
+            }).collect::<Vec<_>>()
+        };
+
         if monitors.is_empty() {
             return Err(anyhow!("No monitors found"));
         }
 
-        let min_x = monitors.iter().map(|m| m.x()).min().unwrap_or(0);
-        let min_y = monitors.iter().map(|m| m.y()).min().unwrap_or(0);
-        let max_x = monitors.iter().map(|m| m.x() + m.width() as i32).max().unwrap_or(0);
-        let max_y = monitors.iter().map(|m| m.y() + m.height() as i32).max().unwrap_or(0);
+        let min_x = monitors.iter().map(|m| m.x).min().unwrap_or(0);
+        let min_y = monitors.iter().map(|m| m.y).min().unwrap_or(0);
+        let max_x = monitors.iter().map(|m| m.x + m.width as i32).max().unwrap_or(0);
+        let max_y = monitors.iter().map(|m| m.y + m.height as i32).max().unwrap_or(0);
 
         let total_width = (max_x - min_x) as u32;
         let total_height = (max_y - min_y) as u32;
@@ -98,24 +112,37 @@ impl Capture for RegionCapture {
 
         for monitor in &monitors {
             // skip monitors entirely outside the selection region.
-            let mx0 = monitor.x();
-            let my0 = monitor.y();
-            let mx1 = mx0 + monitor.width() as i32;
-            let my1 = my0 + monitor.height() as i32;
+            let mx0 = monitor.x;
+            let my0 = monitor.y;
+            let mx1 = mx0 + monitor.width as i32;
+            let my1 = my0 + monitor.height as i32;
             let overlaps = mx0 < region_x1 && mx1 > region_x0
                 && my0 < region_y1 && my1 > region_y0;
             if !overlaps {
                 tracing::info!(
                     "RegionCapture: skipping non-overlapping monitor {}x{}+{}+{}",
-                    monitor.width(), monitor.height(), mx0, my0,
+                    monitor.width, monitor.height, mx0, my0,
                 );
                 continue;
             }
 
             let center = (
-                monitor.x() + (monitor.width() as i32) / 2,
-                monitor.y() + (monitor.height() as i32) / 2,
+                monitor.x + (monitor.width as i32) / 2,
+                monitor.y + (monitor.height as i32) / 2,
             );
+            let gdi_capture = || {
+                match super::fast_gdi_capture(monitor.x, monitor.y, monitor.width, monitor.height) {
+                    Ok(img) => Ok(img),
+                    Err(e) => {
+                        tracing::warn!("fast GDI capture failed — falling back to xcap: {e:#}");
+                        let screens = Monitor::all()?;
+                        let screen = screens.into_iter().find(|s| s.id() == monitor.id)
+                            .ok_or_else(|| anyhow!("xcap monitor not found"))?;
+                        screen.capture_image().map_err(|e| anyhow!("{e}"))
+                    }
+                }
+            };
+
             let img_result: Result<RgbaImage> = if use_cpu_hdr {
                 HdrCapture::new()
                     .capture_with_hdr_at(Some(center))
@@ -123,10 +150,10 @@ impl Capture for RegionCapture {
                     .or_else(|e| {
                         tracing::warn!(
                             "CPU HDR capture failed for monitor at {},{} — GDI fallback: {e:#}",
-                            monitor.x(),
-                            monitor.y(),
+                            monitor.x,
+                            monitor.y,
                         );
-                        monitor.capture_image().map_err(|e| anyhow!("{e}"))
+                        gdi_capture()
                     })
             } else if use_wgc {
                 let t0 = std::time::Instant::now();
@@ -142,7 +169,7 @@ impl Capture for RegionCapture {
                         center.0, center.1
                     ),
                 }
-                r.or_else(|_| monitor.capture_image().map_err(|e| anyhow!("{e}")))
+                r.or_else(|_| gdi_capture())
             } else if use_d2d {
                 let t0 = std::time::Instant::now();
                 let r = super::d2d_capture_at_point(Some(center));
@@ -157,28 +184,24 @@ impl Capture for RegionCapture {
                         center.0, center.1
                     ),
                 }
-                r.or_else(|_| monitor.capture_image().map_err(|e| anyhow!("{e}")))
+                r.or_else(|_| gdi_capture())
             } else {
-                monitor.capture_image().map_err(|e| anyhow!("{e}"))
+                gdi_capture()
             };
 
             if let Ok(img) = img_result {
                 let img = orient_captured_image(
                     img,
-                    monitor.width(),
-                    monitor.height(),
-                    monitor.x(),
-                    monitor.y(),
+                    monitor.width,
+                    monitor.height,
+                    monitor.x,
+                    monitor.y,
                 );
-                let offset_x = (monitor.x() - min_x) as u32;
-                let offset_y = (monitor.y() - min_y) as u32;
+                let offset_x = (monitor.x - min_x) as u32;
+                let offset_y = (monitor.y - min_y) as u32;
 
-                for (x, y, pixel) in img.enumerate_pixels() {
-                    let dest_x = offset_x + x;
-                    let dest_y = offset_y + y;
-                    if dest_x < total_width && dest_y < total_height {
-                        combined.put_pixel(dest_x, dest_y, *pixel);
-                    }
+                if let Err(e) = combined.copy_from(&img, offset_x, offset_y) {
+                    tracing::warn!("Failed to copy monitor image into combined region buffer: {e}");
                 }
             }
         }
