@@ -13,6 +13,8 @@ ManifestDPIAwareness PerMonitorV2
   SetCompressor /SOLID "{{compression}}"
 !endif
 
+!define MUI_CUSTOMFUNCTION_GUIINIT CapscrOnGUIInit
+!define MUI_CUSTOMFUNCTION_UNGUIINIT un.CapscrOnGUIInit
 !include MUI2.nsh
 !include FileFunc.nsh
 !include x64.nsh
@@ -631,7 +633,7 @@ Function .onInit
   !endif
 FunctionEnd
 
-Function .onGUIInit
+Function CapscrOnGUIInit
   Call CapscrApplyDarkFrame
 FunctionEnd
 
@@ -884,7 +886,7 @@ Function un.onInit
   ${EndIf}
 FunctionEnd
 
-Function un.onGUIInit
+Function un.CapscrOnGUIInit
   Call un.CapscrApplyDarkFrame
 FunctionEnd
 
