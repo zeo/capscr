@@ -418,14 +418,7 @@ unsafe fn read_display_metadata(output: &IDXGIOutput) -> Result<(f32, f32)> {
     let desc1 = output6.GetDesc1()?;
 
     let sdr_white_nits = query_displayconfig_sdr_white(&desc1.DeviceName)
-        .or_else(|| {
-            if desc1.MaxFullFrameLuminance > 0.0 {
-                Some(desc1.MaxFullFrameLuminance.min(400.0))
-            } else {
-                None
-            }
-        })
-        .unwrap_or(80.0)
+        .unwrap_or(200.0)
         .max(80.0);
     let max_lum_nits = if desc1.MaxLuminance > 0.0 {
         desc1.MaxLuminance.max(80.0)

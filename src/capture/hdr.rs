@@ -357,13 +357,8 @@ mod windows_hdr {
                                 // at, so it was systematically blowing out
                                 // SDR-on-HDR captures.
                                 let sdr_white_level = query_displayconfig_sdr_white(&desc1.DeviceName)
-                                    .unwrap_or_else(|| {
-                                        if desc1.MaxFullFrameLuminance > 0.0 {
-                                            desc1.MaxFullFrameLuminance.min(400.0)
-                                        } else {
-                                            80.0
-                                        }
-                                    });
+                                    .unwrap_or(200.0)
+                                    .max(80.0);
 
                                 tracing::debug!(
                                     "hdr display info: colorspace={} sdr_white={:.0}nits max_lum={:.0}nits dxgi_max_full_frame={:.0}nits",
