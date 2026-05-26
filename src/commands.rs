@@ -125,10 +125,13 @@ pub fn set_config(
     let want_autostart = config.ui.auto_start;
     let output_dir = config.output.directory.clone();
     *state.config.lock().unwrap() = config;
-    // sync asset:// scope with the new output dir so History thumbnails keep
-    // loading after the user changes the path mid-session.
     if let Err(e) = app.asset_protocol_scope().allow_directory(&output_dir, true) {
         tracing::warn!("asset scope allow_directory({:?}) failed: {e}", output_dir);
+    }
+    if let Some(h_dir) = history_dir() {
+        if let Err(e) = app.asset_protocol_scope().allow_directory(&h_dir, true) {
+            tracing::warn!("asset scope allow_directory({:?}) failed: {e}", h_dir);
+        }
     }
     let manager = app.autolaunch();
     let current = manager.is_enabled().unwrap_or(false);

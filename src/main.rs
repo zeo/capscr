@@ -137,6 +137,11 @@ fn main() {
                 if let Err(e) = app.asset_protocol_scope().allow_directory(&dir, true) {
                     tracing::warn!("asset scope allow_directory({:?}) failed: {e}", dir);
                 }
+                if let Some(h_dir) = commands::history_dir() {
+                    if let Err(e) = app.asset_protocol_scope().allow_directory(&h_dir, true) {
+                        tracing::warn!("asset scope allow_directory({:?}) failed: {e}", h_dir);
+                    }
+                }
             }
             // pre-create the plugins folder so 'Open folder' from the
             // Marketplace tab succeeds on a fresh install without round-
