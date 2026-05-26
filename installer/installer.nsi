@@ -200,8 +200,7 @@ Function CapscrApplyDarkFrame
   !insertmacro _CapscrThemeControl $1
   SetCtlColors $1 c4c4c4 0d0d0d
   System::Call 'USER32::GetDlgItem(p$HWNDPARENT,i1028)p.r1'
-  !insertmacro _CapscrThemeControl $1
-  SetCtlColors $1 c4c4c4 0d0d0d
+  System::Call 'USER32::ShowWindow(p$1,i0)i'
   System::Call 'UXTHEME::#136()'
 FunctionEnd
 
@@ -223,8 +222,7 @@ Function un.CapscrApplyDarkFrame
   !insertmacro _CapscrThemeControl $1
   SetCtlColors $1 c4c4c4 0d0d0d
   System::Call 'USER32::GetDlgItem(p$HWNDPARENT,i1028)p.r1'
-  !insertmacro _CapscrThemeControl $1
-  SetCtlColors $1 c4c4c4 0d0d0d
+  System::Call 'USER32::ShowWindow(p$1,i0)i'
   System::Call 'UXTHEME::#136()'
 FunctionEnd
 
