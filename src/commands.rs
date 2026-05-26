@@ -245,15 +245,7 @@ fn run_capture_pipeline_inner(
     app: &AppHandle,
     upload_target: Option<crate::config::TaskUploadTarget>,
 ) -> anyhow::Result<()> {
-    #[cfg(windows)]
-    let mode = {
-        if is_foreground_window_fullscreen() {
-            tracing::info!("Foreground window is fullscreen/game — bypassing selector overlay to prevent deadlock/blocking.");
-            CaptureModeArg::ActiveMonitor
-        } else {
-            mode
-        }
-    };
+
 
     use std::sync::atomic::Ordering;
     let gate_state = app.state::<AppState>();
@@ -2267,46 +2259,4 @@ pub fn set_hotkeys_disabled(
     Ok(())
 }
 
-#[cfg(windows)]
-fn is_foreground_window_fullscreen() -> bool {
-    use windows::Win32::UI::WindowsAndMessaging::{
-        GetForegroundWindow, GetWindowRect, GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN,
-        GetShellWindow, GetDesktopWindow, GetWindowLongW, GWL_STYLE, WS_CAPTION, IsZoomed,
-    };
-    use windows::Win32::Foundation::RECT;
 
-    unsafe {
-        let hwnd = GetForegroundWindow();
-        if hwnd.0.is_null() {
-            return false;
-        }
-
-        // Skip shell and desktop windows
-        let shell = GetShellWindow();
-        let desktop = GetDesktopWindow();
-        if hwnd == shell || hwnd == desktop {
-            return false;
-        }
-
-        // Maximized windows or windows with a titlebar caption are NOT fullscreen games/apps
-        let style = GetWindowLongW(hwnd, GWL_STYLE) as u32;
-        if (style & WS_CAPTION.0) != 0 || IsZoomed(hwnd).as_bool() {
-            return false;
-        }
-
-        let mut rect = RECT::default();
-        if GetWindowRect(hwnd, &mut rect).is_err() {
-            return false;
-        }
-
-        let screen_w = GetSystemMetrics(SM_CXSCREEN);
-        let screen_h = GetSystemMetrics(SM_CYSCREEN);
-
-        let w_width = rect.right - rect.left;
-        let w_height = rect.bottom - rect.top;
-
-        // If the foreground window occupies the entire screen (or larger, as games sometimes do),
-        // it is a full-screen window!
-        w_width >= screen_w && w_height >= screen_h
-    }
-}
