@@ -801,20 +801,44 @@ function NotifyPane(props: { c: AppConfig; patch: Patch }) {
           </div>
         </div>
         <div class="field">
-          <label class="field-label">minimize to tray</label>
+          <label class="field-label">close button behavior</label>
+          <div class="field-control">
+            <select
+              value={c().ui.close_behavior ?? "minimize-to-tray"}
+              onChange={(e) => {
+                const val = e.currentTarget.value as "minimize-to-tray" | "minimize-to-taskbar" | "exit";
+                props.patch("ui", {
+                  ...c().ui,
+                  close_behavior: val,
+                  minimize_to_tray: val === "minimize-to-taskbar",
+                });
+              }}
+            >
+              <option value="minimize-to-tray">minimize to system tray</option>
+              <option value="minimize-to-taskbar">minimize to taskbar</option>
+              <option value="exit">exit application</option>
+            </select>
+          </div>
+        </div>
+        <div class="field">
+          <label class="field-label">clipboard history</label>
           <div class="field-control">
             <label class="check">
               <input
                 type="checkbox"
-                checked={c().ui.minimize_to_tray}
+                checked={c().ui.save_clipboard_to_history}
                 onChange={(e) =>
                   props.patch("ui", {
                     ...c().ui,
-                    minimize_to_tray: e.currentTarget.checked,
+                    save_clipboard_to_history: e.currentTarget.checked,
                   })
                 }
               />
-              <span class="check-label">close button minimizes to taskbar, doesn't exit</span>
+              <span class="check-label">
+                {c().ui.save_clipboard_to_history
+                  ? "saves clipboard-only captures to AppData history cache"
+                  : "clipboard-only captures are not saved to history"}
+              </span>
             </label>
           </div>
         </div>

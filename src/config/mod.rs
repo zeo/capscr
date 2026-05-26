@@ -273,6 +273,32 @@ pub struct HotkeyConfig {
     pub disabled_globally: bool,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum CloseBehavior {
+    #[default]
+    MinimizeToTray,
+    MinimizeToTaskbar,
+    Exit,
+}
+
+impl CloseBehavior {
+    pub fn all() -> &'static [CloseBehavior] {
+        &[
+            CloseBehavior::MinimizeToTray,
+            CloseBehavior::MinimizeToTaskbar,
+            CloseBehavior::Exit,
+        ]
+    }
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            CloseBehavior::MinimizeToTray => "Minimize to system tray",
+            CloseBehavior::MinimizeToTaskbar => "Minimize to taskbar",
+            CloseBehavior::Exit => "Close/Exit application",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct UiConfig {
@@ -281,11 +307,13 @@ pub struct UiConfig {
     pub copy_to_clipboard: bool,
     pub minimize_to_tray: bool,
     #[serde(default)]
+    pub close_behavior: CloseBehavior,
+    #[serde(default)]
     pub auto_start: bool,
     #[serde(default = "default_true")]
-    pub save_clipboard_to_history: bool,
-    #[serde(default = "default_true")]
     pub check_updates_on_launch: bool,
+    #[serde(default = "default_true")]
+    pub save_clipboard_to_history: bool,
 }
 
 fn default_true() -> bool {
@@ -882,9 +910,10 @@ impl Default for Config {
                 show_notifications: true,
                 copy_to_clipboard: true,
                 minimize_to_tray: true,
+                close_behavior: CloseBehavior::MinimizeToTray,
                 auto_start: true,
-                save_clipboard_to_history: true,
                 check_updates_on_launch: true,
+                save_clipboard_to_history: true,
             },
             post_capture: PostCaptureConfig::default(),
             upload: UploadConfig::default(),
