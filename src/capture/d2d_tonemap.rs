@@ -110,7 +110,7 @@ pub fn capture_hdr_to_sdr(target: Option<(i32, i32)>) -> Result<RgbaImage> {
                 Ok(()) => {
                     let real = frame_info.LastPresentTime != 0
                         || frame_info.AccumulatedFrames > 0
-                        || (attempt >= 1 && desktop_resource.is_some());
+                        || desktop_resource.is_some();
                     if real {
                         acquired = true;
                         break;

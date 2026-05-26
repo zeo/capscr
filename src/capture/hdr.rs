@@ -640,7 +640,7 @@ mod windows_hdr {
                     Ok(()) => {
                         let real_frame = frame_info.LastPresentTime != 0
                             || frame_info.AccumulatedFrames > 0
-                            || (attempt >= 1 && desktop_resource.is_some());
+                            || desktop_resource.is_some();
                         if real_frame {
                             acquired = true;
                             break;
