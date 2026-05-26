@@ -180,39 +180,51 @@ VIAddVersionKey "ProductVersion" "${VERSION}"
 !macroend
 
 Function CapscrApplyDarkFrame
+  SetCtlColors $HWNDPARENT c4c4c4 0d0d0d
+  !insertmacro _CapscrThemeControl $HWNDPARENT
   ; immersive dark mode on the titlebar
   System::Call 'DWMAPI::DwmSetWindowAttribute(p$HWNDPARENT,i20,*i1,i4)i.r0'
   IntCmp $0 0 +2 +2
     System::Call 'DWMAPI::DwmSetWindowAttribute(p$HWNDPARENT,i19,*i1,i4)i.r0'
   System::Call 'USER32::SetProp(p$HWNDPARENT,t"UseImmersiveDarkModeColors",p1)'
   ; per-process dark mode (uxtheme ordinal 135 = SetPreferredAppMode(AllowDark))
-  System::Call 'UXTHEME::#135(i1)'
+  System::Call 'UXTHEME::#135(i2)'
   ; theme the outer frame controls — Next/Cancel buttons + branding
   System::Call 'USER32::GetDlgItem(p$HWNDPARENT,i1)p.r1'
   !insertmacro _CapscrThemeControl $1
+  SetCtlColors $1 c4c4c4 0d0d0d
   System::Call 'USER32::GetDlgItem(p$HWNDPARENT,i2)p.r1'
   !insertmacro _CapscrThemeControl $1
+  SetCtlColors $1 c4c4c4 0d0d0d
   System::Call 'USER32::GetDlgItem(p$HWNDPARENT,i3)p.r1'
   !insertmacro _CapscrThemeControl $1
+  SetCtlColors $1 c4c4c4 0d0d0d
   System::Call 'USER32::GetDlgItem(p$HWNDPARENT,i1028)p.r1'
   !insertmacro _CapscrThemeControl $1
+  SetCtlColors $1 c4c4c4 0d0d0d
   System::Call 'UXTHEME::#136()'
 FunctionEnd
 
 Function un.CapscrApplyDarkFrame
+  SetCtlColors $HWNDPARENT c4c4c4 0d0d0d
+  !insertmacro _CapscrThemeControl $HWNDPARENT
   System::Call 'DWMAPI::DwmSetWindowAttribute(p$HWNDPARENT,i20,*i1,i4)i.r0'
   IntCmp $0 0 +2 +2
     System::Call 'DWMAPI::DwmSetWindowAttribute(p$HWNDPARENT,i19,*i1,i4)i.r0'
   System::Call 'USER32::SetProp(p$HWNDPARENT,t"UseImmersiveDarkModeColors",p1)'
-  System::Call 'UXTHEME::#135(i1)'
+  System::Call 'UXTHEME::#135(i2)'
   System::Call 'USER32::GetDlgItem(p$HWNDPARENT,i1)p.r1'
   !insertmacro _CapscrThemeControl $1
+  SetCtlColors $1 c4c4c4 0d0d0d
   System::Call 'USER32::GetDlgItem(p$HWNDPARENT,i2)p.r1'
   !insertmacro _CapscrThemeControl $1
+  SetCtlColors $1 c4c4c4 0d0d0d
   System::Call 'USER32::GetDlgItem(p$HWNDPARENT,i3)p.r1'
   !insertmacro _CapscrThemeControl $1
+  SetCtlColors $1 c4c4c4 0d0d0d
   System::Call 'USER32::GetDlgItem(p$HWNDPARENT,i1028)p.r1'
   !insertmacro _CapscrThemeControl $1
+  SetCtlColors $1 c4c4c4 0d0d0d
   System::Call 'UXTHEME::#136()'
 FunctionEnd
 
@@ -585,6 +597,8 @@ FunctionEnd
 {{/each}}
 
 Function .onInit
+  System::Call 'UXTHEME::#135(i2)'
+
   ${GetOptions} $CMDLINE "/P" $PassiveMode
   ${IfNot} ${Errors}
     StrCpy $PassiveMode 1
@@ -867,6 +881,8 @@ Function .onInstSuccess
 FunctionEnd
 
 Function un.onInit
+  System::Call 'UXTHEME::#135(i2)'
+
   !insertmacro SetContext
 
   !if "${INSTALLMODE}" == "both"
