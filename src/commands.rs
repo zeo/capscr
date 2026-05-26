@@ -20,6 +20,10 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_autostart::ManagerExt as AutostartManagerExt;
 use tauri_plugin_opener::OpenerExt;
 
+pub fn history_dir() -> Option<PathBuf> {
+    Config::config_dir().map(|d| d.join("history"))
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum CaptureModeArg {
@@ -736,6 +740,40 @@ fn run_post_action(
         Ok(path)
     };
 
+    let do_save_to_history_async = |img: Arc<RgbaImage>, hdr: Option<crate::capture::HdrBitmap>, app_handle: AppHandle| -> Option<PathBuf> {
+        if !config.ui.save_clipboard_to_history {
+            return None;
+        }
+        let history_dir = history_dir()?;
+        if let Err(e) = std::fs::create_dir_all(&history_dir) {
+            tracing::warn!("failed to create history dir: {e}");
+            return None;
+        }
+        let base = {
+            let now = chrono::Local::now();
+            let name = now.format(&config.output.filename_template).to_string();
+            let ext = config.output.format.extension();
+            history_dir.join(format!("{name}.{ext}"))
+        };
+        let path = get_unique_filepath(&base);
+        
+        let path_clone = path.clone();
+        let format = config.output.format;
+        let quality = config.output.quality;
+        let config_clone = config.clone();
+        std::thread::spawn(move || {
+            let t0 = std::time::Instant::now();
+            if let Err(e) = save_image(&img, &path_clone, format, quality) {
+                tracing::error!("Background save_image to history failed: {e:#}");
+            } else {
+                maybe_write_hdr_sidecar(&path_clone, &hdr, &config_clone);
+                tracing::info!("Background save to history completed in {}ms", t0.elapsed().as_millis());
+                let _ = app_handle.emit("capscr://capture-saved", path_clone.to_string_lossy().to_string());
+            }
+        });
+        Some(path)
+    };
+
     let do_clipboard = || -> anyhow::Result<()> {
         let mut cb = ClipboardManager::new()?;
         cb.copy_image(&image)?;
@@ -767,8 +805,7 @@ fn run_post_action(
             Ok(Some(path))
         }
         PostCaptureAction::CopyToClipboard => {
-            // treat clipboard contention as a soft failure — consistent with
-            // SaveAndCopy which already does this (the capture itself succeeded)
+            let history_path = do_save_to_history_async(image.clone(), hdr_bitmap.clone(), app.clone());
             let clipboard_ok = do_clipboard().is_ok();
             Sound::Screenshot.play_if_enabled(config.post_capture.play_sound);
             if config.ui.show_notifications {
@@ -784,14 +821,10 @@ fn run_post_action(
                 };
                 let _ = show_notification(title, body);
             }
-            Ok(None)
+            Ok(history_path)
         }
         PostCaptureAction::SaveAndCopy => {
             let path = do_save_async(image.clone(), hdr_bitmap.clone(), app.clone())?;
-            // don't claim "+ copied" if the clipboard step actually failed —
-            // surface the partial success honestly. Save is the source of
-            // truth; clipboard is best-effort because another app could be
-            // holding it open.
             let clipboard_ok = do_clipboard().is_ok();
             Sound::Screenshot.play_if_enabled(config.post_capture.play_sound);
             if config.ui.show_notifications {
@@ -805,13 +838,14 @@ fn run_post_action(
             Ok(Some(path))
         }
         PostCaptureAction::Upload => {
+            let history_path = do_save_to_history_async(image.clone(), hdr_bitmap.clone(), app.clone());
             let result = do_upload()?;
             Sound::Upload.play_if_enabled(config.post_capture.play_sound);
             if config.ui.show_notifications {
                 let _ = show_notification("Uploaded", &result.url);
             }
             emit_upload_success(app, &result);
-            Ok(None)
+            Ok(history_path)
         }
         PostCaptureAction::PromptUser => {
             let path = do_save_async(image.clone(), hdr_bitmap.clone(), app.clone())?;
@@ -828,11 +862,12 @@ fn run_post_action(
             Ok(Some(path))
         }
         PostCaptureAction::DoNothing => {
+            let history_path = do_save_to_history_async(image.clone(), hdr_bitmap.clone(), app.clone());
             Sound::Screenshot.play_if_enabled(config.post_capture.play_sound);
             if config.ui.show_notifications {
                 let _ = show_notification("Capture complete", "Screenshot taken successfully.");
             }
-            Ok(None)
+            Ok(history_path)
         }
     }
 }
@@ -856,28 +891,38 @@ pub fn open_in_default_image_editor(path: &std::path::Path) -> anyhow::Result<()
 pub fn list_captures(state: State<AppState>) -> Result<Vec<HistoryEntry>, String> {
     let config = state.config.lock().unwrap().clone();
     let dir = config.output.directory.clone();
-    if !dir.exists() {
-        tracing::info!(
-            "list_captures: output dir does not exist: {}",
-            dir.display()
-        );
-        return Ok(Vec::new());
+
+    let mut filenames: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut dir_entries: Vec<std::fs::DirEntry> = Vec::new();
+
+    if dir.exists() {
+        if let Ok(read) = std::fs::read_dir(&dir) {
+            for entry in read.flatten() {
+                if let Some(name) = entry.file_name().to_str() {
+                    filenames.insert(name.to_string());
+                }
+                dir_entries.push(entry);
+            }
+        }
     }
 
-    // first pass: collect every present filename so we can mark each SDR
-    // entry's `has_hdr` by looking up a `<stem>.hdr.png` sidecar.
-    let mut filenames: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let read = std::fs::read_dir(&dir).map_err(|e| e.to_string())?;
-    let dir_entries: Vec<_> = read.flatten().collect();
-    for entry in &dir_entries {
-        if let Some(name) = entry.file_name().to_str() {
-            filenames.insert(name.to_string());
+    if let Some(h_dir) = history_dir() {
+        if h_dir.exists() {
+            if let Ok(read) = std::fs::read_dir(&h_dir) {
+                for entry in read.flatten() {
+                    if let Some(name) = entry.file_name().to_str() {
+                        if !filenames.contains(name) {
+                            filenames.insert(name.to_string());
+                            dir_entries.push(entry);
+                        }
+                    }
+                }
+            }
         }
     }
 
     let mut entries: Vec<HistoryEntry> = Vec::new();
     for entry in &dir_entries {
-        // use cached file_type to avoid an extra stat per entry
         let Ok(ft) = entry.file_type() else { continue };
         if !ft.is_file() {
             continue;
@@ -896,8 +941,6 @@ pub fn list_captures(state: State<AppState>) -> Result<Vec<HistoryEntry>, String
             .and_then(|f| f.to_str())
             .unwrap_or("")
             .to_string();
-        // hide raw HDR sidecars from the History grid — they're paired with
-        // an SDR file and surface via the `has_hdr` badge on that entry.
         if filename.ends_with(".hdr.png") {
             continue;
         }
@@ -927,14 +970,31 @@ pub fn list_captures(state: State<AppState>) -> Result<Vec<HistoryEntry>, String
             has_hdr,
         });
     }
+
     entries.sort_by_key(|e| std::cmp::Reverse(e.modified_unix));
     entries.truncate(1000);
     tracing::info!(
-        "list_captures: {} entries from {}",
+        "list_captures: {} entries collected (output: {}, history cache)",
         entries.len(),
         dir.display()
     );
     Ok(entries)
+}
+
+fn is_path_allowed(canonical: &std::path::Path, config: &Config) -> bool {
+    if let Ok(dir_canonical) = std::fs::canonicalize(&config.output.directory) {
+        if canonical.starts_with(&dir_canonical) {
+            return true;
+        }
+    }
+    if let Some(h_dir) = history_dir() {
+        if let Ok(h_canonical) = std::fs::canonicalize(&h_dir) {
+            if canonical.starts_with(&h_canonical) {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 #[tauri::command]
@@ -942,10 +1002,8 @@ pub fn delete_capture(path: String, state: State<AppState>) -> Result<(), String
     let buf = PathBuf::from(&path);
     let config = state.config.lock().unwrap().clone();
     let canonical = std::fs::canonicalize(&buf).map_err(|e| e.to_string())?;
-    let dir_canonical =
-        std::fs::canonicalize(&config.output.directory).map_err(|e| e.to_string())?;
-    if !canonical.starts_with(&dir_canonical) {
-        return Err("Path is outside the configured output directory".into());
+    if !is_path_allowed(&canonical, &config) {
+        return Err("Path is outside the allowed directories".into());
     }
     // also remove the `<stem>.hdr.png` sidecar if present, so deleting a
     // capture from History doesn't leave orphan HDR data on disk.
@@ -963,10 +1021,8 @@ pub fn copy_capture_to_clipboard(path: String, state: State<AppState>) -> Result
     let buf = PathBuf::from(&path);
     let config = state.config.lock().unwrap().clone();
     let canonical = std::fs::canonicalize(&buf).map_err(|e| e.to_string())?;
-    let dir_canonical =
-        std::fs::canonicalize(&config.output.directory).map_err(|e| e.to_string())?;
-    if !canonical.starts_with(&dir_canonical) {
-        return Err("Path is outside the configured output directory".into());
+    if !is_path_allowed(&canonical, &config) {
+        return Err("Path is outside the allowed directories".into());
     }
     let img = image::open(&canonical).map_err(|e| e.to_string())?;
     let rgba = img.to_rgba8();
@@ -983,10 +1039,8 @@ pub fn reupload_capture(
     let buf = PathBuf::from(&path);
     let config = state.config.lock().unwrap().clone();
     let canonical = std::fs::canonicalize(&buf).map_err(|e| e.to_string())?;
-    let dir_canonical =
-        std::fs::canonicalize(&config.output.directory).map_err(|e| e.to_string())?;
-    if !canonical.starts_with(&dir_canonical) {
-        return Err("Path is outside the configured output directory".into());
+    if !is_path_allowed(&canonical, &config) {
+        return Err("Path is outside the allowed directories".into());
     }
     // GIF files contain animation data that image::open drops to the first frame.
     // upload the raw file bytes via a dedicated path instead of re-encoding.
@@ -1155,13 +1209,26 @@ pub fn prewarm_hub_window(app: &tauri::App) -> tauri::Result<()> {
 }
 
 fn intercept_hub_close(window: tauri::WebviewWindow) {
+    let app = window.app_handle().clone();
     window.clone().on_window_event(move |event| {
         if let tauri::WindowEvent::CloseRequested { api, .. } = event {
             api.prevent_close();
-            // hide to tray — pressing [X] should never exit capscr; the tray
-            // is the only true exit. left-click on the tray icon brings the
-            // hub back via open_hub_window's show + unminimize + set_focus.
-            let _ = window.hide();
+            let state = app.state::<AppState>();
+            let close_behavior = {
+                let cfg = state.config.lock().unwrap();
+                cfg.ui.close_behavior
+            };
+            match close_behavior {
+                crate::config::CloseBehavior::MinimizeToTray => {
+                    let _ = window.hide();
+                }
+                crate::config::CloseBehavior::MinimizeToTaskbar => {
+                    let _ = window.minimize();
+                }
+                crate::config::CloseBehavior::Exit => {
+                    exit_app(app.clone());
+                }
+            }
         }
     });
 }
