@@ -42,8 +42,16 @@ function formatDate(unix: number): string {
 export function History() {
   const [entries, { refetch }] = createResource(api.listCaptures);
   const [outputDir, setOutputDir] = createSignal<string>("");
+  const [screenshotHotkey, setScreenshotHotkey] = createSignal<string>("PrintScreen");
+  const [recordGifHotkey, setRecordGifHotkey] = createSignal<string>("Ctrl+Shift+G");
   onMount(() => {
-    api.getConfig().then((c) => setOutputDir(c.output.directory)).catch(() => {});
+    api.getConfig().then((c) => {
+      setOutputDir(c.output.directory);
+      if (c.hotkeys) {
+        if (c.hotkeys.screenshot) setScreenshotHotkey(c.hotkeys.screenshot);
+        if (c.hotkeys.record_gif) setRecordGifHotkey(c.hotkeys.record_gif);
+      }
+    }).catch(() => {});
   });
   // track which path is in the "confirm delete" state. Second click on the
   // trash icon within 4s commits; otherwise the prompt resets.
@@ -204,8 +212,8 @@ export function History() {
               <span class="stick" />
               no captures yet
               <p>
-                press <kbd>PrintScreen</kbd> to drag a region capture to clipboard,
-                or <kbd>Ctrl+Shift+G</kbd> to record a GIF.
+                press <kbd>{screenshotHotkey()}</kbd> to drag a region capture to clipboard,
+                or <kbd>{recordGifHotkey()}</kbd> to record a GIF.
               </p>
               <p class="muted" style="margin-top: 8px; font-size: 11px;">
                 rebind these in <strong>tasks</strong> · destinations live in <strong>destinations</strong>.
