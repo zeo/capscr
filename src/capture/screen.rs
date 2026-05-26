@@ -107,21 +107,58 @@ impl ScreenCapture {
             return Err(anyhow!("Combined monitor area too large"));
         }
 
+        let env_on = super::hdr_aware_enabled();
+        let wgc_on = super::wgc_enabled();
+        let hdr_avail = HdrCapture::is_hdr_available();
+        let use_cpu_hdr = env_on && hdr_avail;
+        let use_wgc = wgc_on && !env_on;
+        let use_d2d = hdr_avail && !env_on && !wgc_on;
+
         let total_width = width_i32 as u32;
         let total_height = height_i32 as u32;
 
         let mut combined = RgbaImage::new(total_width, total_height);
 
         for monitor in monitors {
-            let img = match super::fast_gdi_capture(monitor.x, monitor.y, monitor.width, monitor.height) {
-                Ok(img) => img,
-                Err(_) => {
-                    let screens = Monitor::all()?;
-                    let m = screens.into_iter().find(|s| s.id() == monitor.id)
-                        .ok_or_else(|| anyhow!("Monitor not found"))?;
-                    m.capture_image()?
+            let center = (
+                monitor.x + (monitor.width as i32) / 2,
+                monitor.y + (monitor.height as i32) / 2,
+            );
+            let gdi_capture = || {
+                match super::fast_gdi_capture(monitor.x, monitor.y, monitor.width, monitor.height) {
+                    Ok(img) => Ok(img),
+                    Err(_) => {
+                        let screens = Monitor::all()?;
+                        let screen = screens.into_iter().find(|s| s.id() == monitor.id)
+                            .ok_or_else(|| anyhow!("Monitor not found"))?;
+                        screen.capture_image().map_err(|e| anyhow!("{e}"))
+                    }
                 }
             };
+
+            let img_result: Result<RgbaImage> = if use_cpu_hdr {
+                HdrCapture::new()
+                    .capture_with_hdr_at(Some(center))
+                    .map(|(img, _)| img)
+                    .or_else(|e| {
+                        tracing::warn!(
+                            "CPU HDR capture failed for monitor at {},{} — fallback to GDI: {e:#}",
+                            monitor.x,
+                            monitor.y
+                        );
+                        gdi_capture()
+                    })
+            } else if use_wgc {
+                let r = super::wgc_capture_at_point(center.0, center.1);
+                r.or_else(|_| gdi_capture())
+            } else if use_d2d {
+                let r = super::d2d_capture_at_point(Some(center));
+                r.or_else(|_| gdi_capture())
+            } else {
+                gdi_capture()
+            };
+
+            let img = img_result?;
             let img = super::orient_captured_image(
                 img,
                 monitor.width,

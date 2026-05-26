@@ -137,9 +137,15 @@ fn main() {
                 if let Err(e) = app.asset_protocol_scope().allow_directory(&dir, true) {
                     tracing::warn!("asset scope allow_directory({:?}) failed: {e}", dir);
                 }
+                if let Ok(dir_can) = std::fs::canonicalize(&dir) {
+                    let _ = app.asset_protocol_scope().allow_directory(&dir_can, true);
+                }
                 if let Some(h_dir) = commands::history_dir() {
                     if let Err(e) = app.asset_protocol_scope().allow_directory(&h_dir, true) {
                         tracing::warn!("asset scope allow_directory({:?}) failed: {e}", h_dir);
+                    }
+                    if let Ok(h_can) = std::fs::canonicalize(&h_dir) {
+                        let _ = app.asset_protocol_scope().allow_directory(&h_can, true);
                     }
                 }
             }

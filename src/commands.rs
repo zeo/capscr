@@ -128,9 +128,15 @@ pub fn set_config(
     if let Err(e) = app.asset_protocol_scope().allow_directory(&output_dir, true) {
         tracing::warn!("asset scope allow_directory({:?}) failed: {e}", output_dir);
     }
+    if let Ok(dir_can) = std::fs::canonicalize(&output_dir) {
+        let _ = app.asset_protocol_scope().allow_directory(&dir_can, true);
+    }
     if let Some(h_dir) = history_dir() {
         if let Err(e) = app.asset_protocol_scope().allow_directory(&h_dir, true) {
             tracing::warn!("asset scope allow_directory({:?}) failed: {e}", h_dir);
+        }
+        if let Ok(h_can) = std::fs::canonicalize(&h_dir) {
+            let _ = app.asset_protocol_scope().allow_directory(&h_can, true);
         }
     }
     let manager = app.autolaunch();
@@ -964,8 +970,15 @@ pub fn list_captures(state: State<AppState>) -> Result<Vec<HistoryEntry>, String
             .map(|stem| filenames.contains(&format!("{stem}.hdr.png")))
             .unwrap_or(false);
 
+        let path_str = path.to_string_lossy().to_string();
+        let path_clean = if path_str.starts_with(r"\\?\") {
+            path_str[4..].to_string()
+        } else {
+            path_str
+        };
+
         entries.push(HistoryEntry {
-            path: path.to_string_lossy().to_string(),
+            path: path_clean,
             filename,
             size_bytes: metadata.len(),
             modified_unix,
