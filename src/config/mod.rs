@@ -283,6 +283,8 @@ pub struct UiConfig {
     #[serde(default)]
     pub auto_start: bool,
     #[serde(default = "default_true")]
+    pub save_clipboard_to_history: bool,
+    #[serde(default = "default_true")]
     pub check_updates_on_launch: bool,
 }
 
@@ -880,7 +882,8 @@ impl Default for Config {
                 show_notifications: true,
                 copy_to_clipboard: true,
                 minimize_to_tray: true,
-                auto_start: false,
+                auto_start: true,
+                save_clipboard_to_history: true,
                 check_updates_on_launch: true,
             },
             post_capture: PostCaptureConfig::default(),
