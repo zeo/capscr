@@ -108,16 +108,81 @@ pub fn capture_hdr_to_sdr(target: Option<(i32, i32)>) -> Result<RgbaImage> {
         for attempt in 0..30 {
             match duplication.AcquireNextFrame(10, &mut frame_info, &mut desktop_resource) {
                 Ok(()) => {
-                    let real = frame_info.LastPresentTime != 0
-                        || frame_info.AccumulatedFrames > 0
-                        || desktop_resource.is_some();
-                    if real {
+                    let desktop_res = match desktop_resource.take() {
+                        Some(r) => r,
+                        None => {
+                            let _ = duplication.ReleaseFrame();
+                            std::thread::sleep(std::time::Duration::from_millis(2));
+                            continue;
+                        }
+                    };
+
+                    let mut is_black = false;
+                    // check if the frame is completely black (all-zeros)
+                    // only check if lastpresenttime == 0 and accumulatedframes == 0
+                    let check_black = frame_info.LastPresentTime == 0 && frame_info.AccumulatedFrames == 0;
+                    if check_black {
+                        if let Ok(desktop_texture) = desktop_res.cast::<ID3D11Texture2D>() {
+                            let mut tex_desc = D3D11_TEXTURE2D_DESC::default();
+                            desktop_texture.GetDesc(&mut tex_desc);
+                            let w = tex_desc.Width;
+                            let h = tex_desc.Height;
+                            if w > 0 && h > 0 {
+                                let staging_desc = D3D11_TEXTURE2D_DESC {
+                                    Width: w,
+                                    Height: h,
+                                    MipLevels: 1,
+                                    ArraySize: 1,
+                                    Format: tex_desc.Format,
+                                    SampleDesc: tex_desc.SampleDesc,
+                                    Usage: D3D11_USAGE_STAGING,
+                                    BindFlags: Default::default(),
+                                    CPUAccessFlags: D3D11_CPU_ACCESS_READ.0 as u32,
+                                    MiscFlags: Default::default(),
+                                };
+                                let mut staging_texture: Option<ID3D11Texture2D> = None;
+                                if device.CreateTexture2D(&staging_desc, None, Some(&mut staging_texture)).is_ok() {
+                                    if let Some(staging) = staging_texture {
+                                        context.CopyResource(&staging, &desktop_texture);
+                                        let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
+                                        if context.Map(&staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped)).is_ok() {
+                                            let src_ptr = mapped.pData as *const u8;
+                                            if !src_ptr.is_null() {
+                                                let bytes_per_pixel = match tex_desc.Format {
+                                                    DXGI_FORMAT_R16G16B16A16_FLOAT => 8,
+                                                    DXGI_FORMAT_R10G10B10A2_UNORM => 4,
+                                                    _ => 4,
+                                                };
+                                                let row_bytes = w as usize * bytes_per_pixel;
+                                                let row_pitch = mapped.RowPitch as usize;
+                                                if row_pitch >= row_bytes {
+                                                    let first_row = std::slice::from_raw_parts(src_ptr, row_bytes);
+                                                    is_black = first_row.iter().all(|&b| b == 0) && {
+                                                        let mid_row = src_ptr.add(row_pitch * (h as usize / 2));
+                                                        let mid_slice = std::slice::from_raw_parts(mid_row, row_bytes);
+                                                        mid_slice.iter().all(|&b| b == 0)
+                                                    } && {
+                                                        let last_row = src_ptr.add(row_pitch * (h as usize - 1));
+                                                        let last_slice = std::slice::from_raw_parts(last_row, row_bytes);
+                                                        last_slice.iter().all(|&b| b == 0)
+                                                    };
+                                                }
+                                            }
+                                            context.Unmap(&staging, 0);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if !is_black {
+                        desktop_resource = Some(desktop_res);
                         acquired = true;
                         break;
                     }
                     let _ = duplication.ReleaseFrame();
-                    desktop_resource = None;
-                    std::thread::sleep(std::time::Duration::from_millis(2));
+                    std::thread::sleep(std::time::Duration::from_millis(10));
                 }
                 Err(e) if e.code() == DXGI_ERROR_ACCESS_LOST && attempt < 29 => {
                     if let Ok(fresh) = output1.DuplicateOutput(&device) {
