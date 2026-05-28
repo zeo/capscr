@@ -26,8 +26,16 @@ nothing pending. drop ideas in github issues.
 - a plugin toggled off in the UI is no longer instantiated — the host now honours the `enabled` flag in `plugin.toml`, so disabling an untrusted plugin actually stops its code from running at next launch (previously the flag was written but ignored by the runtime)
 - manifest `runtime.file` validation now rejects windows drive-absolute paths (e.g. `C:/x`) in addition to `..`/leading-slash/backslash — the old string check would let `Path::join` replace the plugin dir and read an arbitrary file
 
+### fixed
+- HDR is now detected per display via `is_hdr_at_point` at each monitor/window centre, replacing the global HDR-availability + env-var gate — on a mixed HDR+SDR multi-monitor setup each capture takes the correct path for the display it lands on
+- GDI capture allocates a top-down 32bpp DIB section and BitBlts with `CAPTUREBLT`, fixing pixel format/stride and capturing layered (transparent) windows correctly
+- window capture resolves the target centre from the DWM extended frame bounds (falling back to `GetWindowRect`) before choosing the HDR path
+
 ### changed
 - `default` cargo features are now `["sftp", "plugin-runtime"]` (was `["sftp"]`)
+- D3D11 devices are pre-warmed in a background thread at startup, removing the driver-wakeup delay on the first capture
+- removed the Direct2D (D2D) capture path; HDR captures now go through WGC or the CPU-HDR pipeline, with GDI as the universal fallback
+- refreshed application icons and NSIS installer header/sidebar assets
 
 ### tests
 - end-to-end runtime tests drive hand-written WAT modules through the live `WasmHost`: the full payload round-trip (compile → link → instantiate → `capscr_alloc` → host write → hook call → host import), fuel/epoch trapping of a runaway hook, the missing-`capscr_alloc` and unsubscribed-hook paths, and runtime capability denial of an un-granted host import (via a `wat` dev-dependency; test-only, not in the shipped binary)

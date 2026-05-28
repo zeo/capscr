@@ -107,12 +107,7 @@ impl ScreenCapture {
             return Err(anyhow!("Combined monitor area too large"));
         }
 
-        let env_on = super::hdr_aware_enabled();
         let wgc_on = super::wgc_enabled();
-        let hdr_avail = HdrCapture::is_hdr_available();
-        let use_cpu_hdr = env_on && hdr_avail;
-        let use_wgc = wgc_on && !env_on;
-        let use_d2d = hdr_avail && !env_on && !wgc_on;
 
         let total_width = width_i32 as u32;
         let total_height = height_i32 as u32;
@@ -124,6 +119,10 @@ impl ScreenCapture {
                 monitor.x + (monitor.width as i32) / 2,
                 monitor.y + (monitor.height as i32) / 2,
             );
+            let is_hdr = HdrCapture::is_hdr_at_point(center.0, center.1);
+            let use_cpu_hdr = is_hdr && !wgc_on;
+            let use_wgc = wgc_on;
+            let use_d2d = false;
             let gdi_capture = || {
                 match super::fast_gdi_capture(monitor.x, monitor.y, monitor.width, monitor.height) {
                     Ok(img) => Ok(img),
@@ -237,53 +236,35 @@ const MAX_CAPTURE_PIXELS: u64 = 256 * 1024 * 1024;
 
 impl Capture for ScreenCapture {
     fn capture(&self) -> Result<RgbaImage> {
-        tracing::info!("ScreenCapture::capture entry");
-        // path priority matches RegionCapture — see src/capture/region.rs
-        // for the rationale on each env-var gate.
-        let env_on = super::hdr_aware_enabled();
-        let wgc_on = super::wgc_enabled();
-        let hdr_avail = HdrCapture::is_hdr_available();
-
-        if env_on && hdr_avail {
-            let hdr = HdrCapture::new();
-            match hdr.capture() {
-                Ok(img) => return Ok(img),
-                Err(e) => tracing::warn!("ScreenCapture CPU HDR failed — fallthrough: {e:#}"),
-            }
-        }
-        
         let monitor_info = self.get_monitor_info()?;
         let center = (
             monitor_info.x + (monitor_info.width as i32) / 2,
             monitor_info.y + (monitor_info.height as i32) / 2,
         );
 
+        let wgc_on = super::wgc_enabled();
+        let is_hdr = HdrCapture::is_hdr_at_point(center.0, center.1);
+
+        if is_hdr && !wgc_on {
+            let hdr = HdrCapture::new();
+            match hdr.capture_with_hdr_at(Some(center)).map(|(img, _)| img) {
+                Ok(img) => return Ok(img),
+                Err(e) => tracing::warn!("ScreenCapture CPU HDR failed — fallthrough: {e:#}"),
+            }
+        }
+
         #[cfg(windows)]
-        if hdr_avail && !env_on {
-            if wgc_on {
-                let t0 = std::time::Instant::now();
-                match super::wgc_capture_at_point(center.0, center.1) {
-                    Ok(img) => {
-                        tracing::info!(
-                            "ScreenCapture WGC {}x{} in {}ms",
-                            img.width(), img.height(), t0.elapsed().as_millis()
-                        );
-                        return Ok(img);
-                    }
-                    Err(e) => tracing::warn!("ScreenCapture WGC failed — fallthrough: {e:#}"),
+        if is_hdr && wgc_on {
+            let t0 = std::time::Instant::now();
+            match super::wgc_capture_at_point(center.0, center.1) {
+                Ok(img) => {
+                    tracing::info!(
+                        "ScreenCapture WGC {}x{} in {}ms",
+                        img.width(), img.height(), t0.elapsed().as_millis()
+                    );
+                    return Ok(img);
                 }
-            } else {
-                let t0 = std::time::Instant::now();
-                match super::d2d_capture_at_point(Some(center)) {
-                    Ok(img) => {
-                        tracing::info!(
-                            "ScreenCapture D2D {}x{} in {}ms",
-                            img.width(), img.height(), t0.elapsed().as_millis()
-                        );
-                        return Ok(img);
-                    }
-                    Err(e) => tracing::warn!("ScreenCapture D2D failed — GDI fallback: {e:#}"),
-                }
+                Err(e) => tracing::warn!("ScreenCapture WGC failed — fallthrough: {e:#}"),
             }
         }
         let img = match super::fast_gdi_capture(monitor_info.x, monitor_info.y, monitor_info.width, monitor_info.height) {

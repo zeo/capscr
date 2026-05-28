@@ -88,6 +88,12 @@ fn main() {
     // through PlaySoundW.
     std::thread::spawn(sound::warm_audio_subsystem);
 
+    // pre-warm D3D11 devices in the background to avoid driver wakeup delays
+    // during the first screen capture.
+    std::thread::spawn(|| {
+        capture::HdrCapture::prewarm();
+    });
+
     let initial_tasks = config.capture_tasks.clone();
     let app_state = state::AppState::new(config);
 

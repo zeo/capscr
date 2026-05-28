@@ -86,44 +86,53 @@ impl Capture for WindowCapture {
         //   3. default -> xcap's GDI BitBlt (instant, overblown on HDR)
         #[cfg(windows)]
         {
-            let env_on = super::hdr_aware_enabled();
+            use windows::Win32::Foundation::{HWND, RECT};
+            use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_EXTENDED_FRAME_BOUNDS};
+            use windows::Win32::UI::WindowsAndMessaging::GetWindowRect;
+
             let wgc_on = super::wgc_enabled();
-            let hdr_avail = super::HdrCapture::is_hdr_available();
-            if env_on && hdr_avail {
-                match self_capture_screen_region(self.window_id) {
-                    Ok(img) => return Ok(img),
-                    Err(e) => tracing::warn!(
-                        "WindowCapture CPU HDR path failed — fallthrough: {e:#}"
-                    ),
-                }
-            }
-            if hdr_avail {
-                if wgc_on {
-                    use windows::Win32::Foundation::HWND;
-                    let hwnd = HWND(self.window_id as usize as *mut _);
-                    let t0 = std::time::Instant::now();
-                    match super::wgc::capture_window(hwnd) {
-                        Ok(img) => {
-                            tracing::info!(
-                                "WGC capture (window {}) {}x{} in {}ms",
-                                self.window_id, img.width(), img.height(),
-                                t0.elapsed().as_millis()
-                            );
-                            return Ok(img);
-                        }
-                        Err(e) => tracing::warn!(
-                            "WGC window capture failed — fallthrough: {e:#}"
-                        ),
-                    }
+            let hwnd = HWND(self.window_id as usize as *mut _);
+            
+            let center_res = unsafe {
+                let mut r = RECT::default();
+                let ok = DwmGetWindowAttribute(
+                    hwnd,
+                    DWMWA_EXTENDED_FRAME_BOUNDS,
+                    &mut r as *mut RECT as *mut _,
+                    std::mem::size_of::<RECT>() as u32,
+                ).is_ok();
+                if ok || GetWindowRect(hwnd, &mut r).is_ok() {
+                    Ok(((r.left + r.right) / 2, (r.top + r.bottom) / 2))
                 } else {
-                    // D2D path: capture the screen region of the window
-                    // via DXGI + D2D tonemap, then crop to the window's
-                    // DWM frame bounds.
-                    match d2d_window_capture(self.window_id) {
-                        Ok(img) => return Ok(img),
-                        Err(e) => tracing::warn!(
-                            "D2D window capture failed — GDI fallback: {e:#}"
-                        ),
+                    Err(anyhow!("Failed to get window rect"))
+                }
+            };
+
+            if let Ok(center) = center_res {
+                let is_hdr = super::HdrCapture::is_hdr_at_point(center.0, center.1);
+                if is_hdr {
+                    if wgc_on {
+                        let t0 = std::time::Instant::now();
+                        match super::wgc::capture_window(hwnd) {
+                            Ok(img) => {
+                                tracing::info!(
+                                    "WGC capture (window {}) {}x{} in {}ms",
+                                    self.window_id, img.width(), img.height(),
+                                    t0.elapsed().as_millis()
+                                );
+                                return Ok(img);
+                            }
+                            Err(e) => tracing::warn!(
+                                "WGC window capture failed — fallthrough: {e:#}"
+                            ),
+                        }
+                    } else {
+                        match self_capture_screen_region(self.window_id) {
+                            Ok(img) => return Ok(img),
+                            Err(e) => tracing::warn!(
+                                "WindowCapture CPU HDR path failed — fallthrough: {e:#}"
+                            ),
+                        }
                     }
                 }
             }

@@ -1,11 +1,34 @@
 use anyhow::{anyhow, Result};
 use image::RgbaImage;
 use windows::Win32::Graphics::Gdi::{
-    GetDC, CreateCompatibleDC, CreateCompatibleBitmap, SelectObject, BitBlt,
+    GetDC, CreateCompatibleDC, CreateDIBSection, SelectObject, BitBlt,
     GetDIBits, DeleteDC, DeleteObject, ReleaseDC, DIB_RGB_COLORS,
-    BITMAPINFO, BITMAPINFOHEADER, BI_RGB, SRCCOPY,
+    BITMAPINFO, BITMAPINFOHEADER, BI_RGB, SRCCOPY, CAPTUREBLT, HBITMAP,
 };
 use windows::Win32::Foundation::HWND;
+
+fn create_32bpp_dib(width: i32, height: i32) -> Option<HBITMAP> {
+    let mut bi = BITMAPINFO::default();
+    bi.bmiHeader.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
+    bi.bmiHeader.biWidth = width;
+    bi.bmiHeader.biHeight = -height; // top-down
+    bi.bmiHeader.biPlanes = 1;
+    bi.bmiHeader.biBitCount = 32;
+    bi.bmiHeader.biCompression = BI_RGB.0;
+
+    let mut bits_ptr: *mut std::ffi::c_void = std::ptr::null_mut();
+    unsafe {
+        CreateDIBSection(
+            windows::Win32::Graphics::Gdi::HDC::default(),
+            &bi,
+            DIB_RGB_COLORS,
+            &mut bits_ptr,
+            None,
+            0,
+        )
+    }
+    .ok()
+}
 
 pub fn fast_gdi_capture(x: i32, y: i32, width: u32, height: u32) -> Result<RgbaImage> {
     unsafe {
@@ -18,12 +41,8 @@ pub fn fast_gdi_capture(x: i32, y: i32, width: u32, height: u32) -> Result<RgbaI
             ReleaseDC(HWND::default(), screen_dc);
             return Err(anyhow!("CreateCompatibleDC failed"));
         }
-        let bitmap = CreateCompatibleBitmap(screen_dc, width as i32, height as i32);
-        if bitmap.is_invalid() {
-            let _ = DeleteDC(mem_dc);
-            ReleaseDC(HWND::default(), screen_dc);
-            return Err(anyhow!("CreateCompatibleBitmap failed"));
-        }
+        let bitmap = create_32bpp_dib(width as i32, height as i32)
+            .ok_or_else(|| anyhow!("create_32bpp_dib failed"))?;
 
         let old_bitmap = SelectObject(mem_dc, bitmap);
         let ok = BitBlt(
@@ -35,7 +54,7 @@ pub fn fast_gdi_capture(x: i32, y: i32, width: u32, height: u32) -> Result<RgbaI
             screen_dc,
             x,
             y,
-            SRCCOPY,
+            windows::Win32::Graphics::Gdi::ROP_CODE(SRCCOPY.0 | CAPTUREBLT.0),
         );
 
         if ok.is_err() {
