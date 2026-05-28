@@ -16,6 +16,15 @@ pub struct PluginManifest {
     pub hooks: HashMap<String, String>,
     #[serde(default)]
     pub capabilities: HashMap<String, Vec<String>>,
+    /// out-of-band enable flag, a top-level key in plugin.toml written by the
+    /// toggle_plugin_enabled command. defaults to true so plugins without the
+    /// key load normally; when false the host must not instantiate the plugin
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
+}
+
+fn default_enabled() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -82,8 +91,24 @@ impl PluginManifest {
                     rt.runtime_type
                 );
             }
-            if rt.file.contains("..") || rt.file.starts_with('/') || rt.file.contains('\\') {
-                bail!("runtime.file must be a forward-slash relative path");
+            // runtime.file is joined onto the plugin dir at load time, so it
+            // must stay inside it. a string check on '/' alone misses windows
+            // drive-absolute paths like `C:/x` (Path::join would then replace
+            // the base and load an arbitrary file), so validate the components
+            let file = Path::new(&rt.file);
+            if rt.file.is_empty()
+                || rt.file.contains('\\')
+                || file.is_absolute()
+                || file.components().any(|c| {
+                    matches!(
+                        c,
+                        std::path::Component::ParentDir
+                            | std::path::Component::RootDir
+                            | std::path::Component::Prefix(_)
+                    )
+                })
+            {
+                bail!("runtime.file must be a relative path inside the plugin dir");
             }
         }
         Ok(())
@@ -97,5 +122,61 @@ impl PluginManifest {
             .as_ref()
             .map(|r| r.runtime_type == "wasm")
             .unwrap_or(false)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn manifest_with_file(file: &str) -> PluginManifest {
+        PluginManifest {
+            plugin: PluginMeta {
+                id: "test".into(),
+                name: "Test".into(),
+                version: "1.0.0".into(),
+                author: None,
+                description: None,
+            },
+            runtime: Some(RuntimeSpec {
+                runtime_type: "wasm".into(),
+                file: file.into(),
+                memory_max_bytes: None,
+                time_slice_ms: None,
+            }),
+            hooks: HashMap::new(),
+            capabilities: HashMap::new(),
+            enabled: true,
+        }
+    }
+
+    #[test]
+    fn runtime_file_accepts_relative() {
+        assert!(manifest_with_file("plugin.wasm").validate().is_ok());
+        assert!(manifest_with_file("sub/plugin.wasm").validate().is_ok());
+    }
+
+    #[test]
+    fn enabled_defaults_true_and_parses_top_level_false() {
+        let on: PluginManifest =
+            toml::from_str("[plugin]\nid=\"x\"\nname=\"X\"\nversion=\"1.0.0\"\n").unwrap();
+        assert!(on.enabled, "missing key must default to enabled");
+        let off: PluginManifest =
+            toml::from_str("enabled=false\n[plugin]\nid=\"x\"\nname=\"X\"\nversion=\"1.0.0\"\n")
+                .unwrap();
+        assert!(!off.enabled, "top-level enabled=false must parse as disabled");
+    }
+
+    #[test]
+    fn runtime_file_rejects_escapes() {
+        assert!(manifest_with_file("").validate().is_err());
+        assert!(manifest_with_file("../escape.wasm").validate().is_err());
+        assert!(manifest_with_file("/abs.wasm").validate().is_err());
+        assert!(manifest_with_file(r"C:\win.wasm").validate().is_err());
+        // windows drive-absolute with forward slash — the case the old string
+        // check missed. only parses as absolute on windows (this is a
+        // windows-only app), so the assertion is gated to match
+        #[cfg(windows)]
+        assert!(manifest_with_file("C:/win.wasm").validate().is_err());
     }
 }

@@ -23,6 +23,8 @@ nothing pending. drop ideas in github issues.
 - responses are capped at 1 MiB and a single fetch is bounded by a 10s timeout (epoch interruption does not fire inside a blocking host call, so the timeout is what bounds it); the per-hook epoch budget is refreshed after the blocking call so the plugin isn't trapped on resume
 - all fetches in one hook call share a 15s aggregate wall-clock budget (each call is shortened to the remaining budget), so a fetch loop can't hold the dispatch thread — and the plugin-manager lock it runs under — open indefinitely
 - existing wasmtime sandbox guards remain: per-hook fuel limit, epoch-deadline trap for stalls, and a per-instance linear-memory cap
+- a plugin toggled off in the UI is no longer instantiated — the host now honours the `enabled` flag in `plugin.toml`, so disabling an untrusted plugin actually stops its code from running at next launch (previously the flag was written but ignored by the runtime)
+- manifest `runtime.file` validation now rejects windows drive-absolute paths (e.g. `C:/x`) in addition to `..`/leading-slash/backslash — the old string check would let `Path::join` replace the plugin dir and read an arbitrary file
 
 ### changed
 - `default` cargo features are now `["sftp", "plugin-runtime"]` (was `["sftp"]`)

@@ -17,6 +17,10 @@ default build stays small while the API surface stabilises.
 ## manifest schema
 
 ```toml
+# optional top-level flag, managed by the plugins tab's enable/disable toggle.
+# defaults to true; when false the host does not instantiate the plugin at all
+enabled = true
+
 [plugin]
 id          = "my-plugin"           # [a-zA-Z0-9_-]+, used as folder name
 name        = "My Plugin"
@@ -26,17 +30,17 @@ description = "Does something."     # optional
 
 [runtime]
 type             = "wasm"           # only "wasm" today
-file             = "plugin.wasm"    # relative to the plugin dir
+file             = "plugin.wasm"    # relative path, must stay inside the plugin dir
 memory_max_bytes = 16777216         # optional, defaults to wasmtime default
-time_slice_ms    = 200              # optional, reserved for fuel limiting
+time_slice_ms    = 200              # optional, tunes the per-hook epoch budget (ms)
 
 # map of capscr event → exported function name
 [hooks]
 on_capture_saved   = "capscr_on_capture_saved"
 on_upload_success  = "capscr_on_upload_success"
 
-# declared capabilities; today purely informational. Future versions will
-# gate host APIs on these.
+# declared capabilities. clipboard/notifications/fetch are enforced by the
+# matching host imports; other keys are still informational
 [capabilities]
 clipboard      = ["read", "write"]
 notifications  = ["show"]
@@ -44,7 +48,8 @@ fetch          = ["https://api.example.com/*"]
 ```
 
 Plugins without a `[runtime]` section stay metadata-only — they appear in
-the Marketplace tab but the host doesn't instantiate them.
+the Marketplace tab but the host doesn't instantiate them. A plugin with
+`enabled = false` is listed but likewise not instantiated.
 
 ## hooks
 
