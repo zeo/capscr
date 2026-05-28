@@ -313,7 +313,7 @@ fn run_capture_pipeline_inner(
 
     tracing::info!("run_capture_pipeline_inner: selection = {selection:?}");
 
-    let (mut image, hdr_bitmap, screen_origin): (image::RgbaImage, Option<crate::capture::HdrBitmap>, Option<(i32, i32)>) = match selection {
+    let (mut image, mut hdr_bitmap, screen_origin): (image::RgbaImage, Option<crate::capture::HdrBitmap>, Option<(i32, i32)>) = match selection {
         SelectionResult::Cancelled => return Ok(()),
         SelectionResult::Region(rect) => {
             if let Some(frozen) = &frozen_frame {
@@ -475,7 +475,14 @@ fn run_capture_pipeline_inner(
         };
         match plugin_manager.dispatch(&event) {
             PluginResponse::Cancel => return Ok(()),
-            PluginResponse::ModifiedImage(modified) => image = modified,
+            PluginResponse::ModifiedImage(modified) => {
+                image = modified;
+                // the HDR sidecar holds the original captured pixels; a plugin
+                // hands back 8-bit SDR, so keeping the sidecar would pair a
+                // modified SDR image with mismatched HDR data. drop it (mirrors
+                // the editor overwrite path in save_edited_image).
+                hdr_bitmap = None;
+            }
             PluginResponse::Continue => {}
         }
     }
