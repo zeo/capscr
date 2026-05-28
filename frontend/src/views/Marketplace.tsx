@@ -224,7 +224,7 @@ export function Marketplace() {
                     empty registry
                     <p>
                       there are no plugins to install yet — the plugin
-                      runtime (event hooks, wasm host) ships in v0.4.
+                      runtime (event hooks, wasm host) is live as of v0.4.
                     </p>
                   </div>
                 }

@@ -1,6 +1,6 @@
 [package]
 name = "capscr"
-version = "0.3.107"
+version = "0.4.0"
 edition = "2021"
 description = "Fast HDR-aware Windows screen capture — tray-first, signed updates, no telemetry."
 authors = ["rot <96458554+rotlove@users.noreply.github.com>"]
@@ -9,10 +9,10 @@ repository = "https://github.com/lintowe/capscr"
 homepage = "https://rot.lt/work/capscr"
 
 [features]
-default = ["sftp"]
+default = ["sftp", "plugin-runtime"]
 # WASM plugin runtime host. When enabled, src/plugin/wasm.rs is compiled
 # and PluginManager::load_all instantiates plugins with `runtime = "wasm"`
-# in their plugin.toml. Off by default until the host API surface stabilises.
+# in their plugin.toml. Shipped on by default since 0.4.0.
 plugin-runtime = ["dep:wasmtime"]
 # SFTP upload destination. Adds russh + russh-sftp (pure-rust SSH). default-on;
 # can be disabled with --no-default-features to skip the SSH stack entirely.

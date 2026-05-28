@@ -490,7 +490,7 @@ fn run_capture_pipeline_inner(
         crate::clipboard::save_image(&image, &path, config.output.format, config.output.quality)?;
         maybe_write_hdr_sidecar(&path, &hdr_bitmap, &config);
         *state.last_save.lock().unwrap() = Some(path.clone());
-        let _ = app.emit("capscr://capture-saved", path.to_string_lossy().to_string());
+        notify_capture_saved(app, &path);
         open_editor_window(app, &path.to_string_lossy())
             .map_err(|e| anyhow::anyhow!(e))?;
         Sound::Screenshot.play_if_enabled(config.post_capture.play_sound);
@@ -735,7 +735,7 @@ fn run_post_action(
             } else {
                 maybe_write_hdr_sidecar(&path_clone, &hdr, &config_clone);
                 tracing::info!("Background save completed in {}ms", t0.elapsed().as_millis());
-                let _ = app_handle.emit("capscr://capture-saved", path_clone.to_string_lossy().to_string());
+                notify_capture_saved(&app_handle, &path_clone);
             }
         });
         Ok(path)
@@ -769,7 +769,7 @@ fn run_post_action(
             } else {
                 maybe_write_hdr_sidecar(&path_clone, &hdr, &config_clone);
                 tracing::info!("Background save to history completed in {}ms", t0.elapsed().as_millis());
-                let _ = app_handle.emit("capscr://capture-saved", path_clone.to_string_lossy().to_string());
+                notify_capture_saved(&app_handle, &path_clone);
             }
         });
         Some(path)
@@ -1136,7 +1136,7 @@ pub fn exit_app(app: AppHandle) {
         }
         match rec.save(&path) {
             Ok(()) => {
-                let _ = app.emit("capscr://capture-saved", path.to_string_lossy().to_string());
+                notify_capture_saved(&app, &path);
                 if cfg.ui.show_notifications {
                     let _ = show_notification("GIF saved", &path.to_string_lossy());
                 }
@@ -1354,7 +1354,7 @@ pub fn save_edited_image(
         }
     }
     // surface the edit to the History tab so its tile picks up the new mtime
-    let _ = app.emit("capscr://capture-saved", buf.to_string_lossy().to_string());
+    notify_capture_saved(&app, &buf);
     Ok(())
 }
 
@@ -1664,7 +1664,7 @@ fn finalize_gif_recording(task: &CaptureTask, app: &AppHandle) {
                 if cfg.ui.show_notifications {
                     let _ = show_notification("GIF saved", &path.to_string_lossy());
                 }
-                let _ = app.emit("capscr://capture-saved", path.to_string_lossy().to_string());
+                notify_capture_saved(app, &path);
                 apply_gif_post_action(task, app, &path, &cfg);
             }
             Err(e) => {
@@ -1789,6 +1789,21 @@ pub fn emit_error(app: &AppHandle, kind: &str, msg: &str) {
     );
 }
 
+// single funnel for "a capture file was written": notifies the History tab and
+// fires the plugin on_capture_saved hook. every save path routes through here so
+// the hook can't silently miss a save site
+pub fn notify_capture_saved(app: &AppHandle, path: &std::path::Path) {
+    let _ = app.emit(
+        "capscr://capture-saved",
+        path.to_string_lossy().to_string(),
+    );
+    let state = app.state::<AppState>();
+    let mut pm = state.plugin_manager.lock().unwrap();
+    let _ = pm.dispatch(&PluginEvent::PostSave {
+        path: path.to_path_buf(),
+    });
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct UploadSuccessPayload {
     pub url: String,
@@ -1803,6 +1818,11 @@ pub fn emit_upload_success(app: &AppHandle, result: &crate::upload::UploadResult
             delete_url: result.delete_url.clone(),
         },
     );
+    let state = app.state::<AppState>();
+    let mut pm = state.plugin_manager.lock().unwrap();
+    let _ = pm.dispatch(&PluginEvent::PostUpload {
+        url: result.url.clone(),
+    });
 }
 
 #[tauri::command]

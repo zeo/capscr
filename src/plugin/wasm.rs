@@ -18,9 +18,10 @@
 
 use super::manifest::PluginManifest;
 use anyhow::{anyhow, Result};
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
-use wasmtime::{Caller, Engine, Instance, Linker, Memory, Module, Store, TypedFunc};
+use wasmtime::{AsContextMut, Caller, Engine, Instance, Linker, Memory, Module, Store, TypedFunc};
 
 pub struct WasmPlugin {
     pub id: String,
@@ -30,17 +31,70 @@ pub struct WasmPlugin {
     /// exported `capscr_alloc(size) -> ptr`; None if the plugin doesn't export it
     alloc: Option<TypedFunc<i32, i32>>,
     /// optional hooks resolved at load time, indexed by hook name
-    hooks: std::collections::HashMap<String, TypedFunc<(i32, i32), ()>>,
-    /// number of epoch ticks the plugin gets per hook invocation. The bumper
-    /// thread advances the engine epoch every 10ms, so 50 ≈ 500ms.
+    hooks: HashMap<String, TypedFunc<(i32, i32), ()>>,
+}
+
+/// per-instantiation state threaded through every host import via Caller::data.
+/// holds the plugin id (for log routing), the granted capabilities (enforced by
+/// the clipboard/notify/fetch imports), and the per-hook epoch budget (so the
+/// fetch import can refresh it after a blocking network call).
+struct HostState {
+    plugin_id: String,
+    caps: Capabilities,
     deadline_ticks: u64,
 }
 
-/// per-instantiation state. Currently only the plugin id (for log routing);
-/// future capability/permission tracking lands here.
-struct HostState {
-    plugin_id: String,
+/// capabilities a plugin declared in its `[capabilities]` manifest table,
+/// resolved to the concrete grants the host enforces today.
+#[derive(Default)]
+struct Capabilities {
+    clipboard_write: bool,
+    notifications_show: bool,
+    /// allowed fetch URL patterns; a trailing `*` is a prefix wildcard
+    fetch_allow: Vec<String>,
 }
+
+impl Capabilities {
+    fn from_manifest(caps: &HashMap<String, Vec<String>>) -> Self {
+        let granted = |key: &str, val: &str| {
+            caps.get(key)
+                .map(|v| v.iter().any(|s| s == val))
+                .unwrap_or(false)
+        };
+        Capabilities {
+            clipboard_write: granted("clipboard", "write"),
+            notifications_show: granted("notifications", "show"),
+            fetch_allow: caps.get("fetch").cloned().unwrap_or_default(),
+        }
+    }
+
+    fn fetch_allowed(&self, url: &str) -> bool {
+        self.fetch_allow
+            .iter()
+            .any(|pattern| url_pattern_matches(pattern, url))
+    }
+}
+
+/// trailing-`*` prefix wildcard, otherwise exact match. deliberately simple and
+/// predictable — no regex, no path-segment globbing
+fn url_pattern_matches(pattern: &str, url: &str) -> bool {
+    match pattern.strip_suffix('*') {
+        Some(prefix) => url.starts_with(prefix),
+        None => url == pattern,
+    }
+}
+
+// host-import return codes (i32). fetch uses a packed i64 instead (see below)
+const HOST_OK: i32 = 0;
+const HOST_ERR_DENIED: i32 = -1; // capability not granted in the manifest
+const HOST_ERR_ARGS: i32 = -2; // ptr/len out of bounds or not valid utf-8
+const HOST_ERR_FAILED: i32 = -3; // the host-side operation itself failed
+
+/// wall-clock cap on a single plugin fetch. epoch interruption does not fire
+/// inside a blocking host call, so this is what actually bounds it
+const FETCH_TIMEOUT_SECS: u64 = 10;
+/// hard cap on a fetched response body so a plugin can't exhaust host memory
+const FETCH_MAX_BYTES: usize = 1 << 20;
 
 pub struct WasmHost {
     engine: Engine,
@@ -99,10 +153,17 @@ impl WasmHost {
         let module = Module::from_file(&self.engine, &wasm_path)
             .map_err(|e| anyhow!("compiling {}: {e}", wasm_path.display()))?;
 
+        let deadline_ticks = runtime
+            .time_slice_ms
+            .map(|ms| (ms / 10).max(1))
+            .unwrap_or(50);
+
         let mut store = Store::new(
             &self.engine,
             HostState {
                 plugin_id: manifest.plugin.id.clone(),
+                caps: Capabilities::from_manifest(&manifest.capabilities),
+                deadline_ticks,
             },
         );
         if let Some(limit) = runtime.memory_max_bytes {
@@ -148,6 +209,143 @@ impl WasmHost {
             )
             .map_err(|e| anyhow!("link capscr.log: {e}"))?;
 
+        // host import: capscr.clipboard_write_text(ptr, len) -> i32
+        // gated on the `clipboard = ["write"]` capability
+        linker
+            .func_wrap(
+                "capscr",
+                "clipboard_write_text",
+                |mut caller: Caller<'_, HostState>, ptr: i32, len: i32| -> i32 {
+                    if !caller.data().caps.clipboard_write {
+                        tracing::warn!(
+                            plugin = %caller.data().plugin_id,
+                            "clipboard_write_text denied: missing clipboard:write capability"
+                        );
+                        return HOST_ERR_DENIED;
+                    }
+                    let text = match read_guest_str(&mut caller, ptr, len) {
+                        Some(s) => s,
+                        None => return HOST_ERR_ARGS,
+                    };
+                    match crate::clipboard::ClipboardManager::new()
+                        .and_then(|mut c| c.copy_text(&text))
+                    {
+                        Ok(()) => HOST_OK,
+                        Err(e) => {
+                            tracing::warn!(plugin = %caller.data().plugin_id, "clipboard_write_text failed: {e}");
+                            HOST_ERR_FAILED
+                        }
+                    }
+                },
+            )
+            .map_err(|e| anyhow!("link capscr.clipboard_write_text: {e}"))?;
+
+        // host import: capscr.notify(title_ptr, title_len, body_ptr, body_len) -> i32
+        // gated on the `notifications = ["show"]` capability
+        linker
+            .func_wrap(
+                "capscr",
+                "notify",
+                |mut caller: Caller<'_, HostState>,
+                 title_ptr: i32,
+                 title_len: i32,
+                 body_ptr: i32,
+                 body_len: i32|
+                 -> i32 {
+                    if !caller.data().caps.notifications_show {
+                        tracing::warn!(
+                            plugin = %caller.data().plugin_id,
+                            "notify denied: missing notifications:show capability"
+                        );
+                        return HOST_ERR_DENIED;
+                    }
+                    let title = match read_guest_str(&mut caller, title_ptr, title_len) {
+                        Some(s) => s,
+                        None => return HOST_ERR_ARGS,
+                    };
+                    let body = match read_guest_str(&mut caller, body_ptr, body_len) {
+                        Some(s) => s,
+                        None => return HOST_ERR_ARGS,
+                    };
+                    match crate::clipboard::show_notification(&title, &body) {
+                        Ok(()) => HOST_OK,
+                        Err(e) => {
+                            tracing::warn!(plugin = %caller.data().plugin_id, "notify failed: {e}");
+                            HOST_ERR_FAILED
+                        }
+                    }
+                },
+            )
+            .map_err(|e| anyhow!("link capscr.notify: {e}"))?;
+
+        // host import: capscr.fetch(url_ptr, url_len) -> i64
+        // performs a blocking HTTP(S) GET and writes the response body into guest
+        // memory via the plugin's capscr_alloc, returning a packed pointer/length
+        // (ptr << 32 | len). returns 0 on any failure or denial. gated on the
+        // `fetch = [...patterns...]` capability and guarded against SSRF.
+        linker
+            .func_wrap(
+                "capscr",
+                "fetch",
+                |mut caller: Caller<'_, HostState>, url_ptr: i32, url_len: i32| -> i64 {
+                    let url = match read_guest_str(&mut caller, url_ptr, url_len) {
+                        Some(s) => s,
+                        None => return 0,
+                    };
+                    if !caller.data().caps.fetch_allowed(&url) {
+                        tracing::warn!(
+                            plugin = %caller.data().plugin_id,
+                            "fetch denied: {url} not in declared fetch capability"
+                        );
+                        return 0;
+                    }
+                    let body = match host_fetch(&url) {
+                        Ok(b) => b,
+                        Err(e) => {
+                            tracing::warn!(plugin = %caller.data().plugin_id, "fetch {url} failed: {e}");
+                            return 0;
+                        }
+                    };
+                    // the blocking GET may have spent seconds; epoch interruption
+                    // doesn't fire inside host calls, so refresh the budget here so
+                    // the plugin isn't trapped the instant it resumes to read the body
+                    let deadline = caller.data().deadline_ticks;
+                    caller.as_context_mut().set_epoch_deadline(deadline);
+
+                    let len = body.len();
+                    if len > i32::MAX as usize {
+                        return 0;
+                    }
+                    let alloc = match caller
+                        .get_export("capscr_alloc")
+                        .and_then(|e| e.into_func())
+                    {
+                        Some(f) => f,
+                        None => return 0,
+                    };
+                    let alloc = match alloc.typed::<i32, i32>(&caller) {
+                        Ok(f) => f,
+                        Err(_) => return 0,
+                    };
+                    let ptr = match alloc.call(&mut caller, len as i32) {
+                        Ok(p) => p,
+                        Err(_) => return 0,
+                    };
+                    if ptr <= 0 {
+                        return 0;
+                    }
+                    let mem = match caller.get_export("memory").and_then(|e| e.into_memory()) {
+                        Some(m) => m,
+                        None => return 0,
+                    };
+                    if mem.write(&mut caller, ptr as usize, &body).is_err() {
+                        return 0;
+                    }
+                    ((ptr as i64) << 32) | (len as i64 & 0xffff_ffff)
+                },
+            )
+            .map_err(|e| anyhow!("link capscr.fetch: {e}"))?;
+
         let instance = linker
             .instantiate(&mut store, &module)
             .map_err(|e| anyhow!("instantiating: {e}"))?;
@@ -175,11 +373,6 @@ impl WasmHost {
             }
         }
 
-        let deadline_ticks = runtime
-            .time_slice_ms
-            .map(|ms| (ms / 10).max(1))
-            .unwrap_or(50);
-
         Ok(WasmPlugin {
             id: manifest.plugin.id.clone(),
             store: Mutex::new(store),
@@ -187,7 +380,6 @@ impl WasmHost {
             memory,
             alloc,
             hooks,
-            deadline_ticks,
         })
     }
 }
@@ -211,7 +403,8 @@ impl WasmPlugin {
         // refresh per-hook budgets before each call so a plugin that exhausted
         // fuel or epoch ticks in a previous hook gets a fresh deadline
         let _ = store.set_fuel(DEFAULT_HOOK_FUEL);
-        store.set_epoch_deadline(self.deadline_ticks);
+        let deadline = store.data().deadline_ticks;
+        store.set_epoch_deadline(deadline);
 
         let bytes = payload.as_bytes();
         let len = bytes.len() as i32;
@@ -256,3 +449,96 @@ impl wasmtime::ResourceLimiter for MemLimiter {
 /// shared host instance. Created lazily on first PluginManager::load_all so
 /// the engine compile cost is paid only when at least one plugin exists.
 pub type SharedWasmHost = Arc<WasmHost>;
+
+/// read a UTF-8 string out of the guest's linear memory at (ptr, len).
+/// returns None on a negative pointer/length, an out-of-bounds range, a missing
+/// `memory` export, or invalid utf-8 — callers map that to HOST_ERR_ARGS
+fn read_guest_str(caller: &mut Caller<'_, HostState>, ptr: i32, len: i32) -> Option<String> {
+    if ptr < 0 || len < 0 {
+        return None;
+    }
+    let mem = caller.get_export("memory").and_then(|e| e.into_memory())?;
+    let data = mem.data(&caller);
+    let start = ptr as usize;
+    let end = start.checked_add(len as usize)?;
+    if end > data.len() {
+        return None;
+    }
+    std::str::from_utf8(&data[start..end]).ok().map(str::to_owned)
+}
+
+/// blocking HTTP(S) GET behind the same SSRF guard the upload path uses.
+/// redirects are disabled so a 30x to a private IP can't slip past the initial
+/// host check; the body is capped at FETCH_MAX_BYTES
+fn host_fetch(url: &str) -> Result<Vec<u8>> {
+    use std::io::Read;
+
+    let parsed = url::Url::parse(url).map_err(|e| anyhow!("bad url: {e}"))?;
+    match parsed.scheme() {
+        "http" | "https" => {}
+        other => return Err(anyhow!("unsupported scheme: {other}")),
+    }
+    let host = parsed.host_str().ok_or_else(|| anyhow!("url has no host"))?;
+    let port = parsed
+        .port_or_known_default()
+        .ok_or_else(|| anyhow!("url has no port"))?;
+    crate::upload::validate_resolved_host(host, port)?;
+
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(FETCH_TIMEOUT_SECS))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()?;
+    let resp = client.get(url).send()?;
+    if !resp.status().is_success() {
+        return Err(anyhow!("http status {}", resp.status()));
+    }
+    let mut buf = Vec::new();
+    resp.take(FETCH_MAX_BYTES as u64).read_to_end(&mut buf)?;
+    Ok(buf)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn url_pattern_exact_and_wildcard() {
+        assert!(url_pattern_matches(
+            "https://api.example.com/v1",
+            "https://api.example.com/v1"
+        ));
+        assert!(!url_pattern_matches(
+            "https://api.example.com/v1",
+            "https://api.example.com/v2"
+        ));
+        assert!(url_pattern_matches(
+            "https://api.example.com/*",
+            "https://api.example.com/anything/here"
+        ));
+        assert!(!url_pattern_matches(
+            "https://api.example.com/*",
+            "https://evil.example.com/"
+        ));
+    }
+
+    #[test]
+    fn capabilities_resolve_from_manifest() {
+        let mut raw: HashMap<String, Vec<String>> = HashMap::new();
+        raw.insert("clipboard".into(), vec!["read".into(), "write".into()]);
+        raw.insert("notifications".into(), vec!["show".into()]);
+        raw.insert("fetch".into(), vec!["https://api.example.com/*".into()]);
+        let caps = Capabilities::from_manifest(&raw);
+        assert!(caps.clipboard_write);
+        assert!(caps.notifications_show);
+        assert!(caps.fetch_allowed("https://api.example.com/data"));
+        assert!(!caps.fetch_allowed("https://other.example.com/data"));
+    }
+
+    #[test]
+    fn capabilities_default_deny() {
+        let caps = Capabilities::from_manifest(&HashMap::new());
+        assert!(!caps.clipboard_write);
+        assert!(!caps.notifications_show);
+        assert!(!caps.fetch_allowed("https://api.example.com/"));
+    }
+}

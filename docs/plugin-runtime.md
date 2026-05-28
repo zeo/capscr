@@ -61,10 +61,23 @@ export `capscr_alloc` are skipped for any hook that needs a payload.
 
 ## host imports (module `capscr`)
 
+All string arguments are `(ptr, len)` pairs into the plugin's linear memory,
+UTF-8. Imports that touch a resource are gated on the matching entry in the
+manifest's `[capabilities]` table — an un-granted call returns a denial code
+and logs a warning host-side instead of performing the action.
+
 ```wat
 (import "capscr" "log"
-  (func $capscr_log (param i32 i32 i32)))   ; level, ptr, len
+  (func $log (param i32 i32 i32)))                 ; level, ptr, len -> ()
+(import "capscr" "clipboard_write_text"
+  (func $clipboard_write_text (param i32 i32) (result i32)))   ; ptr, len -> code
+(import "capscr" "notify"
+  (func $notify (param i32 i32 i32 i32) (result i32)))         ; title*, body* -> code
+(import "capscr" "fetch"
+  (func $fetch (param i32 i32) (result i64)))      ; url ptr, len -> packed ptr/len
 ```
+
+### `log(level, ptr, len)`
 
 | level | meaning |
 |-------|---------|
@@ -73,7 +86,48 @@ export `capscr_alloc` are skipped for any hook that needs a payload.
 | 2     | info    |
 | 3     | debug   |
 
-UTF-8 messages, host-side they route to capscr's `tracing` subscriber.
+Routes to capscr's `tracing` subscriber. Always available — no capability
+required.
+
+### `clipboard_write_text(ptr, len) -> i32`
+
+Sets the system clipboard to the given UTF-8 text. Requires
+`clipboard = ["write"]`.
+
+### `notify(title_ptr, title_len, body_ptr, body_len) -> i32`
+
+Shows a native notification. Requires `notifications = ["show"]`.
+
+`i32` return codes for the two imports above:
+
+| code | meaning                                        |
+|------|------------------------------------------------|
+| 0    | ok                                             |
+| -1   | denied — capability not granted in the manifest|
+| -2   | bad args — ptr/len out of bounds or not utf-8  |
+| -3   | the host operation itself failed               |
+
+### `fetch(url_ptr, url_len) -> i64`
+
+Performs a **blocking** HTTP(S) GET and writes the response body into the
+plugin's linear memory via the exported `capscr_alloc`, returning the location
+packed as `(ptr << 32) | len`. A return value of `0` means failure or denial
+(check the host log). Decode in the plugin with
+`ptr = (ret >> 32) as i32; len = ret as i32`.
+
+Requires `fetch = [...patterns...]`, where each pattern is matched against the
+full request URL: a trailing `*` is a prefix wildcard, otherwise it's an exact
+match (no regex, no path-segment globbing). The URL must be `http`/`https`.
+
+Safety bounds:
+
+- the same SSRF guard as the upload path — private, loopback, link-local, and
+  cloud-metadata addresses are rejected, and DNS is resolved twice to defeat
+  rebinding
+- HTTP redirects are disabled, so a `30x` can't escape the host allowlist
+- the response body is capped at 1 MiB
+- a single fetch is bounded by a 10s timeout; the per-hook epoch budget is
+  refreshed afterwards so the plugin isn't trapped the instant it resumes
 
 ## minimal Rust example
 
@@ -109,10 +163,12 @@ will load it at next launch.
 
 ## current limits + roadmap
 
-- single host import (`capscr.log`) — toast/notification/clipboard/fetch
+- host imports today: `log`, `clipboard_write_text`, `notify`, `fetch`. more
   arrive incrementally
 - payloads are strings only; image bytes for `on_capture` come once the
   host blob API is settled
-- capabilities are declared but not enforced
-- no per-hook fuel limit yet (manifest field reserved)
+- capabilities for `clipboard`, `notifications`, and `fetch` are enforced;
+  other declared capabilities are still informational
+- per-hook fuel limit and epoch-deadline trap are active; `time_slice_ms`
+  tunes the epoch budget (defaults to ~500ms)
 - only `runtime.type = "wasm"` accepted; a native loader is not planned

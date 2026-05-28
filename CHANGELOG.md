@@ -6,6 +6,25 @@ format follows [keep-a-changelog](https://keepachangelog.com/en/1.1.0/) loosely.
 
 nothing pending. drop ideas in github issues.
 
+## [0.4.0] — 2026-05-28
+
+### added
+- **WASM plugin runtime ships on by default.** the `plugin-runtime` feature is now in the default build, so released binaries instantiate and run WASM plugins instead of treating every plugin as metadata-only. plugins drop a `plugin.toml` + `plugin.wasm` into `%APPDATA%\com.capscr.capscr\data\plugins\<id>\` and the host loads them at launch
+- the host now dispatches all three documented hooks: `on_capture`, `on_capture_saved`, and `on_upload_success`. previously only `on_capture` fired — `on_capture_saved`/`on_upload_success` were declared but never invoked because the save/upload events were never dispatched. every save path now funnels through one `notify_capture_saved` helper and every upload through `emit_upload_success`, so the hooks can't silently miss a call site
+- capability-gated host imports plugins can call (module `capscr`):
+  - `clipboard_write_text(ptr, len) -> i32` — gated on `clipboard = ["write"]`
+  - `notify(title_ptr, title_len, body_ptr, body_len) -> i32` — gated on `notifications = ["show"]`
+  - `fetch(url_ptr, url_len) -> i64` — blocking HTTP(S) GET gated on `fetch = [...url patterns...]`; returns the response body packed as `(ptr << 32) | len`, allocated in guest memory via the plugin's `capscr_alloc`
+- capabilities declared in the manifest's `[capabilities]` table are now **enforced** rather than informational — an un-granted import returns a denial code and logs a warning
+
+### security
+- plugin `fetch` reuses the upload path's SSRF guard (`validate_resolved_host`): blocks private/loopback/link-local/cloud-metadata ranges, resolves DNS twice to defeat rebinding, and disables HTTP redirects so a 30x can't escape the initial host check
+- responses are capped at 1 MiB and a single fetch is bounded by a 10s timeout (epoch interruption does not fire inside a blocking host call, so the timeout is what bounds it); the per-hook epoch budget is refreshed after the blocking call so the plugin isn't trapped on resume
+- existing wasmtime sandbox guards remain: per-hook fuel limit, epoch-deadline trap for stalls, and a per-instance linear-memory cap
+
+### changed
+- `default` cargo features are now `["sftp", "plugin-runtime"]` (was `["sftp"]`)
+
 ## [0.3.52] — 2026-05-22
 
 ### added

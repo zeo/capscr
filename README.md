@@ -90,14 +90,14 @@ capscr ships with a built-in marketplace. Open the hub (tray → click capscr), 
 
 The marketplace contract — `registry.json` shape, plugin zip layout, publishing — is documented in [`docs/marketplace.md`](docs/marketplace.md). The source-of-truth registry lives at [`lintowe/capscr-plugins`](https://github.com/lintowe/capscr-plugins).
 
-Status: the plugin runtime (event hooks, WASM host) arrives in v0.4. Today's plugins install as metadata-only; they appear under "installed" but do not yet execute any logic.
+Status: the plugin runtime (event hooks, WASM host) ships in v0.4. WASM plugins now execute — the host dispatches `on_capture`, `on_capture_saved`, and `on_upload_success` to plugin exports, and grants capability-gated host imports (`log`, `clipboard_write_text`, `notify`, `fetch`). See [`docs/plugin-runtime.md`](docs/plugin-runtime.md). Plugins without a `[runtime]` section stay metadata-only — listed under "installed" but not executed.
 
 ## roadmap
 
 Work that did not make 0.3.1:
 
 - in-app canvas editor (arrows, text, blur, step numbers, crop) — shipped 0.3.10+
-- WASM plugin host with manifest-declared permissions + marketplace fed by github.com/lintowe/capscr-plugins — marketplace client shipped 0.3.29, runtime host in v0.4
+- WASM plugin host with manifest-declared permissions + marketplace fed by github.com/lintowe/capscr-plugins — marketplace client shipped 0.3.29, runtime host shipped 0.4.0 (capability-gated clipboard/notify/fetch host imports)
 - HDR-preserved output (JPEG-XL, AVIF with PQ, PNG+cICP) — PNG+cICP shipped 0.3.28 for HDR10 source; scRGB and HLG in v0.4. JXL/AVIF deferred
 - SFTP destination (planned behind a `sftp` feature flag once the russh API stabilises)
 - DPAPI / Windows credential vault for stored FTP passwords (currently plaintext in `config.toml`)
