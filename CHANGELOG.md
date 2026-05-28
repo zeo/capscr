@@ -4,6 +4,10 @@ format follows [keep-a-changelog](https://keepachangelog.com/en/1.1.0/) loosely.
 
 ## [unreleased]
 
+nothing pending. drop ideas in github issues.
+
+## [0.5.1] — 2026-05-28
+
 ### fixed
 - plugin dispatch no longer holds an exclusive lock across hook execution: a slow hook (e.g. a `fetch`/`fetch_post` in `on_upload_success`, bounded at 15s) could block a concurrent capture's `on_capture` dispatch and freeze the capture. `dispatch` now takes `&self` and `AppState` holds the plugin manager behind an `RwLock`, so independent events dispatch concurrently while each plugin still serialises its own calls via its store lock
 - when an `on_capture` plugin replaces the image, the HDR sidecar is now dropped: a plugin returns 8-bit SDR, so writing the original `.hdr.png` next to the modified capture paired mismatched HDR data with the new SDR image. the modified capture is saved without a sidecar (mirrors the editor overwrite behaviour)
