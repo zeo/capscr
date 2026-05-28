@@ -34,9 +34,9 @@ impl PluginEvent {
         }
     }
 
-    /// UTF-8 payload written into the plugin's linear memory before the hook
-    /// is invoked. PostCapture currently passes mode only (image bytes will
-    /// follow when we settle on the host blob API).
+    /// UTF-8 payload for the fire-and-forget notify hooks. PostCapture does not
+    /// use this — it takes the binary image blob via dispatch_capture — but the
+    /// match stays exhaustive
     fn payload(&self) -> String {
         match self {
             PluginEvent::PostCapture { mode, .. } => format!("{:?}", mode),
@@ -57,9 +57,7 @@ pub enum CaptureType {
 #[derive(Debug, Clone)]
 pub enum PluginResponse {
     Continue,
-    #[allow(dead_code)]
     ModifiedImage(Arc<RgbaImage>),
-    #[allow(dead_code)]
     Cancel,
 }
 
@@ -155,6 +153,11 @@ impl PluginManager {
 
     #[cfg(feature = "plugin-runtime")]
     pub fn dispatch(&mut self, event: &PluginEvent) -> PluginResponse {
+        // PostCapture has a richer pipeline (pixels in, cancel/replace out);
+        // the notify events are fire-and-forget string payloads
+        if let PluginEvent::PostCapture { image, mode } = event {
+            return self.dispatch_capture(image, *mode);
+        }
         let hook_name = event.hook_name();
         let payload = event.payload();
         for plugin in &self.loaded {
@@ -165,10 +168,52 @@ impl PluginManager {
         PluginResponse::Continue
     }
 
+    /// thread the captured image through every plugin that subscribes to
+    /// on_capture (with image:read): each may continue, cancel, or replace it,
+    /// and a replacement feeds the next plugin so filters compose in order
+    #[cfg(feature = "plugin-runtime")]
+    fn dispatch_capture(&self, image: &Arc<RgbaImage>, mode: CaptureType) -> PluginResponse {
+        let mut current = image.clone();
+        let mut modified = false;
+        for plugin in &self.loaded {
+            if !plugin.wants_capture() {
+                continue;
+            }
+            let blob = build_capture_blob(&current, mode);
+            match plugin.call_capture_hook(&blob) {
+                Ok(wasm::CaptureOutcome::Continue) => {}
+                Ok(wasm::CaptureOutcome::Cancel) => return PluginResponse::Cancel,
+                Ok(wasm::CaptureOutcome::Modified(img)) => {
+                    current = Arc::new(img);
+                    modified = true;
+                }
+                Err(e) => tracing::warn!("plugin '{}' on_capture failed: {e}", plugin.id),
+            }
+        }
+        if modified {
+            PluginResponse::ModifiedImage(current)
+        } else {
+            PluginResponse::Continue
+        }
+    }
+
     #[cfg(not(feature = "plugin-runtime"))]
     pub fn dispatch(&mut self, _event: &PluginEvent) -> PluginResponse {
         PluginResponse::Continue
     }
+}
+
+/// pack a capture for the on_capture hook: `[w:u32 LE][h:u32 LE][mode:u32 LE][rgba…]`.
+/// mode mirrors CaptureType's discriminants (FullScreen=0, Window=1, Region=2, Gif=3)
+#[cfg(feature = "plugin-runtime")]
+fn build_capture_blob(image: &RgbaImage, mode: CaptureType) -> Vec<u8> {
+    let raw = image.as_raw();
+    let mut blob = Vec::with_capacity(12 + raw.len());
+    blob.extend_from_slice(&image.width().to_le_bytes());
+    blob.extend_from_slice(&image.height().to_le_bytes());
+    blob.extend_from_slice(&(mode as u32).to_le_bytes());
+    blob.extend_from_slice(raw);
+    blob
 }
 
 impl Default for PluginManager {

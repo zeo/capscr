@@ -18,6 +18,7 @@
 
 use super::manifest::PluginManifest;
 use anyhow::{anyhow, Result};
+use image::RgbaImage;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -32,6 +33,21 @@ pub struct WasmPlugin {
     alloc: Option<TypedFunc<i32, i32>>,
     /// optional hooks resolved at load time, indexed by hook name
     hooks: HashMap<String, TypedFunc<(i32, i32), ()>>,
+    /// the on_capture hook, resolved separately from the notify hooks because it
+    /// takes the binary image blob and returns an i64 response (0=continue,
+    /// <0=cancel, >0=ptr/len of a replacement image) rather than `(ptr,len)->()`
+    capture_hook: Option<TypedFunc<(i32, i32), i64>>,
+    /// granted image capabilities, mirrored here so dispatch can gate without
+    /// locking the store: read = receive pixels, modify = honour cancel/replace
+    image_read: bool,
+    image_modify: bool,
+}
+
+/// outcome of an on_capture hook, consumed by PluginManager::dispatch
+pub enum CaptureOutcome {
+    Continue,
+    Cancel,
+    Modified(RgbaImage),
 }
 
 /// per-instantiation state threaded through every host import via Caller::data.
@@ -53,6 +69,8 @@ struct HostState {
 struct Capabilities {
     clipboard_write: bool,
     notifications_show: bool,
+    image_read: bool,
+    image_modify: bool,
     /// allowed fetch URL patterns; a trailing `*` is a prefix wildcard
     fetch_allow: Vec<String>,
 }
@@ -67,6 +85,8 @@ impl Capabilities {
         Capabilities {
             clipboard_write: granted("clipboard", "write"),
             notifications_show: granted("notifications", "show"),
+            image_read: granted("image", "read"),
+            image_modify: granted("image", "modify"),
             fetch_allow: caps.get("fetch").cloned().unwrap_or_default(),
         }
     }
@@ -104,6 +124,11 @@ const FETCH_TIMEOUT_SECS: u64 = 10;
 const FETCH_HOOK_BUDGET: std::time::Duration = std::time::Duration::from_secs(15);
 /// hard cap on a fetched response body so a plugin can't exhaust host memory
 const FETCH_MAX_BYTES: usize = 1 << 20;
+/// hard cap on a replacement image a plugin returns from on_capture, so a buggy
+/// or malicious plugin can't make the host allocate unbounded memory
+const MAX_CAPTURE_BLOB_BYTES: usize = 256 * 1024 * 1024;
+/// max width/height for a plugin-returned replacement image
+const MAX_CAPTURE_DIM: u32 = 16384;
 /// ports a plugin fetch may not target, mirroring the custom-upload destination
 /// guard — non-web services where even a refused https probe leaks reachability
 const FETCH_BLOCKED_PORTS: &[u16] = &[0, 22, 23, 25, 110, 143, 445, 3306, 3389, 5432, 6379, 27017];
@@ -389,7 +414,21 @@ impl WasmHost {
             .ok();
 
         let mut hooks = std::collections::HashMap::new();
+        let mut capture_hook = None;
         for (hook_name, export_name) in &manifest.hooks {
+            // on_capture has a richer ABI: (ptr,len)->i64, binary image blob in,
+            // response out. resolve it separately from the (ptr,len)->() notifies
+            if hook_name == "on_capture" {
+                match instance.get_typed_func::<(i32, i32), i64>(&mut store, export_name) {
+                    Ok(f) => capture_hook = Some(f),
+                    Err(e) => tracing::warn!(
+                        "plugin '{}' on_capture export '{}' missing or not (i32,i32)->i64: {e}",
+                        manifest.plugin.id,
+                        export_name
+                    ),
+                }
+                continue;
+            }
             match instance.get_typed_func::<(i32, i32), ()>(&mut store, export_name) {
                 Ok(f) => {
                     hooks.insert(hook_name.clone(), f);
@@ -405,6 +444,9 @@ impl WasmHost {
             }
         }
 
+        let image_read = store.data().caps.image_read;
+        let image_modify = store.data().caps.image_modify;
+
         Ok(WasmPlugin {
             id: manifest.plugin.id.clone(),
             store: Mutex::new(store),
@@ -412,6 +454,9 @@ impl WasmHost {
             memory,
             alloc,
             hooks,
+            capture_hook,
+            image_read,
+            image_modify,
         })
     }
 }
@@ -455,6 +500,116 @@ impl WasmPlugin {
             .map_err(|e| anyhow!("hook '{name}' trapped: {e}"))?;
         Ok(())
     }
+
+    /// true if this plugin subscribes to on_capture and may read pixels —
+    /// dispatch only builds + delivers the (large) image blob for these plugins
+    pub fn wants_capture(&self) -> bool {
+        self.capture_hook.is_some() && self.image_read
+    }
+
+    /// deliver the capture blob ([w:u32][h:u32][mode:u32][rgba]) to on_capture
+    /// and decode the i64 response. cancel/replace are honoured only with the
+    /// image:modify capability; anything malformed degrades to Continue so a
+    /// buggy or hostile plugin can never corrupt or silently drop a capture
+    pub fn call_capture_hook(&self, blob: &[u8]) -> Result<CaptureOutcome> {
+        let hook = match self.capture_hook.as_ref() {
+            Some(h) => h,
+            None => return Ok(CaptureOutcome::Continue),
+        };
+        if !self.image_read {
+            return Ok(CaptureOutcome::Continue);
+        }
+        let alloc = self
+            .alloc
+            .as_ref()
+            .ok_or_else(|| anyhow!("plugin '{}' has no capscr_alloc export", self.id))?;
+        if blob.len() > i32::MAX as usize {
+            return Err(anyhow!("capture blob too large for the guest"));
+        }
+
+        let mut store = self
+            .store
+            .lock()
+            .map_err(|_| anyhow!("plugin '{}' store poisoned", self.id))?;
+
+        let _ = store.set_fuel(DEFAULT_HOOK_FUEL);
+        let deadline = store.data().deadline_ticks;
+        store.set_epoch_deadline(deadline);
+        store.data_mut().fetch_deadline = Some(std::time::Instant::now() + FETCH_HOOK_BUDGET);
+
+        let len = blob.len() as i32;
+        let ptr = alloc
+            .call(&mut *store, len)
+            .map_err(|e| anyhow!("capscr_alloc({len}): {e}"))?;
+        if ptr <= 0 {
+            return Err(anyhow!("capscr_alloc returned {ptr} (out of memory?)"));
+        }
+        self.memory
+            .write(&mut *store, ptr as usize, blob)
+            .map_err(|e| anyhow!("memory write: {e}"))?;
+
+        let ret = hook
+            .call(&mut *store, (ptr, len))
+            .map_err(|e| anyhow!("on_capture trapped: {e}"))?;
+
+        if ret == 0 {
+            return Ok(CaptureOutcome::Continue);
+        }
+        if ret < 0 {
+            if self.image_modify {
+                return Ok(CaptureOutcome::Cancel);
+            }
+            tracing::warn!(
+                "plugin '{}' tried to cancel a capture without image:modify",
+                self.id
+            );
+            return Ok(CaptureOutcome::Continue);
+        }
+        // ret > 0: packed (ptr<<32)|len of a replacement [w:u32][h:u32][rgba] blob
+        if !self.image_modify {
+            tracing::warn!(
+                "plugin '{}' returned a modified image without image:modify",
+                self.id
+            );
+            return Ok(CaptureOutcome::Continue);
+        }
+        let out_ptr = ((ret as u64) >> 32) as usize;
+        let out_len = (ret as u64 & 0xffff_ffff) as usize;
+        match read_capture_image(self.memory.data(&*store), out_ptr, out_len) {
+            Some(img) => Ok(CaptureOutcome::Modified(img)),
+            None => {
+                tracing::warn!(
+                    "plugin '{}' returned a malformed image blob — ignoring",
+                    self.id
+                );
+                Ok(CaptureOutcome::Continue)
+            }
+        }
+    }
+}
+
+/// parse a `[w:u32 LE][h:u32 LE][rgba…]` blob (a plugin's replacement image)
+/// out of guest memory with bounds + size sanity checks. None on anything off,
+/// so the caller falls back to the original capture
+fn read_capture_image(mem: &[u8], ptr: usize, len: usize) -> Option<RgbaImage> {
+    if !(8..=MAX_CAPTURE_BLOB_BYTES).contains(&len) {
+        return None;
+    }
+    let end = ptr.checked_add(len)?;
+    if end > mem.len() {
+        return None;
+    }
+    let blob = &mem[ptr..end];
+    let w = u32::from_le_bytes(blob[0..4].try_into().ok()?);
+    let h = u32::from_le_bytes(blob[4..8].try_into().ok()?);
+    if w == 0 || h == 0 || w > MAX_CAPTURE_DIM || h > MAX_CAPTURE_DIM {
+        return None;
+    }
+    let pixel_bytes = (w as usize).checked_mul(h as usize)?.checked_mul(4)?;
+    if len != 8 + pixel_bytes {
+        return None;
+    }
+    RgbaImage::from_raw(w, h, blob[8..].to_vec())
 }
 
 struct MemLimiter {
@@ -755,5 +910,139 @@ mod tests {
         let mem = plugin.memory.data(&*guard);
         let code = i32::from_le_bytes([mem[0], mem[1], mem[2], mem[3]]);
         assert_eq!(code, HOST_ERR_DENIED);
+    }
+
+    // ---- on_capture (image-blob) end-to-end tests ----
+
+    fn caps_map(pairs: &[(&str, &[&str])]) -> HashMap<String, Vec<String>> {
+        pairs
+            .iter()
+            .map(|(k, vs)| (k.to_string(), vs.iter().map(|s| s.to_string()).collect()))
+            .collect()
+    }
+
+    fn load_capture_plugin(
+        wat_src: &str,
+        caps: HashMap<String, Vec<String>>,
+    ) -> (tempfile::TempDir, WasmPlugin) {
+        let wasm = wat::parse_str(wat_src).expect("wat should compile to wasm");
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("plugin.wasm"), &wasm).expect("write wasm");
+        let manifest = PluginManifest {
+            plugin: PluginMeta {
+                id: "test".into(),
+                name: "Test".into(),
+                version: "1.0.0".into(),
+                author: None,
+                description: None,
+            },
+            runtime: Some(RuntimeSpec {
+                runtime_type: "wasm".into(),
+                file: "plugin.wasm".into(),
+                memory_max_bytes: None,
+                time_slice_ms: None,
+            }),
+            hooks: [("on_capture".to_string(), "capscr_on_capture".to_string())]
+                .into_iter()
+                .collect(),
+            capabilities: caps,
+            enabled: true,
+        };
+        let host = WasmHost::new().expect("host");
+        let plugin = host.load(dir.path(), &manifest).expect("load");
+        (dir, plugin)
+    }
+
+    // a 2x2 region capture blob: [w=2][h=2][mode=2][16 rgba bytes]
+    fn sample_blob() -> Vec<u8> {
+        let mut b = Vec::new();
+        b.extend_from_slice(&2u32.to_le_bytes());
+        b.extend_from_slice(&2u32.to_le_bytes());
+        b.extend_from_slice(&2u32.to_le_bytes());
+        b.extend_from_slice(&[0u8; 16]);
+        b
+    }
+
+    const CONTINUE_WAT: &str = r#"
+        (module
+          (memory (export "memory") 1)
+          (func (export "capscr_alloc") (param i32) (result i32) (i32.const 1024))
+          (func (export "capscr_on_capture") (param i32 i32) (result i64) (i64.const 0)))
+    "#;
+    const CANCEL_WAT: &str = r#"
+        (module
+          (memory (export "memory") 1)
+          (func (export "capscr_alloc") (param i32) (result i32) (i32.const 1024))
+          (func (export "capscr_on_capture") (param i32 i32) (result i64) (i64.const -1)))
+    "#;
+    // writes a 1x1 white replacement at offset 4096 and returns (4096<<32)|12
+    const MODIFY_WAT: &str = r#"
+        (module
+          (memory (export "memory") 1)
+          (func (export "capscr_alloc") (param i32) (result i32) (i32.const 1024))
+          (func (export "capscr_on_capture") (param i32 i32) (result i64)
+            (i32.store (i32.const 4096) (i32.const 1))
+            (i32.store (i32.const 4100) (i32.const 1))
+            (i32.store (i32.const 4104) (i32.const -1))
+            (i64.or (i64.shl (i64.const 4096) (i64.const 32)) (i64.const 12))))
+    "#;
+
+    #[test]
+    fn capture_continue_is_continue() {
+        let (_d, p) = load_capture_plugin(CONTINUE_WAT, caps_map(&[("image", &["read"])]));
+        assert!(matches!(
+            p.call_capture_hook(&sample_blob()).unwrap(),
+            CaptureOutcome::Continue
+        ));
+    }
+
+    #[test]
+    fn capture_cancel_honoured_with_modify_cap() {
+        let (_d, p) = load_capture_plugin(CANCEL_WAT, caps_map(&[("image", &["read", "modify"])]));
+        assert!(matches!(
+            p.call_capture_hook(&sample_blob()).unwrap(),
+            CaptureOutcome::Cancel
+        ));
+    }
+
+    #[test]
+    fn capture_cancel_ignored_without_modify_cap() {
+        let (_d, p) = load_capture_plugin(CANCEL_WAT, caps_map(&[("image", &["read"])]));
+        assert!(matches!(
+            p.call_capture_hook(&sample_blob()).unwrap(),
+            CaptureOutcome::Continue
+        ));
+    }
+
+    #[test]
+    fn capture_modify_returns_replacement_image() {
+        let (_d, p) = load_capture_plugin(MODIFY_WAT, caps_map(&[("image", &["read", "modify"])]));
+        let out = p.call_capture_hook(&sample_blob()).unwrap();
+        let CaptureOutcome::Modified(img) = out else {
+            panic!("expected Modified");
+        };
+        assert_eq!(img.width(), 1);
+        assert_eq!(img.height(), 1);
+        assert_eq!(img.into_raw(), vec![255u8, 255, 255, 255]);
+    }
+
+    #[test]
+    fn capture_modify_ignored_without_modify_cap() {
+        let (_d, p) = load_capture_plugin(MODIFY_WAT, caps_map(&[("image", &["read"])]));
+        assert!(matches!(
+            p.call_capture_hook(&sample_blob()).unwrap(),
+            CaptureOutcome::Continue
+        ));
+    }
+
+    #[test]
+    fn capture_hook_skipped_without_read_cap() {
+        // no image:read → wants_capture() false and call_capture_hook short-circuits
+        let (_d, p) = load_capture_plugin(MODIFY_WAT, HashMap::new());
+        assert!(!p.wants_capture());
+        assert!(matches!(
+            p.call_capture_hook(&sample_blob()).unwrap(),
+            CaptureOutcome::Continue
+        ));
     }
 }

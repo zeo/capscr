@@ -39,12 +39,13 @@ time_slice_ms    = 200              # optional, tunes the per-hook epoch budget 
 on_capture_saved   = "capscr_on_capture_saved"
 on_upload_success  = "capscr_on_upload_success"
 
-# declared capabilities. clipboard/notifications/fetch are enforced by the
-# matching host imports; other keys are still informational
+# declared capabilities. clipboard/notifications/fetch/image are enforced;
+# other keys are still informational
 [capabilities]
 clipboard      = ["read", "write"]
 notifications  = ["show"]
 fetch          = ["https://api.example.com/*"]
+image          = ["read", "modify"]   # gates the on_capture hook
 ```
 
 Plugins without a `[runtime]` section stay metadata-only — they appear in
@@ -53,16 +54,53 @@ the Marketplace tab but the host doesn't instantiate them. A plugin with
 
 ## hooks
 
-| hook                | payload                       | signature                       |
-|---------------------|-------------------------------|---------------------------------|
-| `on_capture`        | `"Region"` / `"Window"` / …   | `(ptr: i32, len: i32) -> ()`    |
-| `on_capture_saved`  | absolute path of the file     | `(ptr: i32, len: i32) -> ()`    |
-| `on_upload_success` | result URL                    | `(ptr: i32, len: i32) -> ()`    |
+| hook                | payload                          | signature                        |
+|---------------------|----------------------------------|----------------------------------|
+| `on_capture`        | binary image blob (see below)    | `(ptr: i32, len: i32) -> i64`    |
+| `on_capture_saved`  | absolute path of the file (utf-8)| `(ptr: i32, len: i32) -> ()`     |
+| `on_upload_success` | result URL (utf-8)               | `(ptr: i32, len: i32) -> ()`     |
 
-The host writes the UTF-8 payload into the plugin's linear memory at a
-region allocated via the exported `capscr_alloc(size: i32) -> i32`
-function, then calls the hook with `(ptr, len)`. Plugins that don't
-export `capscr_alloc` are skipped for any hook that needs a payload.
+For the two notify hooks the host writes the UTF-8 payload into the plugin's
+linear memory at a region allocated via the exported
+`capscr_alloc(size: i32) -> i32`, then calls the hook with `(ptr, len)`. The
+return value is ignored. Plugins that don't export `capscr_alloc` are skipped
+for any hook that needs a payload.
+
+### `on_capture` (image blob)
+
+`on_capture` runs after pixels are captured but before they're saved, copied, or
+uploaded — so it can observe, **cancel**, or **replace** the capture. It requires
+the `image` capability and a richer ABI than the notify hooks.
+
+The host writes a binary blob (via `capscr_alloc`) and calls the hook:
+
+```
+input blob:  [width: u32 LE][height: u32 LE][mode: u32 LE][rgba bytes…]
+mode:        0 = FullScreen, 1 = Window, 2 = Region, 3 = Gif
+```
+
+The hook returns an `i64`:
+
+| return            | meaning                                                        |
+|-------------------|----------------------------------------------------------------|
+| `0`               | continue — use the capture unchanged                           |
+| `< 0`             | cancel — drop the capture (no save/clipboard/upload)           |
+| `> 0`             | replace — packed `(ptr << 32) \| len` of a replacement blob    |
+
+A replacement blob the plugin allocates (via `capscr_alloc`) and fills as
+`[width: u32 LE][height: u32 LE][rgba bytes…]`; the host reads it back, validates
+it (`len == 8 + w*h*4`, dims ≤ 16384, ≤ 256 MB), and uses it as the capture.
+Anything malformed is ignored and the original capture is kept.
+
+Capability gating:
+
+- `image = ["read"]` — the hook is called with the pixels; cancel/replace
+  returns are **ignored** (read-only observer).
+- `image = ["read", "modify"]` — cancel/replace returns are honoured.
+- no `image` capability — `on_capture` is not called.
+
+When several plugins subscribe, a replacement from one feeds the next, so
+image filters compose in load order.
 
 ## host imports (module `capscr`)
 
@@ -179,10 +217,10 @@ will load it at next launch.
 
 - host imports today: `log`, `clipboard_write_text`, `notify`, `fetch`. more
   arrive incrementally
-- payloads are strings only; image bytes for `on_capture` come once the
-  host blob API is settled
-- capabilities for `clipboard`, `notifications`, and `fetch` are enforced;
-  other declared capabilities are still informational
+- `on_capture` receives full pixels and can cancel/replace; `fetch` is GET-only
+  (POST for webhook-style plugins is not yet exposed)
+- capabilities for `clipboard`, `notifications`, `fetch`, and `image` are
+  enforced; other declared capabilities are still informational
 - per-hook fuel limit and epoch-deadline trap are active; `time_slice_ms`
   tunes the epoch budget (defaults to ~500ms)
 - only `runtime.type = "wasm"` accepted; a native loader is not planned
