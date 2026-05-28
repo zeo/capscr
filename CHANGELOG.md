@@ -29,6 +29,9 @@ nothing pending. drop ideas in github issues.
 ### changed
 - `default` cargo features are now `["sftp", "plugin-runtime"]` (was `["sftp"]`)
 
+### tests
+- end-to-end runtime tests drive hand-written WAT modules through the live `WasmHost`: the full payload round-trip (compile → link → instantiate → `capscr_alloc` → host write → hook call → host import), fuel/epoch trapping of a runaway hook, the missing-`capscr_alloc` and unsubscribed-hook paths, and runtime capability denial of an un-granted host import (via a `wat` dev-dependency; test-only, not in the shipped binary)
+
 ## [0.3.52] — 2026-05-22
 
 ### added

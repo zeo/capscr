@@ -595,4 +595,149 @@ mod tests {
             .to_string();
         assert!(err.contains("port"), "expected blocked-port rejection, got: {err}");
     }
+
+    // ---- end-to-end runtime tests ----
+    // these compile a hand-written WAT module, stage it like a real plugin, and
+    // drive it through the live WasmHost so the whole round-trip (compile, link,
+    // instantiate, capscr_alloc, host write, hook call, host imports) is covered
+
+    use crate::plugin::manifest::{PluginMeta, RuntimeSpec};
+
+    fn load_plugin(
+        wat_src: &str,
+        caps: HashMap<String, Vec<String>>,
+    ) -> (tempfile::TempDir, WasmPlugin) {
+        let wasm = wat::parse_str(wat_src).expect("wat should compile to wasm");
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("plugin.wasm"), &wasm).expect("write wasm");
+        let manifest = PluginManifest {
+            plugin: PluginMeta {
+                id: "test".into(),
+                name: "Test".into(),
+                version: "1.0.0".into(),
+                author: None,
+                description: None,
+            },
+            runtime: Some(RuntimeSpec {
+                runtime_type: "wasm".into(),
+                file: "plugin.wasm".into(),
+                memory_max_bytes: None,
+                time_slice_ms: None,
+            }),
+            hooks: [(
+                "on_capture_saved".to_string(),
+                "capscr_on_capture_saved".to_string(),
+            )]
+            .into_iter()
+            .collect(),
+            capabilities: caps,
+            enabled: true,
+        };
+        let host = WasmHost::new().expect("host");
+        let plugin = host.load(dir.path(), &manifest).expect("load");
+        (dir, plugin)
+    }
+
+    // a bump-free allocator that always hands back offset 1024, a hook that
+    // copies its payload to offset 2048 (proving it ran and read its args) and
+    // echoes it through the log host import
+    const ECHO_WAT: &str = r#"
+        (module
+          (import "capscr" "log" (func $log (param i32 i32 i32)))
+          (memory (export "memory") 1)
+          (func (export "capscr_alloc") (param i32) (result i32) (i32.const 1024))
+          (func (export "capscr_on_capture_saved") (param $ptr i32) (param $len i32)
+            (local $i i32)
+            (block $done
+              (loop $copy
+                (br_if $done (i32.ge_u (local.get $i) (local.get $len)))
+                (i32.store8
+                  (i32.add (i32.const 2048) (local.get $i))
+                  (i32.load8_u (i32.add (local.get $ptr) (local.get $i))))
+                (local.set $i (i32.add (local.get $i) (i32.const 1)))
+                (br $copy)))
+            (call $log (i32.const 2) (i32.const 2048) (local.get $len))))
+    "#;
+
+    #[test]
+    fn hook_roundtrip_passes_payload_to_guest() {
+        let (_dir, plugin) = load_plugin(ECHO_WAT, HashMap::new());
+        let payload = "C:/captures/shot-001.png";
+        plugin
+            .call_hook("on_capture_saved", payload)
+            .expect("hook should run cleanly");
+        // the hook copied the host-written payload to offset 2048; reading it
+        // back proves alloc + host write + hook execution + arg read all worked
+        let guard = plugin.store.lock().unwrap();
+        let mem = plugin.memory.data(&*guard);
+        assert_eq!(&mem[2048..2048 + payload.len()], payload.as_bytes());
+    }
+
+    #[test]
+    fn infinite_loop_hook_is_trapped() {
+        // fuel exhaustion (or the epoch deadline) must stop a runaway hook
+        const SPIN_WAT: &str = r#"
+            (module
+              (memory (export "memory") 1)
+              (func (export "capscr_alloc") (param i32) (result i32) (i32.const 1024))
+              (func (export "capscr_on_capture_saved") (param i32 i32)
+                (loop $l (br $l))))
+        "#;
+        let (_dir, plugin) = load_plugin(SPIN_WAT, HashMap::new());
+        let err = plugin
+            .call_hook("on_capture_saved", "p")
+            .expect_err("runaway hook must trap");
+        assert!(err.to_string().contains("trapped"), "got: {err}");
+    }
+
+    #[test]
+    fn hook_without_alloc_errors() {
+        const NO_ALLOC_WAT: &str = r#"
+            (module
+              (memory (export "memory") 1)
+              (func (export "capscr_on_capture_saved") (param i32 i32)))
+        "#;
+        let (_dir, plugin) = load_plugin(NO_ALLOC_WAT, HashMap::new());
+        let err = plugin
+            .call_hook("on_capture_saved", "p")
+            .expect_err("missing capscr_alloc must error");
+        assert!(err.to_string().contains("capscr_alloc"), "got: {err}");
+    }
+
+    #[test]
+    fn unsubscribed_hook_is_noop() {
+        // plugin exports alloc + memory but not the hook → opted out, no error
+        const NO_HOOK_WAT: &str = r#"
+            (module
+              (memory (export "memory") 1)
+              (func (export "capscr_alloc") (param i32) (result i32) (i32.const 1024)))
+        "#;
+        let (_dir, plugin) = load_plugin(NO_HOOK_WAT, HashMap::new());
+        plugin
+            .call_hook("on_capture_saved", "p")
+            .expect("unsubscribed hook should be a silent no-op");
+    }
+
+    #[test]
+    fn clipboard_import_denied_without_capability() {
+        // stores the clipboard_write_text return code at offset 0; with no
+        // clipboard capability the host must deny in-band (never touching the
+        // OS clipboard) and return HOST_ERR_DENIED
+        const CLIP_WAT: &str = r#"
+            (module
+              (import "capscr" "clipboard_write_text" (func $cb (param i32 i32) (result i32)))
+              (memory (export "memory") 1)
+              (func (export "capscr_alloc") (param i32) (result i32) (i32.const 1024))
+              (func (export "capscr_on_capture_saved") (param $ptr i32) (param $len i32)
+                (i32.store (i32.const 0) (call $cb (local.get $ptr) (local.get $len)))))
+        "#;
+        let (_dir, plugin) = load_plugin(CLIP_WAT, HashMap::new());
+        plugin
+            .call_hook("on_capture_saved", "hello")
+            .expect("hook runs; denial is an in-band return code");
+        let guard = plugin.store.lock().unwrap();
+        let mem = plugin.memory.data(&*guard);
+        let code = i32::from_le_bytes([mem[0], mem[1], mem[2], mem[3]]);
+        assert_eq!(code, HOST_ERR_DENIED);
+    }
 }

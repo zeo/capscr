@@ -153,6 +153,9 @@ tauri-build = { version = "2", features = [] }
 
 [dev-dependencies]
 tempfile = "3"
+# compiles hand-written WAT into wasm bytes for the plugin-runtime end-to-end
+# tests. test-only — never linked into the shipped binary.
+wat = "1"
 
 [patch.crates-io]
 # Force wry to the last release before the Send+Sync breaking change in
