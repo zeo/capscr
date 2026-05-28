@@ -65,7 +65,7 @@ copy_url_to_clipboard = true
 host = "files.example.com"
 port = 21
 username = "user"
-password = "plaintext-for-now-see-roadmap"
+password = "secret"           # migrated to a per-user DPAPI blob on first save
 remote_dir = "/screenshots"
 public_url_template = "https://files.example.com/{filename}"
 ```
@@ -98,9 +98,9 @@ Work that did not make 0.3.1:
 
 - in-app canvas editor (arrows, text, blur, step numbers, crop) — shipped 0.3.10+
 - WASM plugin host with manifest-declared permissions + marketplace fed by github.com/lintowe/capscr-plugins — marketplace client shipped 0.3.29, runtime host shipped 0.4.0 (capability-gated clipboard/notify/fetch host imports)
-- HDR-preserved output (JPEG-XL, AVIF with PQ, PNG+cICP) — PNG+cICP shipped 0.3.28 for HDR10 source; scRGB and HLG in v0.4. JXL/AVIF deferred
-- SFTP destination (planned behind a `sftp` feature flag once the russh API stabilises)
-- DPAPI / Windows credential vault for stored FTP passwords (currently plaintext in `config.toml`)
+- HDR-preserved output (JPEG-XL, AVIF with PQ, PNG+cICP) — PNG+cICP shipped 0.3.28 for HDR10 source, HLG shipped 0.3.52; scRGB and JXL/AVIF deferred
+- SFTP destination — shipped behind the default-on `sftp` feature (pure-rust russh)
+- DPAPI / Windows credential vault for stored FTP/SFTP passwords — shipped; config stores a per-user `CryptProtectData` blob, not cleartext
 
 ## credits
 

@@ -117,7 +117,8 @@ packed as `(ptr << 32) | len`. A return value of `0` means failure or denial
 
 Requires `fetch = [...patterns...]`, where each pattern is matched against the
 full request URL: a trailing `*` is a prefix wildcard, otherwise it's an exact
-match (no regex, no path-segment globbing). The URL must be `http`/`https`.
+match (no regex, no path-segment globbing). The URL must be `https` — cleartext
+`http` is rejected, matching the upload destinations.
 Patterns match on the raw string prefix, so include the path separator —
 `https://api.example.com/*` is host-scoped, but `https://api.example.com*` would
 also match `https://api.example.com.attacker.test/`.
@@ -127,6 +128,8 @@ Safety bounds:
 - the same SSRF guard as the upload path — private, loopback, link-local, and
   cloud-metadata addresses are rejected, and DNS is resolved twice to defeat
   rebinding
+- non-web ports (22, 23, 25, 445, 3306, 6379, …) are refused, so a plugin
+  can't use fetch to probe service reachability
 - HTTP redirects are disabled, so a `30x` can't escape the host allowlist
 - the response body is capped at 1 MiB
 - a single fetch is bounded by a 10s timeout; the per-hook epoch budget is

@@ -18,6 +18,7 @@ nothing pending. drop ideas in github issues.
 - capabilities declared in the manifest's `[capabilities]` table are now **enforced** rather than informational — an un-granted import returns a denial code and logs a warning
 
 ### security
+- plugin `fetch` is https-only (cleartext http rejected) and refuses non-web ports (22/25/445/3306/6379/…), matching the custom-upload destination's posture
 - plugin `fetch` reuses the upload path's SSRF guard (`validate_resolved_host`): blocks private/loopback/link-local/cloud-metadata ranges, resolves DNS twice to defeat rebinding, and disables HTTP redirects so a 30x can't escape the initial host check
 - responses are capped at 1 MiB and a single fetch is bounded by a 10s timeout (epoch interruption does not fire inside a blocking host call, so the timeout is what bounds it); the per-hook epoch budget is refreshed after the blocking call so the plugin isn't trapped on resume
 - all fetches in one hook call share a 15s aggregate wall-clock budget (each call is shortened to the remaining budget), so a fetch loop can't hold the dispatch thread — and the plugin-manager lock it runs under — open indefinitely

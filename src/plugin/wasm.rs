@@ -104,6 +104,9 @@ const FETCH_TIMEOUT_SECS: u64 = 10;
 const FETCH_HOOK_BUDGET: std::time::Duration = std::time::Duration::from_secs(15);
 /// hard cap on a fetched response body so a plugin can't exhaust host memory
 const FETCH_MAX_BYTES: usize = 1 << 20;
+/// ports a plugin fetch may not target, mirroring the custom-upload destination
+/// guard — non-web services where even a refused https probe leaks reachability
+const FETCH_BLOCKED_PORTS: &[u16] = &[0, 22, 23, 25, 110, 143, 445, 3306, 3389, 5432, 6379, 27017];
 
 pub struct WasmHost {
     engine: Engine,
@@ -505,14 +508,16 @@ fn host_fetch(url: &str, timeout: std::time::Duration) -> Result<Vec<u8>> {
     use std::io::Read;
 
     let parsed = url::Url::parse(url).map_err(|e| anyhow!("bad url: {e}"))?;
-    match parsed.scheme() {
-        "http" | "https" => {}
-        other => return Err(anyhow!("unsupported scheme: {other}")),
+    // https only, matching the custom-upload destination — cleartext http is
+    // MITM-able and a plugin's response drives host actions
+    if parsed.scheme() != "https" {
+        return Err(anyhow!("only https is allowed (got {})", parsed.scheme()));
     }
     let host = parsed.host_str().ok_or_else(|| anyhow!("url has no host"))?;
-    let port = parsed
-        .port_or_known_default()
-        .ok_or_else(|| anyhow!("url has no port"))?;
+    let port = parsed.port().unwrap_or(443);
+    if FETCH_BLOCKED_PORTS.contains(&port) {
+        return Err(anyhow!("port {port} is blocked"));
+    }
     crate::upload::validate_resolved_host(host, port)?;
 
     let client = reqwest::blocking::Client::builder()
@@ -571,5 +576,23 @@ mod tests {
         assert!(!caps.clipboard_write);
         assert!(!caps.notifications_show);
         assert!(!caps.fetch_allowed("https://api.example.com/"));
+    }
+
+    // both of these reject at the scheme/port check before any network call,
+    // so they're deterministic and offline
+    #[test]
+    fn host_fetch_rejects_non_https() {
+        let err = host_fetch("http://example.com/", std::time::Duration::from_secs(1))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("https"), "expected https rejection, got: {err}");
+    }
+
+    #[test]
+    fn host_fetch_rejects_blocked_port() {
+        let err = host_fetch("https://example.com:22/", std::time::Duration::from_secs(1))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("port"), "expected blocked-port rejection, got: {err}");
     }
 }
