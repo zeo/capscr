@@ -1853,8 +1853,10 @@ pub struct InstalledPlugin {
     pub enabled: bool,
 }
 
+// legacy flat plugin.toml (the metadata-only era: top-level name/version/...).
+// modern plugins use the sectioned schema parsed by crate::plugin::PluginManifest.
 #[derive(Debug, Deserialize)]
-struct PluginManifest {
+struct LegacyFlatManifest {
     name: String,
     #[serde(default)]
     version: String,
@@ -1866,6 +1868,58 @@ struct PluginManifest {
 
 fn default_true() -> bool {
     true
+}
+
+/// extract (name, version, description, enabled) for the plugins list from a
+/// plugin.toml body. tries the sectioned runtime schema first — what real WASM
+/// plugins use — then falls back to the legacy flat schema. None if neither
+/// parses. without the sectioned attempt, installed WASM plugins (whose name
+/// lives under `[plugin]`) silently fail to parse and never appear in the list.
+fn read_plugin_listing(body: &str) -> Option<(String, String, String, bool)> {
+    if let Ok(m) = toml::from_str::<crate::plugin::PluginManifest>(body) {
+        return Some((
+            m.plugin.name,
+            m.plugin.version,
+            m.plugin.description.unwrap_or_default(),
+            m.enabled,
+        ));
+    }
+    if let Ok(m) = toml::from_str::<LegacyFlatManifest>(body) {
+        return Some((m.name, m.version, m.description, m.enabled));
+    }
+    None
+}
+
+#[cfg(test)]
+mod plugin_listing_tests {
+    use super::read_plugin_listing;
+
+    #[test]
+    fn reads_sectioned_wasm_manifest() {
+        let body = "enabled = false\n\
+            [plugin]\nid = \"grayscale\"\nname = \"Grayscale\"\nversion = \"0.1.0\"\ndescription = \"gray\"\n\
+            [runtime]\ntype = \"wasm\"\nfile = \"plugin.wasm\"\n\
+            [hooks]\non_capture = \"capscr_on_capture\"\n";
+        let (name, version, desc, enabled) = read_plugin_listing(body).expect("sectioned parses");
+        assert_eq!(name, "Grayscale");
+        assert_eq!(version, "0.1.0");
+        assert_eq!(desc, "gray");
+        assert!(!enabled);
+    }
+
+    #[test]
+    fn reads_legacy_flat_manifest() {
+        let body = "name = \"Sounds\"\nversion = \"0.1.0\"\ndescription = \"sfx\"\nenabled = true\n";
+        let (name, version, _desc, enabled) = read_plugin_listing(body).expect("flat parses");
+        assert_eq!(name, "Sounds");
+        assert_eq!(version, "0.1.0");
+        assert!(enabled);
+    }
+
+    #[test]
+    fn rejects_garbage() {
+        assert!(read_plugin_listing("not [ valid toml").is_none());
+    }
 }
 
 fn plugins_dir() -> Result<PathBuf, String> {
@@ -1900,19 +1954,19 @@ pub fn list_installed_plugins() -> Result<Vec<InstalledPlugin>, String> {
             Ok(s) => s,
             Err(_) => continue,
         };
-        let manifest: PluginManifest = match toml::from_str(&body) {
-            Ok(m) => m,
-            Err(e) => {
-                tracing::warn!("plugin {:?}: bad manifest: {e}", path.file_name());
+        let (name, version, description, enabled) = match read_plugin_listing(&body) {
+            Some(t) => t,
+            None => {
+                tracing::warn!("plugin {:?}: unparseable manifest", path.file_name());
                 continue;
             }
         };
         out.push(InstalledPlugin {
             id: entry.file_name().to_string_lossy().to_string(),
-            name: manifest.name,
-            version: manifest.version,
-            description: manifest.description,
-            enabled: manifest.enabled,
+            name,
+            version,
+            description,
+            enabled,
         });
     }
     out.sort_by(|a, b| a.name.cmp(&b.name));

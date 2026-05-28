@@ -9,6 +9,9 @@ format follows [keep-a-changelog](https://keepachangelog.com/en/1.1.0/) loosely.
 - new `image` capability gates it: `["read"]` to receive pixels, `["read","modify"]` to honour cancel/replace; without it `on_capture` isn't called. replacement images are validated (`len == 8 + w*h*4`, dims ≤ 16384, ≤ 256 MB) and anything malformed is ignored so a buggy plugin can't drop or corrupt a capture
 - end-to-end WAT tests cover continue / cancel / replace and every capability-gating case
 
+### fixed
+- the plugins tab now lists installed WASM plugins: `list_installed_plugins` parsed only the legacy flat `plugin.toml` schema, so a sectioned runtime manifest (the form real WASM plugins use, with `name` under `[plugin]`) failed to parse and the plugin was silently dropped from the list. it now reads the sectioned schema first and falls back to the flat one, so both modern and legacy manifests appear
+
 ## [0.4.1] — 2026-05-28
 
 ### added
