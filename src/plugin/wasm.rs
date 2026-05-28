@@ -596,6 +596,22 @@ mod tests {
         assert!(err.contains("port"), "expected blocked-port rejection, got: {err}");
     }
 
+    #[test]
+    fn host_fetch_rejects_loopback() {
+        // proves the SSRF guard is actually wired into fetch: a loopback literal
+        // is rejected by validate_resolved_host before any DNS or network, so
+        // this stays deterministic and offline. the guard phrases loopback as
+        // "host not allowed", private ranges as "private ... blocked"
+        let err = host_fetch("https://127.0.0.1/", std::time::Duration::from_secs(1))
+            .unwrap_err()
+            .to_string()
+            .to_lowercase();
+        assert!(
+            err.contains("not allowed") || err.contains("private") || err.contains("blocked"),
+            "expected SSRF rejection, got: {err}"
+        );
+    }
+
     // ---- end-to-end runtime tests ----
     // these compile a hand-written WAT module, stage it like a real plugin, and
     // drive it through the live WasmHost so the whole round-trip (compile, link,
