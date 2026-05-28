@@ -1382,4 +1382,51 @@ mod tests {
         let packed = i64::from_le_bytes(mem[0..8].try_into().unwrap());
         assert_eq!(packed, 0, "absent key must return 0");
     }
+
+    // read_capture_image parses an attacker-controlled blob (a sandboxed plugin's
+    // replacement image) out of guest memory. these guard the rejection paths so
+    // a malformed/hostile blob can never produce a bad RgbaImage or read OOB.
+    fn img_blob(w: u32, h: u32, pixels: &[u8]) -> Vec<u8> {
+        let mut b = Vec::new();
+        b.extend_from_slice(&w.to_le_bytes());
+        b.extend_from_slice(&h.to_le_bytes());
+        b.extend_from_slice(pixels);
+        b
+    }
+
+    #[test]
+    fn read_capture_image_accepts_valid() {
+        let blob = img_blob(1, 1, &[10, 20, 30, 40]);
+        let img = read_capture_image(&blob, 0, blob.len()).expect("valid 1x1");
+        assert_eq!(img.into_raw(), vec![10, 20, 30, 40]);
+    }
+
+    #[test]
+    fn read_capture_image_rejects_malformed() {
+        // too short (< 8 header bytes)
+        assert!(read_capture_image(&[0, 0, 0, 0], 0, 4).is_none(), "len<8");
+        // over the size cap — checked before any memory access, so a tiny buffer
+        // with a huge claimed len must still be rejected without reading OOB
+        assert!(
+            read_capture_image(&[], 0, MAX_CAPTURE_BLOB_BYTES + 1).is_none(),
+            "over cap"
+        );
+        // ptr+len out of bounds of the provided memory
+        let v = vec![0u8; 12];
+        assert!(read_capture_image(&v, 8, 12).is_none(), "oob (ptr+len>mem)");
+        // ptr+len overflows usize
+        assert!(read_capture_image(&v, usize::MAX, 8).is_none(), "overflow");
+        // zero dimension
+        assert!(read_capture_image(&img_blob(0, 1, &[]), 0, 8).is_none(), "w=0");
+        // dimension exceeds MAX_CAPTURE_DIM (caught before the len check, so the
+        // buffer only needs the 8-byte header)
+        let big = img_blob(MAX_CAPTURE_DIM + 1, 1, &[]);
+        assert!(read_capture_image(&big, 0, big.len()).is_none(), "w>max dim");
+        // length doesn't match 8 + w*h*4 (claims 2x2 = 24 bytes, supplies 12)
+        let mismatch = img_blob(2, 2, &[0, 0, 0, 0]);
+        assert!(
+            read_capture_image(&mismatch, 0, mismatch.len()).is_none(),
+            "len != 8 + w*h*4"
+        );
+    }
 }
