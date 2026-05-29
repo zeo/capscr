@@ -6,6 +6,11 @@ format follows [keep-a-changelog](https://keepachangelog.com/en/1.1.0/) loosely.
 
 nothing pending. drop ideas in github issues.
 
+## [0.5.2] — 2026-05-29
+
+### fixed
+- resolved the intermittent black screen bug where entering capture mode occasionally blanked out the primary monitor: implemented robust retry loops and pixel-level checks scanning the mapped texture bytes (first, middle, and last row) to detect and retry on all-zeros (black) frames in both the DXGI Desktop Duplication and Windows Graphics Capture (WGC) pipelines, falling back gracefully to GDI capture on persistent failure
+
 ## [0.5.1] — 2026-05-28
 
 ### fixed

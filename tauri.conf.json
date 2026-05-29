@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "capscr",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "identifier": "io.rot.capscr",
   "build": {
     "frontendDist": "./frontend/dist",
@@ -58,7 +58,7 @@
       "endpoints": [
         "https://github.com/lintowe/capscr/releases/latest/download/latest.json"
       ],
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEVDOEU2MDgzRDNFMjFDRUIKUldUckhPTFRnMkNPN0ZhTGNZUEx2TFRuS3Nva0EyU0dFWE41bWtzbFAvZmd6c3oweUgyKzJiN2gK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEE5QjM1MEJFM0ZGRURBMDYKUldRRzJ2NC92bEN6cWRyQzN1Vk5UZEtTamNCQTF2STNFR28xM2xGbzJ1UnN1NGRYODZvZDdEb0MK",
       "windows": {
         "installMode": "passive"
       }

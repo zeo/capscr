@@ -778,7 +778,7 @@ function NotifyPane(props: { c: AppConfig; patch: Patch }) {
 
       <Section title="system">
         <div class="field">
-          <label class="field-label">launch on boot</label>
+          <label class="field-label">start up with windows</label>
           <div class="field-control">
             <label class="check">
               <input
@@ -793,11 +793,11 @@ function NotifyPane(props: { c: AppConfig; patch: Patch }) {
               />
               <span class="check-label">
                 {c().ui.auto_start
-                  ? "registered in windows run keys"
+                  ? "will show up in windows startup apps list"
                   : "manual launch only"}
               </span>
             </label>
-            <span class="field-hint">applied on next save</span>
+            <span class="field-hint">launch capscr automatically on windows bootup (applied on next save)</span>
           </div>
         </div>
         <div class="field">
