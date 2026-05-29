@@ -124,130 +124,182 @@ fn capture_item(item: GraphicsCaptureItem) -> Result<RgbaImage> {
 
         session.StartCapture().map_err(|e| anyhow!("StartCapture: {e}"))?;
 
-        // 4. poll for the first frame. WGC's frame pool is asynchronous —
-        //    TryGetNextFrame returns None until the compositor delivers
-        //    a frame. spin with short sleeps; in practice this resolves
-        //    within one display refresh (~16ms at 60Hz, ~8ms at 120Hz).
-        let mut frame = None;
-        for _ in 0..120 {
-            match pool.TryGetNextFrame() {
-                Ok(f) => {
-                    frame = Some(f);
-                    break;
-                }
-                Err(_) => {
-                    std::thread::sleep(std::time::Duration::from_millis(2));
-                }
-            }
-        }
-        let frame = frame.ok_or_else(|| {
-            let _ = session.Close();
-            let _ = pool.Close();
-            anyhow!("WGC: no frame after 240ms")
-        })?;
+        // poll for a non-black frame as WGC's frame pool is asynchronous
+        // and may occasionally deliver all-zero pixels in the first frame
+        // so we retry up to 10 attempts to get a valid non-black frame
+        let mut rgba = None;
+        let mut width = 0;
+        let mut height = 0;
+        let mut acquired = false;
 
-        // 5. extract the underlying ID3D11Texture2D from the WinRT surface.
-        let surface = frame.Surface().map_err(|e| anyhow!("frame.Surface: {e}"))?;
-        let access: IDirect3DDxgiInterfaceAccess =
-            surface.cast().map_err(|e| anyhow!("cast IDirect3DDxgiInterfaceAccess: {e}"))?;
-        let frame_texture: ID3D11Texture2D = access
-            .GetInterface()
-            .map_err(|e| anyhow!("GetInterface ID3D11Texture2D: {e}"))?;
-
-        let mut desc = D3D11_TEXTURE2D_DESC::default();
-        frame_texture.GetDesc(&mut desc);
-        let width = desc.Width;
-        let height = desc.Height;
-
-        // 6. copy to a CPU-readable staging texture, map, read bytes.
-        let staging_desc = D3D11_TEXTURE2D_DESC {
-            Width: width,
-            Height: height,
-            MipLevels: 1,
-            ArraySize: 1,
-            Format: desc.Format,
-            SampleDesc: desc.SampleDesc,
-            Usage: D3D11_USAGE_STAGING,
-            BindFlags: Default::default(),
-            CPUAccessFlags: D3D11_CPU_ACCESS_READ.0 as u32,
-            MiscFlags: Default::default(),
-        };
-        let mut staging: Option<ID3D11Texture2D> = None;
-        device
-            .CreateTexture2D(&staging_desc, None, Some(&mut staging))
-            .map_err(|e| anyhow!("CreateTexture2D staging: {e}"))?;
-        let staging = staging.ok_or_else(|| anyhow!("staging texture null"))?;
-
-        context.CopyResource(&staging, &frame_texture);
-
-        let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
-        context
-            .Map(&staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped))
-            .map_err(|e| anyhow!("Map staging: {e}"))?;
-
-        struct UnmapGuard<'a> {
-            ctx: &'a ID3D11DeviceContext,
-            tex: &'a ID3D11Texture2D,
-        }
-        impl<'a> Drop for UnmapGuard<'a> {
-            fn drop(&mut self) {
-                unsafe { self.ctx.Unmap(self.tex, 0) }
-            }
-        }
-        let _guard = UnmapGuard { ctx: &context, tex: &staging };
-
-        let row_pitch = mapped.RowPitch as usize;
-        let src_ptr = mapped.pData as *const u8;
-        if src_ptr.is_null() {
-            return Err(anyhow!("staging Map returned null pointer"));
-        }
-        let row_bytes = (width as usize) * 4;
-        if row_pitch < row_bytes {
-            return Err(anyhow!("row_pitch {row_pitch} < row_bytes {row_bytes}"));
-        }
-
-        // 7. swap BGRA → RGBA on the way out. WGC delivers B8G8R8A8 in
-        //    little-endian order (B in byte 0, G in 1, R in 2, A in 3);
-        //    image::RgbaImage expects RGBA. parallelized across CPU cores
-        //    because in debug builds the 8M-pixel per-byte loop was
-        //    dominating capture time (~2s out of 3s for a 4K frame).
-        let pixel_count = (width as usize) * (height as usize);
-        let mut rgba = vec![0u8; pixel_count * 4];
-        let thread_count = std::thread::available_parallelism()
-            .map(|n| n.get().min(16))
-            .unwrap_or(4)
-            .max(1);
-        let rows_per_chunk = (height as usize).div_ceil(thread_count);
-        let src_addr = src_ptr as usize; // raw addr is Send; pointer isn't
-        std::thread::scope(|s| {
-            for (chunk_idx, dst_chunk) in rgba.chunks_mut(rows_per_chunk * row_bytes).enumerate() {
-                let start_row = chunk_idx * rows_per_chunk;
-                s.spawn(move || {
-                    let rows = dst_chunk.len() / row_bytes;
-                    for r in 0..rows {
-                        let y = start_row + r;
-                        let src = (src_addr + y * row_pitch) as *const u8;
-                        let dst_row = &mut dst_chunk[r * row_bytes..(r + 1) * row_bytes];
-                        for x in 0..(width as usize) {
-                            let off = x * 4;
-                            dst_row[off]     = *src.add(off + 2);
-                            dst_row[off + 1] = *src.add(off + 1);
-                            dst_row[off + 2] = *src.add(off);
-                            dst_row[off + 3] = *src.add(off + 3);
-                        }
+        'retry: for attempt in 0..10 {
+            let mut frame = None;
+            for _ in 0..30 {
+                match pool.TryGetNextFrame() {
+                    Ok(f) => {
+                        frame = Some(f);
+                        break;
                     }
-                });
+                    Err(_) => {
+                        std::thread::sleep(std::time::Duration::from_millis(2));
+                    }
+                }
             }
-        });
 
-        // 8. cleanup. closing the session + pool is critical or WGC will
-        //    leak GPU resources and the next capture-active border will
-        //    keep showing.
-        drop(_guard);
+            let frame = match frame {
+                Some(f) => f,
+                None => {
+                    tracing::warn!("WGC: TryGetNextFrame returned None on attempt {attempt}");
+                    continue 'retry;
+                }
+            };
+
+            let surface = match frame.Surface() {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::warn!("WGC: frame.Surface failed on attempt {attempt}: {e}");
+                    continue 'retry;
+                }
+            };
+            let access: IDirect3DDxgiInterfaceAccess = match surface.cast() {
+                Ok(a) => a,
+                Err(e) => {
+                    tracing::warn!("WGC: cast IDirect3DDxgiInterfaceAccess failed on attempt {attempt}: {e}");
+                    continue 'retry;
+                }
+            };
+            let frame_texture: ID3D11Texture2D = match access.GetInterface() {
+                Ok(t) => t,
+                Err(e) => {
+                    tracing::warn!("WGC: GetInterface ID3D11Texture2D failed on attempt {attempt}: {e}");
+                    continue 'retry;
+                }
+            };
+
+            let mut desc = D3D11_TEXTURE2D_DESC::default();
+            frame_texture.GetDesc(&mut desc);
+            let w = desc.Width;
+            let h = desc.Height;
+
+            let staging_desc = D3D11_TEXTURE2D_DESC {
+                Width: w,
+                Height: h,
+                MipLevels: 1,
+                ArraySize: 1,
+                Format: desc.Format,
+                SampleDesc: desc.SampleDesc,
+                Usage: D3D11_USAGE_STAGING,
+                BindFlags: Default::default(),
+                CPUAccessFlags: D3D11_CPU_ACCESS_READ.0 as u32,
+                MiscFlags: Default::default(),
+            };
+
+            let mut staging: Option<ID3D11Texture2D> = None;
+            if let Err(e) = device.CreateTexture2D(&staging_desc, None, Some(&mut staging)) {
+                tracing::warn!("WGC: CreateTexture2D staging failed on attempt {attempt}: {e}");
+                continue 'retry;
+            }
+            let staging = match staging {
+                Some(s) => s,
+                None => {
+                    tracing::warn!("WGC: staging texture was null on attempt {attempt}");
+                    continue 'retry;
+                }
+            };
+
+            context.CopyResource(&staging, &frame_texture);
+
+            let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
+            if let Err(e) = context.Map(&staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped)) {
+                tracing::warn!("WGC: Map staging failed on attempt {attempt}: {e}");
+                continue 'retry;
+            }
+
+            let row_pitch = mapped.RowPitch as usize;
+            let src_ptr = mapped.pData as *const u8;
+            if src_ptr.is_null() {
+                context.Unmap(&staging, 0);
+                tracing::warn!("WGC: Map returned null pointer on attempt {attempt}");
+                continue 'retry;
+            }
+
+            let row_bytes = (w as usize) * 4;
+            if row_pitch < row_bytes {
+                context.Unmap(&staging, 0);
+                tracing::warn!("WGC: row_pitch < row_bytes on attempt {attempt}");
+                continue 'retry;
+            }
+
+            // check if the frame is completely black (all-zeros)
+            let is_zero = {
+                let first_row = std::slice::from_raw_parts(src_ptr, row_bytes);
+                first_row.iter().all(|&b| b == 0) && {
+                    let mid_row = src_ptr.add(row_pitch * (h as usize / 2));
+                    let mid_slice = std::slice::from_raw_parts(mid_row, row_bytes);
+                    mid_slice.iter().all(|&b| b == 0)
+                } && {
+                    let last_row = src_ptr.add(row_pitch * (h as usize - 1));
+                    let last_slice = std::slice::from_raw_parts(last_row, row_bytes);
+                    last_slice.iter().all(|&b| b == 0)
+                }
+            };
+
+            if is_zero {
+                context.Unmap(&staging, 0);
+                tracing::warn!("WGC: acquired black frame on attempt {attempt}, retrying...");
+                std::thread::sleep(std::time::Duration::from_millis(10));
+                continue 'retry;
+            }
+
+            // swap BGRA -> RGBA on the way out since image::RgbaImage expects RGBA
+            let pixel_count = (w as usize) * (h as usize);
+            let mut rgba_buf = vec![0u8; pixel_count * 4];
+            let thread_count = std::thread::available_parallelism()
+                .map(|n| n.get().min(16))
+                .unwrap_or(4)
+                .max(1);
+            let rows_per_chunk = (h as usize).div_ceil(thread_count);
+            let src_addr = src_ptr as usize;
+
+            std::thread::scope(|s| {
+                for (chunk_idx, dst_chunk) in rgba_buf.chunks_mut(rows_per_chunk * row_bytes).enumerate() {
+                    let start_row = chunk_idx * rows_per_chunk;
+                    s.spawn(move || {
+                        let rows = dst_chunk.len() / row_bytes;
+                        for r in 0..rows {
+                            let y = start_row + r;
+                            let src = (src_addr + y * row_pitch) as *const u8;
+                            let dst_row = &mut dst_chunk[r * row_bytes..(r + 1) * row_bytes];
+                            for x in 0..(w as usize) {
+                                let off = x * 4;
+                                dst_row[off]     = *src.add(off + 2);
+                                dst_row[off + 1] = *src.add(off + 1);
+                                dst_row[off + 2] = *src.add(off);
+                                dst_row[off + 3] = *src.add(off + 3);
+                            }
+                        }
+                    });
+                }
+            });
+
+            context.Unmap(&staging, 0);
+            rgba = Some(rgba_buf);
+            width = w;
+            height = h;
+            acquired = true;
+            break;
+        }
+
+        // cleanup session and pool to avoid leaking GPU resources
         let _ = session.Close();
         let _ = pool.Close();
 
-        RgbaImage::from_raw(width, height, rgba)
+        if !acquired {
+            return Err(anyhow!("WGC: failed to acquire non-black frame after 10 attempts"));
+        }
+
+        let rgba_data = rgba.ok_or_else(|| anyhow!("WGC: missing rgba data"))?;
+        RgbaImage::from_raw(width, height, rgba_data)
             .ok_or_else(|| anyhow!("RgbaImage::from_raw failed"))
     }
 }

@@ -797,22 +797,18 @@ mod windows_hdr {
                             }
 
                             // check if the frame is completely black (all-zeros)
-                            // only check if lastpresenttime == 0 and accumulatedframes == 0
-                            let check_black = frame_info.LastPresentTime == 0 && frame_info.AccumulatedFrames == 0;
-                            if check_black {
-                                let first_row = std::slice::from_raw_parts(src_ptr, row_bytes);
-                                let is_zero = first_row.iter().all(|&b| b == 0) && {
-                                    let mid_row = src_ptr.add(row_pitch * (h as usize / 2));
-                                    let mid_slice = std::slice::from_raw_parts(mid_row, row_bytes);
-                                    mid_slice.iter().all(|&b| b == 0)
-                                } && {
-                                    let last_row = src_ptr.add(row_pitch * (h as usize - 1));
-                                    let last_slice = std::slice::from_raw_parts(last_row, row_bytes);
-                                    last_slice.iter().all(|&b| b == 0)
-                                };
-                                if is_zero {
-                                    return Err(anyhow!("stale black frame detected"));
-                                }
+                            let first_row = std::slice::from_raw_parts(src_ptr, row_bytes);
+                            let is_zero = first_row.iter().all(|&b| b == 0) && {
+                                let mid_row = src_ptr.add(row_pitch * (h as usize / 2));
+                                let mid_slice = std::slice::from_raw_parts(mid_row, row_bytes);
+                                mid_slice.iter().all(|&b| b == 0)
+                            } && {
+                                let last_row = src_ptr.add(row_pitch * (h as usize - 1));
+                                let last_slice = std::slice::from_raw_parts(last_row, row_bytes);
+                                last_slice.iter().all(|&b| b == 0)
+                            };
+                            if is_zero {
+                                return Err(anyhow!("stale black frame detected"));
                             }
 
                             let mut frame_data = Vec::with_capacity(total_bytes);
