@@ -771,12 +771,35 @@ fn parse_jump_arg<I: IntoIterator<Item = String>>(args: I) -> Option<String> {
 fn handle_cli_short_circuit<I: IntoIterator<Item = String>>(args: I) -> bool {
     let mut want_version = false;
     let mut want_help = false;
+    let mut sweep_dir: Option<String> = None;
     for a in args.into_iter().skip(1) {
         match a.as_str() {
             "--version" | "-V" => want_version = true,
             "--help" | "-h" => want_help = true,
+            s if s.starts_with("--d2d-sweep=") => {
+                sweep_dir = Some(s.trim_start_matches("--d2d-sweep=").to_string());
+            }
             _ => {}
         }
+    }
+    #[cfg(windows)]
+    if let Some(dir) = sweep_dir {
+        attach_parent_console();
+        unsafe {
+            use windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
+            use windows::Win32::UI::HiDpi::{
+                SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+            };
+            // DuplicateOutput1 (HDR format list) requires per-monitor DPI
+            // awareness or it returns DXGI_ERROR_UNSUPPORTED
+            let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+            let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+        }
+        match crate::capture::capture_hdr_to_sdr_sweep(None, &dir) {
+            Ok(()) => println!("d2d sweep done -> {dir}"),
+            Err(e) => eprintln!("d2d sweep failed: {e:#}"),
+        }
+        return true;
     }
     if !want_version && !want_help {
         return false;

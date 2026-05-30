@@ -2,8 +2,7 @@ use anyhow::{anyhow, Result};
 use image::{GenericImage, RgbaImage};
 use xcap::Monitor;
 
-use super::hdr::HdrCapture;
-use super::{orient_captured_image, Capture, Rectangle};
+use super::{Capture, Rectangle};
 
 pub struct RegionCapture {
     region: Rectangle,
@@ -80,15 +79,10 @@ impl Capture for RegionCapture {
         let total_width = (max_x - min_x) as u32;
         let total_height = (max_y - min_y) as u32;
 
-        // capture path priority for HDR-display captures:
-        //   1. CAPSCR_HDR_AWARE=1 -> custom CPU Reinhard tonemap (legacy
-        //      opt-in, slow, tunable)
-        //   2. CAPSCR_USE_WGC=1 -> Windows.Graphics.Capture (OS-side
-        //      tonemap, instant, but can shift SDR brightness)
-        //   3. default + HDR display -> D2D GPU pipeline (correct +
-        //      instant, uses Direct2D HdrToneMap + WhiteLevelAdjustment)
-        //   4. default + SDR display -> GDI BitBlt (instant, pixel-exact)
-        let wgc_on = super::wgc_enabled();
+        // per-monitor capture (HDR -> D2D HdrToneMap, SDR -> GDI, env
+        // opt-ins for CPU/WGC) is handled by super::capture_one_monitor so
+        // the freeze-frame, single-monitor and active-monitor paths all
+        // share one tonemap-correct, black-frame-guarded pipeline.
 
         // selection bounds in virtual-screen coords. used to skip monitors
         // that don't overlap the region — for a 100x331 region on monitor A,
@@ -117,76 +111,36 @@ impl Capture for RegionCapture {
                 continue;
             }
 
-            let center = (
-                monitor.x + (monitor.width as i32) / 2,
-                monitor.y + (monitor.height as i32) / 2,
-            );
-            let is_hdr = HdrCapture::is_hdr_at_point(center.0, center.1);
-            let use_cpu_hdr = is_hdr && !wgc_on;
-            let use_wgc = wgc_on;
-            tracing::info!(
-                "RegionCapture monitor {}x{}+{}+{}: is_hdr={} -> cpu_hdr={} wgc={}",
-                monitor.width, monitor.height, monitor.x, monitor.y,
-                is_hdr, use_cpu_hdr, use_wgc,
-            );
-            let gdi_capture = || {
-                match super::fast_gdi_capture(monitor.x, monitor.y, monitor.width, monitor.height) {
-                    Ok(img) => Ok(img),
-                    Err(e) => {
-                        tracing::warn!("fast GDI capture failed — falling back to xcap: {e:#}");
-                        let screens = Monitor::all()?;
-                        let screen = screens.into_iter().find(|s| s.id() == monitor.id)
-                            .ok_or_else(|| anyhow!("xcap monitor not found"))?;
-                        screen.capture_image().map_err(|e| anyhow!("{e}"))
-                    }
+            #[cfg(windows)]
+            let img = match super::capture_one_monitor(monitor) {
+                Ok(img) => img,
+                Err(e) => {
+                    tracing::warn!(
+                        "RegionCapture: capture_one_monitor failed for {}x{}+{}+{}: {e:#}",
+                        monitor.width, monitor.height, monitor.x, monitor.y,
+                    );
+                    continue;
+                }
+            };
+            #[cfg(not(windows))]
+            let img = {
+                let screens = Monitor::all()?;
+                let screen = match screens.into_iter().find(|s| s.id() == monitor.id) {
+                    Some(s) => s,
+                    None => continue,
+                };
+                match screen.capture_image() {
+                    Ok(i) => super::orient_captured_image(
+                        i, monitor.width, monitor.height, monitor.x, monitor.y,
+                    ),
+                    Err(_) => continue,
                 }
             };
 
-            let img_result: Result<RgbaImage> = if use_cpu_hdr {
-                HdrCapture::new()
-                    .capture_with_hdr_at(Some(center))
-                    .map(|(img, _)| img)
-                    .or_else(|e| {
-                        tracing::warn!(
-                            "CPU HDR capture failed for monitor at {},{} — GDI fallback: {e:#}",
-                            monitor.x,
-                            monitor.y,
-                        );
-                        gdi_capture()
-                    })
-            } else if use_wgc {
-                let t0 = std::time::Instant::now();
-                let r = super::wgc_capture_at_point(center.0, center.1);
-                let dt = t0.elapsed().as_millis();
-                match &r {
-                    Ok(img) => tracing::info!(
-                        "WGC capture {}x{} at ({},{}) in {dt}ms",
-                        img.width(), img.height(), center.0, center.1
-                    ),
-                    Err(e) => tracing::warn!(
-                        "WGC capture failed at ({},{}) in {dt}ms — GDI fallback: {e:#}",
-                        center.0, center.1
-                    ),
-                }
-                r.or_else(|_| gdi_capture())
-            } else {
-                gdi_capture()
-            };
-
-            if let Ok(img) = img_result {
-                let img = orient_captured_image(
-                    img,
-                    monitor.width,
-                    monitor.height,
-                    monitor.x,
-                    monitor.y,
-                );
-                let offset_x = (monitor.x - min_x) as u32;
-                let offset_y = (monitor.y - min_y) as u32;
-
-                if let Err(e) = combined.copy_from(&img, offset_x, offset_y) {
-                    tracing::warn!("Failed to copy monitor image into combined region buffer: {e}");
-                }
+            let offset_x = (monitor.x - min_x) as u32;
+            let offset_y = (monitor.y - min_y) as u32;
+            if let Err(e) = combined.copy_from(&img, offset_x, offset_y) {
+                tracing::warn!("Failed to copy monitor image into combined region buffer: {e}");
             }
         }
 

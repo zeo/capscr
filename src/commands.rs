@@ -607,19 +607,11 @@ fn capture_active_monitor_with_hdr(
     tracing::info!("capture_active_monitor_with_hdr entry");
     use crate::capture::HdrCapture;
     let target = cursor_position();
-    let env_on = crate::capture::hdr_aware_enabled();
     let wgc_on = crate::capture::wgc_enabled();
     let hdr_avail = HdrCapture::is_hdr_available();
 
-    if env_on && hdr_avail {
-        let hdr = HdrCapture::new();
-        match hdr.capture_with_hdr_at(target) {
-            Ok(pair) => return Ok(pair),
-            Err(e) => tracing::warn!("active_monitor CPU HDR failed — fallthrough: {e:#}"),
-        }
-    }
     #[cfg(windows)]
-    if hdr_avail && !env_on {
+    if hdr_avail {
         if let Some(t) = target {
             if wgc_on {
                 match crate::capture::wgc_capture_at_point(t.0, t.1) {
@@ -627,9 +619,10 @@ fn capture_active_monitor_with_hdr(
                     Err(e) => tracing::warn!("active_monitor WGC failed — fallthrough: {e:#}"),
                 }
             } else {
-                match crate::capture::d2d_capture_at_point(Some(t)) {
-                    Ok(img) => return Ok((img, None)),
-                    Err(e) => tracing::warn!("active_monitor D2D failed — GDI fallback: {e:#}"),
+                let hdr = HdrCapture::new();
+                match hdr.capture_with_hdr_at(Some(t)) {
+                    Ok(pair) => return Ok(pair),
+                    Err(e) => tracing::warn!("active_monitor CPU HDR failed — GDI fallback: {e:#}"),
                 }
             }
         }

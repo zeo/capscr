@@ -22,7 +22,7 @@ pub use hdr::HdrCapture;
 #[cfg(windows)]
 pub use wgc::capture_at_point as wgc_capture_at_point;
 #[cfg(windows)]
-pub use d2d_tonemap::capture_hdr_to_sdr as d2d_capture_at_point;
+pub use d2d_tonemap::capture_hdr_to_sdr_sweep;
 #[cfg(windows)]
 pub use gdi::{fast_gdi_capture, fast_list_monitors};
 pub use hdr_png::{encode_hdr_png, read_cicp, HdrBitmap, HdrTransfer};
@@ -278,6 +278,114 @@ pub fn list_monitors() -> Result<Vec<MonitorInfo>> {
     Ok(monitors)
 }
 
+// if the entire frame is alpha=0, force it fully opaque. GDI BitBlt and
+// some HDR duplication formats leave the alpha channel zeroed even over
+// real color, which would otherwise persist as a fully transparent PNG.
+// only triggers when no pixel carries alpha, so a window capture with
+// genuine per-pixel transparency is left untouched. mirrors the no-alpha
+// icon handling in cursor capture
+pub fn ensure_opaque_if_fully_transparent(img: &mut RgbaImage) {
+    if img.pixels().any(|p| p[3] != 0) {
+        return;
+    }
+    for p in img.pixels_mut() {
+        p[3] = 255;
+    }
+}
+
+// true when every sampled pixel is r=g=b=0. used to detect a failed or
+// stale capture (poisoned duplication device, locked output) that came
+// back as a black slice. the alpha channel is deliberately ignored:
+// GDI-on-HDR and scRGB black frames carry opaque alpha over zero color, so
+// testing raw bytes would miss them
+pub fn is_black_frame(img: &RgbaImage) -> bool {
+    let (w, h) = (img.width(), img.height());
+    if w == 0 || h == 0 {
+        return true;
+    }
+    for &y in &[0, h / 2, h - 1] {
+        for x in 0..w {
+            let p = img.get_pixel(x, y);
+            if p[0] != 0 || p[1] != 0 || p[2] != 0 {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+// capture a single monitor as an oriented, opaque RGBA image.
+//
+// HDR monitors default to the Direct2D HdrToneMap pipeline — the same path
+// active-monitor capture uses — which tonemaps correctly and builds a fresh
+// D3D device per call. the previous freeze-frame path reused the cached
+// duplication device that poisons over uptime and handed back black slices
+// that fell through to GDI-on-HDR (transparent black), which was the
+// selector black-screen bug. the CPU-tonemap and WGC paths stay reachable
+// via their env opt-ins. SDR monitors use GDI BitBlt. any slice that still
+// comes back fully black is retried through GDI before being accepted, and
+// a fully-transparent slice is forced opaque
+#[cfg(windows)]
+pub fn capture_one_monitor(monitor: &MonitorInfo) -> Result<RgbaImage> {
+    let center = (
+        monitor.x + (monitor.width as i32) / 2,
+        monitor.y + (monitor.height as i32) / 2,
+    );
+    let is_hdr = HdrCapture::is_hdr_at_point(center.0, center.1);
+
+    let gdi_capture = || -> Result<RgbaImage> {
+        match fast_gdi_capture(monitor.x, monitor.y, monitor.width, monitor.height) {
+            Ok(img) => Ok(img),
+            Err(e) => {
+                tracing::warn!("fast GDI capture failed — falling back to xcap: {e:#}");
+                let screens = xcap::Monitor::all()?;
+                let screen = screens
+                    .into_iter()
+                    .find(|s| s.id() == monitor.id)
+                    .ok_or_else(|| anyhow::anyhow!("xcap monitor not found"))?;
+                screen.capture_image().map_err(|e| anyhow::anyhow!("{e}"))
+            }
+        }
+    };
+
+    let raw: RgbaImage = if is_hdr {
+        if wgc_enabled() {
+            wgc_capture_at_point(center.0, center.1).or_else(|e| {
+                tracing::warn!("WGC capture failed at {center:?} — GDI fallback: {e:#}");
+                gdi_capture()
+            })?
+        } else {
+            HdrCapture::new()
+                .capture_with_hdr_at(Some(center))
+                .map(|(img, _)| img)
+                .or_else(|e| {
+                    tracing::warn!("CPU HDR capture failed at {center:?} — GDI fallback: {e:#}");
+                    gdi_capture()
+                })?
+        }
+    } else {
+        gdi_capture()?
+    };
+
+    let mut img = orient_captured_image(raw, monitor.width, monitor.height, monitor.x, monitor.y);
+
+    if is_black_frame(&img) {
+        tracing::warn!(
+            "monitor {}x{}+{}+{} captured all-black — GDI fallback",
+            monitor.width, monitor.height, monitor.x, monitor.y,
+        );
+        if let Ok(g) = gdi_capture() {
+            let g = orient_captured_image(g, monitor.width, monitor.height, monitor.x, monitor.y);
+            if !is_black_frame(&g) {
+                img = g;
+            }
+        }
+    }
+
+    ensure_opaque_if_fully_transparent(&mut img);
+    Ok(img)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -319,5 +427,45 @@ mod tests {
         let _ = WindowCapture::from_title("nonexistent");
         let windows = WindowCapture::list_application_windows().unwrap_or_default();
         assert!(windows.is_empty() || !windows.is_empty());
+    }
+
+    #[test]
+    fn opaque_forces_alpha_when_fully_transparent() {
+        // real color with alpha=0 everywhere -> alpha forced to 255, color kept
+        let mut img = RgbaImage::from_pixel(4, 4, image::Rgba([10, 20, 30, 0]));
+        ensure_opaque_if_fully_transparent(&mut img);
+        for p in img.pixels() {
+            assert_eq!(*p, image::Rgba([10, 20, 30, 255]));
+        }
+    }
+
+    #[test]
+    fn opaque_leaves_mixed_alpha_untouched() {
+        let mut img = RgbaImage::from_pixel(4, 4, image::Rgba([10, 20, 30, 0]));
+        img.put_pixel(1, 1, image::Rgba([1, 2, 3, 128]));
+        ensure_opaque_if_fully_transparent(&mut img);
+        assert_eq!(*img.get_pixel(0, 0), image::Rgba([10, 20, 30, 0]));
+        assert_eq!(*img.get_pixel(1, 1), image::Rgba([1, 2, 3, 128]));
+    }
+
+    #[test]
+    fn black_frame_detects_zero_rgb_even_with_opaque_alpha() {
+        // the scRGB / GDI-on-HDR case: zero color, opaque alpha
+        let img = RgbaImage::from_pixel(8, 8, image::Rgba([0, 0, 0, 255]));
+        assert!(is_black_frame(&img));
+    }
+
+    #[test]
+    fn black_frame_false_on_any_nonzero_color() {
+        let mut img = RgbaImage::from_pixel(8, 8, image::Rgba([0, 0, 0, 0]));
+        // single lit pixel on the last sampled row
+        img.put_pixel(3, 7, image::Rgba([0, 0, 1, 0]));
+        assert!(!is_black_frame(&img));
+    }
+
+    #[test]
+    fn black_frame_true_on_all_zero() {
+        let img = RgbaImage::from_pixel(8, 8, image::Rgba([0, 0, 0, 0]));
+        assert!(is_black_frame(&img));
     }
 }

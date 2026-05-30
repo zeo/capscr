@@ -3,7 +3,6 @@ use image::{GenericImage, RgbaImage};
 use xcap::Monitor;
 
 use super::{Capture, MonitorInfo};
-use super::hdr::HdrCapture;
 
 pub struct ScreenCapture {
     monitor_id: Option<u32>,
@@ -107,60 +106,38 @@ impl ScreenCapture {
             return Err(anyhow!("Combined monitor area too large"));
         }
 
-        let wgc_on = super::wgc_enabled();
-
         let total_width = width_i32 as u32;
         let total_height = height_i32 as u32;
 
         let mut combined = RgbaImage::new(total_width, total_height);
 
         for monitor in monitors {
-            let center = (
-                monitor.x + (monitor.width as i32) / 2,
-                monitor.y + (monitor.height as i32) / 2,
-            );
-            let is_hdr = HdrCapture::is_hdr_at_point(center.0, center.1);
-            let use_cpu_hdr = is_hdr && !wgc_on;
-            let use_wgc = wgc_on;
-            let gdi_capture = || {
-                match super::fast_gdi_capture(monitor.x, monitor.y, monitor.width, monitor.height) {
-                    Ok(img) => Ok(img),
-                    Err(_) => {
-                        let screens = Monitor::all()?;
-                        let screen = screens.into_iter().find(|s| s.id() == monitor.id)
-                            .ok_or_else(|| anyhow!("Monitor not found"))?;
-                        screen.capture_image().map_err(|e| anyhow!("{e}"))
-                    }
+            #[cfg(windows)]
+            let img = match super::capture_one_monitor(&monitor) {
+                Ok(img) => img,
+                Err(e) => {
+                    tracing::warn!(
+                        "capture_one_monitor failed for {}x{}+{}+{}: {e:#}",
+                        monitor.width, monitor.height, monitor.x, monitor.y,
+                    );
+                    continue;
+                }
+            };
+            #[cfg(not(windows))]
+            let img = {
+                let screens = Monitor::all()?;
+                let screen = match screens.into_iter().find(|s| s.id() == monitor.id) {
+                    Some(s) => s,
+                    None => continue,
+                };
+                match screen.capture_image() {
+                    Ok(i) => super::orient_captured_image(
+                        i, monitor.width, monitor.height, monitor.x, monitor.y,
+                    ),
+                    Err(_) => continue,
                 }
             };
 
-            let img_result: Result<RgbaImage> = if use_cpu_hdr {
-                HdrCapture::new()
-                    .capture_with_hdr_at(Some(center))
-                    .map(|(img, _)| img)
-                    .or_else(|e| {
-                        tracing::warn!(
-                            "CPU HDR capture failed for monitor at {},{} — fallback to GDI: {e:#}",
-                            monitor.x,
-                            monitor.y
-                        );
-                        gdi_capture()
-                    })
-            } else if use_wgc {
-                let r = super::wgc_capture_at_point(center.0, center.1);
-                r.or_else(|_| gdi_capture())
-            } else {
-                gdi_capture()
-            };
-
-            let img = img_result?;
-            let img = super::orient_captured_image(
-                img,
-                monitor.width,
-                monitor.height,
-                monitor.x,
-                monitor.y,
-            );
             let offset_x_i32 = monitor.x.saturating_sub(min_x);
             let offset_y_i32 = monitor.y.saturating_sub(min_y);
 
@@ -233,51 +210,20 @@ const MAX_CAPTURE_PIXELS: u64 = 256 * 1024 * 1024;
 impl Capture for ScreenCapture {
     fn capture(&self) -> Result<RgbaImage> {
         let monitor_info = self.get_monitor_info()?;
-        let center = (
-            monitor_info.x + (monitor_info.width as i32) / 2,
-            monitor_info.y + (monitor_info.height as i32) / 2,
-        );
-
-        let wgc_on = super::wgc_enabled();
-        let is_hdr = HdrCapture::is_hdr_at_point(center.0, center.1);
-
-        if is_hdr && !wgc_on {
-            let hdr = HdrCapture::new();
-            match hdr.capture_with_hdr_at(Some(center)).map(|(img, _)| img) {
-                Ok(img) => return Ok(img),
-                Err(e) => tracing::warn!("ScreenCapture CPU HDR failed — fallthrough: {e:#}"),
-            }
-        }
 
         #[cfg(windows)]
-        if is_hdr && wgc_on {
-            let t0 = std::time::Instant::now();
-            match super::wgc_capture_at_point(center.0, center.1) {
-                Ok(img) => {
-                    tracing::info!(
-                        "ScreenCapture WGC {}x{} in {}ms",
-                        img.width(), img.height(), t0.elapsed().as_millis()
-                    );
-                    return Ok(img);
-                }
-                Err(e) => tracing::warn!("ScreenCapture WGC failed — fallthrough: {e:#}"),
-            }
-        }
-        let img = match super::fast_gdi_capture(monitor_info.x, monitor_info.y, monitor_info.width, monitor_info.height) {
-            Ok(img) => img,
-            Err(e) => {
-                tracing::warn!("fast GDI capture failed — falling back to xcap: {e:#}");
-                let m = self.find_monitor()?;
-                m.capture_image()?
-            }
+        let img = super::capture_one_monitor(&monitor_info)?;
+        #[cfg(not(windows))]
+        let img = {
+            let m = self.find_monitor()?;
+            super::orient_captured_image(
+                m.capture_image()?,
+                monitor_info.width,
+                monitor_info.height,
+                monitor_info.x,
+                monitor_info.y,
+            )
         };
-        let img = super::orient_captured_image(
-            img,
-            monitor_info.width,
-            monitor_info.height,
-            monitor_info.x,
-            monitor_info.y,
-        );
 
         if img.width() > MAX_CAPTURE_DIMENSION || img.height() > MAX_CAPTURE_DIMENSION {
             return Err(anyhow!("Captured image dimensions exceed safety limit"));

@@ -27,12 +27,13 @@ use image::RgbaImage;
 use windows::core::Interface;
 use windows::Win32::Graphics::Direct2D::{
     D2D1CreateFactory, ID2D1Bitmap1, ID2D1DeviceContext, ID2D1Effect, ID2D1Factory1,
-    CLSID_D2D1HdrToneMap, CLSID_D2D1WhiteLevelAdjustment, D2D1_BITMAP_OPTIONS_CANNOT_DRAW,
+    CLSID_D2D1HdrToneMap, CLSID_D2D1Saturation, CLSID_D2D1WhiteLevelAdjustment,
+    D2D1_BITMAP_OPTIONS_CANNOT_DRAW,
     D2D1_BITMAP_OPTIONS_TARGET, D2D1_BITMAP_PROPERTIES1, D2D1_DEVICE_CONTEXT_OPTIONS_NONE,
     D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_HDRTONEMAP_DISPLAY_MODE_SDR,
     D2D1_HDRTONEMAP_PROP_DISPLAY_MODE, D2D1_HDRTONEMAP_PROP_INPUT_MAX_LUMINANCE,
     D2D1_HDRTONEMAP_PROP_OUTPUT_MAX_LUMINANCE, D2D1_INTERPOLATION_MODE_LINEAR,
-    D2D1_PROPERTY_TYPE_ENUM, D2D1_PROPERTY_TYPE_FLOAT,
+    D2D1_PROPERTY_TYPE_ENUM, D2D1_PROPERTY_TYPE_FLOAT, D2D1_SATURATION_PROP_SATURATION,
     D2D1_WHITELEVELADJUSTMENT_PROP_INPUT_WHITE_LEVEL,
     D2D1_WHITELEVELADJUSTMENT_PROP_OUTPUT_WHITE_LEVEL,
 };
@@ -52,11 +53,41 @@ use windows::Win32::Graphics::Dxgi::{
     DXGI_ERROR_ACCESS_LOST, DXGI_ERROR_WAIT_TIMEOUT, DXGI_OUTDUPL_FRAME_INFO,
 };
 use windows::Win32::Graphics::Dxgi::Common::{
-    DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_R10G10B10A2_UNORM, DXGI_FORMAT_R16G16B16A16_FLOAT,
-    DXGI_SAMPLE_DESC,
+    DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_B8G8R8A8_UNORM_SRGB, DXGI_FORMAT_R10G10B10A2_UNORM,
+    DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_SAMPLE_DESC,
 };
 
+// tunable tonemap knobs. the shipping default is DEFAULT; the sweep
+// harness varies these to find the right HDR->SDR rendition
+#[derive(Clone, Copy)]
+pub struct TmVariant {
+    // render the effect output to a _UNORM_SRGB target so D2D applies the
+    // sRGB transfer on write (vs plain _UNORM)
+    pub out_srgb: bool,
+    // HdrToneMap OUTPUT_MAX_LUMINANCE in nits
+    pub output_max_nits: f32,
+    // HdrToneMap INPUT_MAX_LUMINANCE override in nits. None -> panel max
+    // scaled by the white-level factor (legacy behavior)
+    pub input_max_nits: Option<f32>,
+    // optional Saturation effect (0..1) applied after tonemap to pull
+    // clipped wide-gamut colors back toward gamut
+    pub saturation: Option<f32>,
+}
+
+impl TmVariant {
+    pub const DEFAULT: TmVariant = TmVariant {
+        out_srgb: false,
+        output_max_nits: 80.0,
+        input_max_nits: None,
+        saturation: None,
+    };
+}
+
 pub fn capture_hdr_to_sdr(target: Option<(i32, i32)>) -> Result<RgbaImage> {
+    capture_hdr_to_sdr_variant(target, TmVariant::DEFAULT)
+}
+
+pub fn capture_hdr_to_sdr_variant(target: Option<(i32, i32)>, variant: TmVariant) -> Result<RgbaImage> {
     let t0 = std::time::Instant::now();
     unsafe {
         // 1. pick adapter+output for the target monitor (multi-GPU safe)
@@ -292,9 +323,12 @@ pub fn capture_hdr_to_sdr(target: Option<(i32, i32)>) -> Result<RgbaImage> {
             tm.SetInput(0, &wl_out, true);
             // scale the input maximum luminance passed to HdrToneMap by the same factor
             // that WhiteLevelAdjustment scaled the entire texture (80.0 / sdr_white_nits)
-            let scaled_in_max = (max_lum_nits * (80.0 / sdr_white_nits)).max(80.0);
+            let scaled_in_max = match variant.input_max_nits {
+                Some(v) => v.max(80.0),
+                None => (max_lum_nits * (80.0 / sdr_white_nits)).max(80.0),
+            };
             let in_max = scaled_in_max.to_le_bytes();
-            let out_max: [u8; 4] = 80.0_f32.to_le_bytes();
+            let out_max: [u8; 4] = variant.output_max_nits.to_le_bytes();
             tm.SetValue(
                 D2D1_HDRTONEMAP_PROP_INPUT_MAX_LUMINANCE.0 as u32,
                 D2D1_PROPERTY_TYPE_FLOAT,
@@ -311,7 +345,21 @@ pub fn capture_hdr_to_sdr(target: Option<(i32, i32)>) -> Result<RgbaImage> {
                 D2D1_PROPERTY_TYPE_ENUM,
                 &display_mode_bytes,
             )?;
-            tm
+
+            if let Some(sat) = variant.saturation {
+                let se: ID2D1Effect = d2d_ctx.CreateEffect(&CLSID_D2D1Saturation)?;
+                let tm_out = tm.GetOutput()?;
+                se.SetInput(0, &tm_out, true);
+                let sat_bytes = sat.to_le_bytes();
+                se.SetValue(
+                    D2D1_SATURATION_PROP_SATURATION.0 as u32,
+                    D2D1_PROPERTY_TYPE_FLOAT,
+                    &sat_bytes,
+                )?;
+                se
+            } else {
+                tm
+            }
         } else {
             // SDR-format capture — no tonemap needed, but we still need an
             // effect to draw from. wrap input_bitmap via an identity-ish
@@ -324,12 +372,17 @@ pub fn capture_hdr_to_sdr(target: Option<(i32, i32)>) -> Result<RgbaImage> {
         };
 
         // 9. output texture: B8G8R8A8 render target on the same device
+        let out_format = if variant.out_srgb {
+            DXGI_FORMAT_B8G8R8A8_UNORM_SRGB
+        } else {
+            DXGI_FORMAT_B8G8R8A8_UNORM
+        };
         let out_desc = D3D11_TEXTURE2D_DESC {
             Width: width,
             Height: height,
             MipLevels: 1,
             ArraySize: 1,
-            Format: DXGI_FORMAT_B8G8R8A8_UNORM,
+            Format: out_format,
             SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
             Usage: D3D11_USAGE_DEFAULT,
             BindFlags: D3D11_BIND_RENDER_TARGET.0 as u32,
@@ -343,7 +396,7 @@ pub fn capture_hdr_to_sdr(target: Option<(i32, i32)>) -> Result<RgbaImage> {
         let out_surface: IDXGISurface = out_tex.cast()?;
         let out_props = D2D1_BITMAP_PROPERTIES1 {
             pixelFormat: D2D1_PIXEL_FORMAT {
-                format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                format: out_format,
                 alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
             },
             dpiX: 96.0,
@@ -375,7 +428,7 @@ pub fn capture_hdr_to_sdr(target: Option<(i32, i32)>) -> Result<RgbaImage> {
             Height: height,
             MipLevels: 1,
             ArraySize: 1,
-            Format: DXGI_FORMAT_B8G8R8A8_UNORM,
+            Format: out_format,
             SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
             Usage: D3D11_USAGE_STAGING,
             BindFlags: 0,
@@ -444,6 +497,46 @@ pub fn capture_hdr_to_sdr(target: Option<(i32, i32)>) -> Result<RgbaImage> {
         RgbaImage::from_raw(width, height, rgba)
             .ok_or_else(|| anyhow!("RgbaImage::from_raw failed"))
     }
+}
+
+// diagnostic: capture the HDR monitor at `target` repeatedly, each time
+// through a different tonemap variant, and write a center crop of each to
+// `outdir`. lets us eyeball which knobs fix the overbaked wide-gamut look
+pub fn capture_hdr_to_sdr_sweep(target: Option<(i32, i32)>, outdir: &str) -> Result<()> {
+    let d = TmVariant::DEFAULT;
+    let variants: &[(&str, TmVariant)] = &[
+        ("00_baseline", d),
+        ("01_srgb", TmVariant { out_srgb: true, ..d }),
+        ("02_outmax200", TmVariant { output_max_nits: 200.0, ..d }),
+        ("03_outmax300_srgb", TmVariant { out_srgb: true, output_max_nits: 300.0, ..d }),
+        ("04_inmax1000", TmVariant { input_max_nits: Some(1000.0), ..d }),
+        ("05_sat80", TmVariant { saturation: Some(0.8), ..d }),
+        ("06_sat70_outmax200", TmVariant { saturation: Some(0.7), output_max_nits: 200.0, ..d }),
+        ("07_srgb_sat80_outmax160", TmVariant { out_srgb: true, saturation: Some(0.8), output_max_nits: 160.0, ..d }),
+    ];
+    std::fs::create_dir_all(outdir).ok();
+    for (label, v) in variants {
+        match capture_hdr_to_sdr_variant(target, *v) {
+            Ok(img) => {
+                let img = if img.width() > 1600 {
+                    let cw = img.width() / 2;
+                    let ch = img.height() / 2;
+                    image::imageops::crop_imm(&img, img.width() / 4, img.height() / 4, cw, ch)
+                        .to_image()
+                } else {
+                    img
+                };
+                let path = format!("{outdir}/{label}.png");
+                match img.save(&path) {
+                    Ok(()) => eprintln!("sweep: wrote {path}"),
+                    Err(e) => eprintln!("sweep: save {path} failed: {e}"),
+                }
+            }
+            Err(e) => eprintln!("sweep: variant {label} failed: {e:#}"),
+        }
+        std::thread::sleep(std::time::Duration::from_millis(120));
+    }
+    Ok(())
 }
 
 unsafe fn pick_adapter_output(
