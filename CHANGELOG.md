@@ -6,6 +6,11 @@ format follows [keep-a-changelog](https://keepachangelog.com/en/1.1.0/) loosely.
 
 nothing pending. drop ideas in github issues.
 
+## [0.5.3] — 2026-05-31
+
+### fixed
+- improved HDR-to-SDR screen capture tonemapping: implemented a power-4 non-linear highlight desaturation curve to preserve richness and vibrancy in saturated HDR highlights while maintaining perfect contrast and legibility for text inside highlights
+
 ## [0.5.2] — 2026-05-29
 
 ### fixed
