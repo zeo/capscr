@@ -300,7 +300,13 @@ pub fn spawn_hook_thread() -> std::io::Result<()> {
             if down(VK_LWIN.0) || down(VK_RWIN.0) { prime |= MOD_WIN; }
             MODIFIER_STATE.store(prime, Ordering::SeqCst);
 
-            let hook: HHOOK = match SetWindowsHookExW(WH_KEYBOARD_LL, Some(hook_proc), None, 0) {
+            use windows::core::PCWSTR;
+            use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+            let hinstance = GetModuleHandleW(PCWSTR::null())
+                .map(|h| windows::Win32::Foundation::HINSTANCE(h.0))
+                .unwrap_or_default();
+
+            let hook: HHOOK = match SetWindowsHookExW(WH_KEYBOARD_LL, Some(hook_proc), hinstance, 0) {
                 Ok(h) => h,
                 Err(e) => {
                     tracing::error!("SetWindowsHookExW(WH_KEYBOARD_LL) failed: {e}");

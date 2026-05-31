@@ -6,6 +6,11 @@ format follows [keep-a-changelog](https://keepachangelog.com/en/1.1.0/) loosely.
 
 nothing pending. drop ideas in github issues.
 
+## [0.5.4] — 2026-05-31
+
+### fixed
+- resolved a keybind recording issue on the Tasks panel: low-level keyboard hooks on Windows require a valid module instance handle (`hinstance`) of the installing process when registering as a global hook (`dwThreadId = 0`). we now retrieve the current running module handle dynamically using `GetModuleHandleW` to ensure the Windows kernel consistently delivers keyboard hook events across all system environments
+
 ## [0.5.3] — 2026-05-31
 
 ### fixed
