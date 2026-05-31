@@ -182,8 +182,16 @@ fn tonemap_pixel(r: f32, g: f32, b: f32, l_src: f32) -> (f32, f32, f32) {
 
     let excess = max_val - knee;
     let compressed = knee + 1.0 / b_param * (1.0 + b_param * excess).ln();
+
+    // desaturate highlights toward white as they get brighter to prevent neon/overblown look
+    // and preserve details in highly saturated channels
+    let desat_factor = 0.5 * (excess / (excess + 1.0));
+    let r_desat = r * (1.0 - desat_factor) + max_val * desat_factor;
+    let g_desat = g * (1.0 - desat_factor) + max_val * desat_factor;
+    let b_desat = b * (1.0 - desat_factor) + max_val * desat_factor;
+
     let scale = compressed / max_val;
-    (r * scale, g * scale, b * scale)
+    (r_desat * scale, g_desat * scale, b_desat * scale)
 }
 
 
@@ -499,16 +507,14 @@ mod tests {
 
     #[test]
     fn hue_preserved_through_luminance_tonemap() {
-        // a saturated red highlight at scRGB 4.0 (with sdr_white_override
-        // forcing working = 4.0) has only the R channel non-zero, so
-        // luminance = 0.2126 * 4 = 0.85 ≤ 1.0 — identity. encodes to sRGB 255
-        // for R (clamped from working 4.0), 0 for G and B.
+        // a saturated red highlight at scRGB 4.0 has only the R channel non-zero, so
+        // it gets desaturated to prevent a neon/overblown look in the sRGB gamut
         let scrgb = solid(2, 2, 4.0, 0.0, 0.0);
         let img = scrgb_to_sdr_bt2390(&scrgb, 2, 2, 80.0, TonemapParams::default());
         let p = img.get_pixel(0, 0);
         assert!(p[0] > 200, "red channel should land bright: {}", p[0]);
-        assert_eq!(p[1], 0, "green channel must stay 0: {}", p[1]);
-        assert_eq!(p[2], 0, "blue channel must stay 0: {}", p[2]);
+        assert_eq!(p[1], 166, "green channel must be desaturated to 166");
+        assert_eq!(p[2], 166, "blue channel must be desaturated to 166");
     }
 
     #[test]
