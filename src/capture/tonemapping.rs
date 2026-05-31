@@ -157,13 +157,13 @@ fn pq_to_linear_norm(pq: f32) -> f32 {
 // into [0.925, 1.0) so they never clip or blow out.
 #[inline]
 fn tonemap_pixel(r: f32, g: f32, b: f32) -> (f32, f32, f32) {
-    let lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
-    if lum <= 0.85 {
+    let max_val = r.max(g).max(b);
+    if max_val <= 0.85 {
         return (r, g, b);
     }
-    let excess = lum - 0.85;
+    let excess = max_val - 0.85;
     let compressed = 0.85 + 0.15 * excess / (excess + 0.15);
-    let scale = compressed / lum;
+    let scale = compressed / max_val;
     (r * scale, g * scale, b * scale)
 }
 
@@ -355,18 +355,17 @@ mod tests {
     }
 
     #[test]
-    fn luminance_tonemap_identity_on_sdr() {
-        // any pixel with BT.709 luminance ≤ 0.85 must be the identity. that
+    fn max_rgb_tonemap_identity_on_sdr() {
+        // any pixel with max component <= 0.85 must be the identity. that
         // means SDR content on an HDR display (after working-space
         // normalization) passes through pixel-perfect below the knee.
         for (r, g, b) in [
             (0.0_f32, 0.0, 0.0),
             (0.5, 0.5, 0.5),       // mid-grey
-            (1.0, 0.0, 0.0),       // saturated red, lum=0.21
-            (0.0, 1.0, 0.0),       // saturated green, lum=0.72
-            (0.0, 0.0, 1.0),       // saturated blue, lum=0.07
-            (1.0, 0.0, 1.0),       // SDR magenta, lum=0.28
-            (2.98, 0.0, 2.98),     // magenta, lum=0.2848 * 2.98 = 0.8487 (still ≤ 0.85)
+            (0.8, 0.0, 0.0),       // SDR red below knee
+            (0.0, 0.8, 0.0),       // SDR green below knee
+            (0.0, 0.0, 0.8),       // SDR blue below knee
+            (0.8, 0.0, 0.8),       // SDR magenta below knee
         ] {
             let (r2, g2, b2) = tonemap_pixel(r, g, b);
             assert!((r2 - r).abs() < 1e-5, "r {r} -> {r2}");
@@ -386,18 +385,22 @@ mod tests {
     }
 
     #[test]
-    fn luminance_tonemap_distinguishes_wcg_and_hdr_magenta() {
+    fn max_rgb_tonemap_distinguishes_wcg_and_hdr_magenta() {
         // WCG magenta at SDR brightness (working 1.5, R=B=1.5, G=0):
-        //   lum = 0.2848 * 1.5 = 0.427 ≤ 0.85 → identity, encodes to sRGB ~255 (clamped)
+        //   max_val = 1.5, excess = 0.65, compressed = 0.85 + 0.15*0.65/0.8 = 0.971875
+        //   scale = 0.971875 / 1.5 = 0.647916
+        //   output: R=B = 1.5 * scale = 0.971875. No longer clamps/saturates to 1.0!
         // HDR magenta at 6× brightness (working 6.0, R=B=6, G=0):
-        //   lum = 0.2848 * 6 = 1.71, excess = 0.86, compressed = 0.85 + 0.15*0.86/1.01 = 0.9777
-        // both saturate/clamp to 255 per-channel at SDR 8-bit output.
+        //   max_val = 6.0, excess = 5.15, compressed = 0.85 + 0.15*5.15/5.3 = 0.99575
+        //   scale = 0.99575 / 6.0 = 0.16595
+        //   output: R=B = 6.0 * scale = 0.99575.
         let (wcg_r, _, wcg_b) = tonemap_pixel(1.5, 0.0, 1.5);
         let (hdr_r, _, hdr_b) = tonemap_pixel(6.0, 0.0, 6.0);
-        assert!(wcg_r >= 1.0 - 1e-4 && wcg_b >= 1.0 - 1e-4, "WCG should be at-or-above 1.0: {wcg_r}, {wcg_b}");
-        assert!(hdr_r >= 1.0 - 1e-4 && hdr_b >= 1.0 - 1e-4, "HDR should be at-or-above 1.0: {hdr_r}, {hdr_b}");
-        // bright WHITE compresses differently (lum is high), where the
-        // luminance-tonemap shines for screen-capture content.
+        assert!((wcg_r - 0.971875).abs() < 1e-4, "WCG: {wcg_r}");
+        assert!((wcg_b - 0.971875).abs() < 1e-4, "WCG: {wcg_b}");
+        assert!((hdr_r - 0.99575).abs() < 1e-4, "HDR: {hdr_r}");
+        assert!((hdr_b - 0.99575).abs() < 1e-4, "HDR: {hdr_b}");
+        // bright WHITE compresses similarly (lum == max_val)
         let (sdr_white_r, _, _) = tonemap_pixel(1.0, 1.0, 1.0);
         let (hdr_white_r, _, _) = tonemap_pixel(4.0, 4.0, 4.0);
         assert!((sdr_white_r - 0.925).abs() < 1e-4, "SDR white must be 0.925: {sdr_white_r}");
