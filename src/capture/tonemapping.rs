@@ -164,12 +164,24 @@ fn tonemap_pixel(r: f32, g: f32, b: f32, l_src: f32) -> (f32, f32, f32) {
     let knee = 0.85f32;
     let w = l_src - knee;
     let c = 1.0 - knee;
-    // clamp w to be at least c + 0.05 to avoid division by zero
-    let w_clamped = w.max(c + 0.05);
-    let b_param = c * w_clamped / (w_clamped - c);
+
+    // solve ln(1.0 + B * w) = c * B for B using robust bisection method
+    let mut low = 0.0f32;
+    let mut high = 1000.0f32;
+    let mut b_param = 1.0f32;
+    for _ in 0..20 {
+        let mid = 0.5 * (low + high);
+        let val = (1.0 + mid * w).ln() - c * mid;
+        if val > 0.0 {
+            low = mid;
+        } else {
+            high = mid;
+        }
+        b_param = mid;
+    }
 
     let excess = max_val - knee;
-    let compressed = knee + b_param * excess / (excess + b_param);
+    let compressed = knee + 1.0 / b_param * (1.0 + b_param * excess).ln();
     let scale = compressed / max_val;
     (r * scale, g * scale, b * scale)
 }
@@ -221,7 +233,7 @@ pub fn scrgb_to_sdr_bt2390(
             }
         }
     }
-    let l_src = (raw_peak * coeff).min(8.0).max(1.05);
+    let l_src = (raw_peak * coeff).min(40.0).max(1.05);
 
     tracing::info!(
         "tonemap: {}x{} sdr_white={:.0}nits coeff={:.4} raw_peak={:.3} l_src={:.3}",
@@ -400,8 +412,8 @@ mod tests {
     #[test]
     fn luminance_tonemap_compresses_bright_white() {
         // bright white at 4× SDR (working space 4.0): excess = 3.15, l_src = 4.0.
-        // w_clamped = 3.15, b_param = 0.15 * 3.15 / 3.0 = 0.1575.
-        // compressed = 0.85 + 0.1575 * 3.15 / (3.15 + 0.1575) = 1.0.
+        // solver finds b_param for w = 3.15, c = 0.15 -> b_param = 30.566.
+        // compressed = 0.85 + 1.0/b_param * ln(1.0 + b_param * 3.15) = 1.0.
         let (r, g, b) = tonemap_pixel(4.0, 4.0, 4.0, 4.0);
         assert!((r - 1.0).abs() < 1e-4, "{r}");
         assert!((g - 1.0).abs() < 1e-4, "{g}");
@@ -411,21 +423,21 @@ mod tests {
     #[test]
     fn max_rgb_tonemap_distinguishes_wcg_and_hdr_magenta() {
         // WCG magenta at SDR brightness (working 1.5, R=B=1.5, G=0), l_src = 6.0:
-        //   w = 5.15, b_param = 0.15 * 5.15 / 5.0 = 0.1545.
-        //   excess = 0.65, compressed = 0.85 + 0.1545 * 0.65 / 0.8045 = 0.9748.
+        //   w = 5.15, c = 0.15 -> b_param = 34.54.
+        //   excess = 0.65, compressed = 0.85 + 1.0/b * ln(1.0 + b * 0.65) = 0.94125.
         // HDR magenta at 6× brightness (working 6.0, R=B=6, G=0), l_src = 6.0:
-        //   excess = 5.15, compressed = 0.85 + 0.1545 * 5.15 / 5.3045 = 1.0.
+        //   excess = 5.15, compressed = 1.0.
         let (wcg_r, _, wcg_b) = tonemap_pixel(1.5, 0.0, 1.5, 6.0);
         let (hdr_r, _, hdr_b) = tonemap_pixel(6.0, 0.0, 6.0, 6.0);
-        assert!((wcg_r - 0.9748).abs() < 1e-4, "WCG: {wcg_r}");
-        assert!((wcg_b - 0.9748).abs() < 1e-4, "WCG: {wcg_b}");
+        assert!((wcg_r - 0.94125).abs() < 1e-4, "WCG: {wcg_r}");
+        assert!((wcg_b - 0.94125).abs() < 1e-4, "WCG: {wcg_b}");
         assert!((hdr_r - 1.0).abs() < 1e-4, "HDR: {hdr_r}");
         assert!((hdr_b - 1.0).abs() < 1e-4, "HDR: {hdr_b}");
         // bright WHITE compresses similarly
         let (sdr_white_r, _, _) = tonemap_pixel(1.0, 1.0, 1.0, 6.0);
         let (hdr_white_r, _, _) = tonemap_pixel(4.0, 4.0, 4.0, 6.0);
-        assert!((sdr_white_r - 0.9261).abs() < 1e-4, "SDR white must be 0.9261: {sdr_white_r}");
-        assert!((hdr_white_r - 0.9973).abs() < 1e-4, "HDR white must compress to 0.9973: {hdr_white_r}");
+        assert!((sdr_white_r - 0.90273).abs() < 1e-4, "SDR white must be 0.90273: {sdr_white_r}");
+        assert!((hdr_white_r - 0.98589).abs() < 1e-4, "HDR white must compress to 0.98589: {hdr_white_r}");
     }
 
     #[test]
