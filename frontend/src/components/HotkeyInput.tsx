@@ -3,6 +3,7 @@ import { listen, UnlistenFn } from "@tauri-apps/api/event";
 import { X } from "lucide-solid";
 import {
   splitHotkey,
+  eventToHotkey,
 } from "../keys";
 import { api } from "../api";
 
@@ -20,6 +21,7 @@ interface CapturedPayload {
 const RISKY_BARE_OK = new Set([
   "F1","F2","F3","F4","F5","F6","F7","F8","F9","F10","F11","F12",
   "F13","F14","F15","F16","F17","F18","F19","F20","F21","F22","F23","F24",
+  "Mouse4","Mouse5",
   "Pause","PrintScreen","ScrollLock",
   "Numpad0","Numpad1","Numpad2","Numpad3","Numpad4",
   "Numpad5","Numpad6","Numpad7","Numpad8","Numpad9",
@@ -38,12 +40,17 @@ export function HotkeyInput(props: Props) {
 
   let unlisten: UnlistenFn | null = null;
   let escHandler: ((e: KeyboardEvent) => void) | null = null;
+  let mousedownHandler: ((e: MouseEvent) => void) | null = null;
 
   const stop = () => {
     if (unlisten) { unlisten(); unlisten = null; }
     if (escHandler) {
       window.removeEventListener("keydown", escHandler, true);
       escHandler = null;
+    }
+    if (mousedownHandler) {
+      window.removeEventListener("mousedown", mousedownHandler, true);
+      mousedownHandler = null;
     }
     void api.cancelHotkeyCapture().catch(() => {});
     setCapturing(false);
@@ -84,8 +91,10 @@ export function HotkeyInput(props: Props) {
       return;
     }
 
-    // browser-side Esc/Backspace handling — these never reach the LL hook
-    // capture path because we cancel before the keydown completes.
+    // browser-side key capturing and Esc/Backspace handling — this acts as
+    // a robust fallback when the application has focus, because Windows
+    // conflicts and prioritizes the webview's raw input over global low-level
+    // hooks when the window is in the foreground.
     escHandler = (e: KeyboardEvent) => {
       if (e.code === "Escape" && !e.ctrlKey && !e.altKey && !e.shiftKey && !e.metaKey) {
         e.preventDefault();
@@ -96,9 +105,44 @@ export function HotkeyInput(props: Props) {
         e.stopPropagation();
         props.onChange("");
         stop();
+      } else {
+        const parsed = eventToHotkey(e);
+        if (parsed) {
+          e.preventDefault();
+          e.stopPropagation();
+          accept({
+            vk: 0,
+            mods: parsed.modifiers.length,
+            hotkey: parsed.combined,
+          });
+        }
       }
     };
     window.addEventListener("keydown", escHandler, true);
+
+    mousedownHandler = (e: MouseEvent) => {
+      // 3 is back (Mouse4), 4 is forward (Mouse5)
+      if (e.button === 3 || e.button === 4) {
+        e.preventDefault();
+        e.stopPropagation();
+
+        const modifiers: string[] = [];
+        if (e.ctrlKey) modifiers.push("Ctrl");
+        if (e.altKey) modifiers.push("Alt");
+        if (e.shiftKey) modifiers.push("Shift");
+        if (e.metaKey) modifiers.push("Win");
+
+        const btnName = e.button === 3 ? "Mouse4" : "Mouse5";
+        const combined = modifiers.length > 0 ? `${modifiers.join("+")}+${btnName}` : btnName;
+
+        accept({
+          vk: e.button === 3 ? 0x05 : 0x06,
+          mods: modifiers.length,
+          hotkey: combined,
+        });
+      }
+    };
+    window.addEventListener("mousedown", mousedownHandler, true);
   };
 
   onCleanup(() => stop());

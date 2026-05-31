@@ -6,6 +6,11 @@ format follows [keep-a-changelog](https://keepachangelog.com/en/1.1.0/) loosely.
 
 nothing pending. drop ideas in github issues.
 
+## [0.5.5] — 2026-05-31
+
+### added
+- added support for mouse side buttons (Mouse4/Back and Mouse5/Forward) as bindable global and focused hotkeys. this includes a background low-level mouse hook (`WH_MOUSE_LL`) to capture click events system-wide, a webview `mousedown` handler for focused capturing fallback, and bare risky-keybind whitelisting so side buttons can be assigned without requiring modifier keys
+
 ## [0.5.4] — 2026-05-31
 
 ### fixed

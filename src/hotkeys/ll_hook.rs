@@ -17,8 +17,8 @@ use std::sync::{Mutex, OnceLock};
 use windows::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, DispatchMessageW, GetMessageW, SetWindowsHookExW, TranslateMessage,
-    UnhookWindowsHookEx, HHOOK, KBDLLHOOKSTRUCT, MSG, WH_KEYBOARD_LL, WM_KEYDOWN, WM_KEYUP,
-    WM_SYSKEYDOWN, WM_SYSKEYUP,
+    UnhookWindowsHookEx, HHOOK, KBDLLHOOKSTRUCT, MSLLHOOKSTRUCT, MSG, WH_KEYBOARD_LL,
+    WH_MOUSE_LL, WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP,
 };
 
 pub const MOD_CTRL: u8 = 1;
@@ -235,6 +235,62 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
     unsafe { CallNextHookEx(None, code, wparam, lparam) }
 }
 
+unsafe extern "system" fn mouse_hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    HOOK_CALLS_TOTAL.fetch_add(1, Ordering::SeqCst);
+    if code < 0 {
+        return unsafe { CallNextHookEx(None, code, wparam, lparam) };
+    }
+    let msg = wparam.0 as u32;
+    // WM_XBUTTONDOWN = 0x020B, WM_NCXBUTTONDOWN = 0x00AB
+    if msg == 0x020B || msg == 0x00AB {
+        let ms = unsafe { &*(lparam.0 as *const MSLLHOOKSTRUCT) };
+        let xbutton = (ms.mouseData >> 16) as u16;
+        let vk = if xbutton == 1 { 0x05 } else { 0x06 };
+
+        HOOK_KEYDOWN_CALLS.fetch_add(1, Ordering::SeqCst);
+        let mods = MODIFIER_STATE.load(Ordering::SeqCst);
+        HOOK_LAST_VK.store(vk, Ordering::SeqCst);
+        HOOK_LAST_MODS.store(mods, Ordering::SeqCst);
+
+        // capture mode
+        if CAPTURE_REQUEST.swap(false, Ordering::SeqCst) {
+            let tx_opt = {
+                let reg = match registry().lock() {
+                    Ok(g) => g,
+                    Err(_) => return LRESULT(1),
+                };
+                reg.tx.clone()
+            };
+            if let Some(tx) = tx_opt {
+                let _ = tx.try_send(HookEvent::Captured { vk, mods });
+            }
+            return LRESULT(1);
+        }
+
+        let binding = HookBinding { vk, mods };
+        let (task_id, tx) = {
+            let reg = match registry().lock() {
+                Ok(g) => g,
+                Err(_) => return unsafe { CallNextHookEx(None, code, wparam, lparam) },
+            };
+            if !reg.enabled {
+                return unsafe { CallNextHookEx(None, code, wparam, lparam) };
+            }
+            (reg.bindings.get(&binding).cloned(), reg.tx.clone())
+        };
+
+        if let (Some(task_id), Some(tx)) = (task_id, tx) {
+            HOOK_MATCHED_CALLS.fetch_add(1, Ordering::SeqCst);
+            match tx.try_send(HookEvent::Fire { task_id }) {
+                Ok(()) => HOOK_DISPATCH_SENT.fetch_add(1, Ordering::SeqCst),
+                Err(_) => HOOK_DISPATCH_DROPPED.fetch_add(1, Ordering::SeqCst),
+            };
+            return LRESULT(1);
+        }
+    }
+    unsafe { CallNextHookEx(None, code, wparam, lparam) }
+}
+
 // physical state of Ctrl/Alt/Shift/Win, updated from inside the hook on
 // every modifier key transition. zeroed at init; tracked across the life
 // of the process. see hook_proc for the update path.
@@ -314,6 +370,13 @@ pub fn spawn_hook_thread() -> std::io::Result<()> {
                     return;
                 }
             };
+            
+            // install mouse hook for mouse side button keybinds
+            let mouse_hook: Option<HHOOK> = SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_hook_proc), hinstance, 0).ok();
+            if mouse_hook.is_none() {
+                tracing::warn!("SetWindowsHookExW(WH_MOUSE_LL) failed - mouse side keybinds will be unavailable in background");
+            }
+
             HOOK_INSTALLED.store(true, Ordering::SeqCst);
             tracing::info!("LL keyboard hook installed");
 
@@ -324,6 +387,9 @@ pub fn spawn_hook_thread() -> std::io::Result<()> {
             }
 
             HOOK_INSTALLED.store(false, Ordering::SeqCst);
+            if let Some(mh) = mouse_hook {
+                let _ = UnhookWindowsHookEx(mh);
+            }
             let _ = UnhookWindowsHookEx(hook);
         })?;
     Ok(())

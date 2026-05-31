@@ -56,6 +56,8 @@ fn vk_to_name(vk: u32) -> Option<String> {
     let s: &str = match vk {
         0x41..=0x5A => return Some(((vk as u8) as char).to_string()),
         0x30..=0x39 => return Some(((vk as u8) as char).to_string()),
+        0x05 => "Mouse4",
+        0x06 => "Mouse5",
         0x70 => "F1", 0x71 => "F2", 0x72 => "F3", 0x73 => "F4",
         0x74 => "F5", 0x75 => "F6", 0x76 => "F7", 0x77 => "F8",
         0x78 => "F9", 0x79 => "F10", 0x7A => "F11", 0x7B => "F12",
@@ -111,7 +113,9 @@ fn code_to_vk(c: Code) -> Option<u32> {
         Code::F9 => 0x78, Code::F10 => 0x79, Code::F11 => 0x7A, Code::F12 => 0x7B,
         Code::F13 => 0x7C, Code::F14 => 0x7D, Code::F15 => 0x7E, Code::F16 => 0x7F,
         Code::F17 => 0x80, Code::F18 => 0x81, Code::F19 => 0x82, Code::F20 => 0x83,
-        Code::F21 => 0x84, Code::F22 => 0x85, Code::F23 => 0x86, Code::F24 => 0x87,
+        Code::F21 => 0x84, Code::F22 => 0x85,
+        Code::F23 => 0x05, // vk_xbutton1 hijacked for mouse4
+        Code::F24 => 0x06, // vk_xbutton2 hijacked for mouse5
         Code::Space => 0x20,
         Code::Enter => 0x0D,
         Code::Tab => 0x09,
@@ -256,6 +260,7 @@ pub fn is_risky_bare(s: &str) -> bool {
             | "F9" | "F10" | "F11" | "F12" | "F13" | "F14" | "F15"
             | "F16" | "F17" | "F18" | "F19" | "F20" | "F21" | "F22"
             | "F23" | "F24"
+            | "Mouse4" | "Mouse5"
             | "Pause" | "PrintScreen" | "ScrollLock"
             | "Numpad0" | "Numpad1" | "Numpad2" | "Numpad3" | "Numpad4"
             | "Numpad5" | "Numpad6" | "Numpad7" | "Numpad8" | "Numpad9"
@@ -357,8 +362,8 @@ fn parse_key_code(s: &str) -> Result<Code> {
         "F20" => Code::F20,
         "F21" => Code::F21,
         "F22" => Code::F22,
-        "F23" => Code::F23,
-        "F24" => Code::F24,
+        "F23" | "MOUSE4" | "XBUTTON1" => Code::F23,
+        "F24" | "MOUSE5" | "XBUTTON2" => Code::F24,
         "SPACE" => Code::Space,
         "ENTER" | "RETURN" => Code::Enter,
         "TAB" => Code::Tab,
@@ -466,6 +471,8 @@ pub fn format_code(code: Code) -> &'static str {
         Code::F10 => "F10",
         Code::F11 => "F11",
         Code::F12 => "F12",
+        Code::F23 => "Mouse4",
+        Code::F24 => "Mouse5",
         Code::Space => "Space",
         Code::Enter => "Enter",
         Code::Tab => "Tab",
@@ -585,6 +592,8 @@ mod tests {
             "Pause",
             "F12",
             "Numpad5",
+            "Mouse4",
+            "Ctrl+Mouse5",
         ];
         for &s in cases {
             let hk = parse_hotkey(s).unwrap_or_else(|e| panic!("parse '{s}' failed: {e}"));
