@@ -6,6 +6,11 @@ format follows [keep-a-changelog](https://keepachangelog.com/en/1.1.0/) loosely.
 
 nothing pending. drop ideas in github issues.
 
+## [0.5.6] — 2026-06-01
+
+### fixed
+- reverted updater public key in tauri.conf.json back to the unencrypted rotated keypair (EC8E6083D3E21CEB) to resolve signature verification mismatch with release builds signed by GitHub Actions
+
 ## [0.5.5] — 2026-05-31
 
 ### added
