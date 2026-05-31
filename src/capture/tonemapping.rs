@@ -186,7 +186,7 @@ fn tonemap_pixel(r: f32, g: f32, b: f32, l_src: f32) -> (f32, f32, f32) {
     // desaturate highlights toward white as they get brighter to prevent neon/overblown look
     // and preserve details in highly saturated channels (only apply to pixels above SDR white)
     let hdr_excess = (max_val - 1.0).max(0.0);
-    let desat_factor = 0.03 * (hdr_excess / (hdr_excess + 1.0));
+    let desat_factor = 0.008 * (hdr_excess / (hdr_excess + 1.0));
     let r_desat = r * (1.0 - desat_factor) + max_val * desat_factor;
     let g_desat = g * (1.0 - desat_factor) + max_val * desat_factor;
     let b_desat = b * (1.0 - desat_factor) + max_val * desat_factor;
@@ -514,8 +514,8 @@ mod tests {
         let img = scrgb_to_sdr_bt2390(&scrgb, 2, 2, 80.0, TonemapParams::default());
         let p = img.get_pixel(0, 0);
         assert!(p[0] > 200, "red channel should land bright: {}", p[0]);
-        assert_eq!(p[1], 41, "green channel must be desaturated to 41");
-        assert_eq!(p[2], 41, "blue channel must be desaturated to 41");
+        assert_eq!(p[1], 18, "green channel must be desaturated to 18");
+        assert_eq!(p[2], 18, "blue channel must be desaturated to 18");
     }
 
     #[test]
