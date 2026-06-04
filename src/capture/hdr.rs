@@ -241,31 +241,6 @@ impl HdrCapture {
                     );
                     return RgbaImage::new(width, height);
                 }
-                // diagnostic: count non-zero bytes in raw_data so we can
-                // distinguish "GPU handed us a zeroed texture" from "my
-                // half-float decode is wrong". elevated to info for 0.3.57
-                // and demoted once HDR captures are visually confirmed.
-                let scan_len = expected_bytes.min(1 << 20);
-                let nonzero = raw_data[..scan_len].iter().filter(|b| **b != 0).count();
-                let first_nonzero_offset = raw_data[..expected_bytes]
-                    .iter()
-                    .position(|b| *b != 0)
-                    .map(|o| o as i64)
-                    .unwrap_or(-1);
-                let bytes_dump: String = raw_data[..32.min(expected_bytes)]
-                    .iter()
-                    .map(|b| format!("{:02x}", b))
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                tracing::info!(
-                    "scrgb raw: total={}B, nonzero_in_first_{}MB={} first_nonzero_byte_offset={} first32B=[{}]",
-                    expected_bytes,
-                    scan_len / (1 << 20),
-                    nonzero,
-                    first_nonzero_offset,
-                    bytes_dump,
-                );
-
                 let float_data: Vec<f32> = raw_data[..expected_bytes]
                     .chunks_exact(2)
                     .map(|chunk| {

@@ -6,6 +6,11 @@ format follows [keep-a-changelog](https://keepachangelog.com/en/1.1.0/) loosely.
 
 nothing pending. drop ideas in github issues.
 
+## [0.5.17] — 2026-06-04
+
+### performance
+- removed a leftover diagnostic byte-scan from the scRGB HDR capture path. it scanned up to ~1 MB of the raw frame (and, on an all-black frame, the entire multi-MB buffer) and formatted a hex dump on every HDR capture, purely to log raw-buffer stats — a temporary aid added in 0.3.57 that is no longer needed now HDR capture is confirmed. HDR screenshot output is byte-identical (only logging was removed)
+
 ## [0.5.16] — 2026-06-04
 
 ### performance
