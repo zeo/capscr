@@ -776,7 +776,6 @@ pub fn test_connection_ftp(target: &FtpTarget) -> Result<Vec<TestStep>> {
 
 #[cfg(feature = "sftp")]
 pub fn test_connection_sftp(target: &SftpTarget) -> Result<Vec<TestStep>> {
-    use async_trait::async_trait;
     use russh::client;
     use russh::keys::HashAlg;
     use russh_sftp::client::SftpSession;
@@ -832,7 +831,6 @@ pub fn test_connection_sftp(target: &SftpTarget) -> Result<Vec<TestStep>> {
         mismatch_error: Arc<Mutex<Option<String>>>,
     }
 
-    #[async_trait]
     impl client::Handler for VerifyHostKey {
         type Error = russh::Error;
         async fn check_server_key(
@@ -887,36 +885,33 @@ pub fn test_connection_sftp(target: &SftpTarget) -> Result<Vec<TestStep>> {
         let mut auth_ok = false;
         if !key_path.is_empty() {
             match load_private_key(&key_path, &key_pass) {
-                Ok(pk) => match russh::keys::key::PrivateKeyWithHashAlg::new(
-                    std::sync::Arc::new(pk),
-                    None,
-                ) {
-                    Ok(pkwha) => match session.authenticate_publickey(&username, pkwha).await {
-                        Ok(true) => {
+                Ok(pk) => {
+                    let pkwha = russh::keys::key::PrivateKeyWithHashAlg::new(
+                        std::sync::Arc::new(pk),
+                        None,
+                    );
+                    match session.authenticate_publickey(&username, pkwha).await {
+                        Ok(r) if r.success() => {
                             steps.push(TestStep::ok("auth-publickey", key_path.clone()));
                             auth_ok = true;
                         }
-                        Ok(false) => steps.push(TestStep::fail(
+                        Ok(_) => steps.push(TestStep::fail(
                             "auth-publickey",
                             "server rejected the key (not in authorized_keys?)".into(),
                         )),
                         Err(e) => steps.push(TestStep::fail("auth-publickey", e.to_string())),
-                    },
-                    Err(e) => steps.push(TestStep::fail(
-                        "auth-publickey",
-                        format!("key/hash-alg wrap failed: {e}"),
-                    )),
-                },
+                    }
+                }
                 Err(e) => steps.push(TestStep::fail("auth-publickey", e.to_string())),
             }
         }
         if !auth_ok && !password.is_empty() {
             match session.authenticate_password(&username, &password).await {
-                Ok(true) => {
+                Ok(r) if r.success() => {
                     steps.push(TestStep::ok("auth-password", username.clone()));
                     auth_ok = true;
                 }
-                Ok(false) => steps.push(TestStep::fail(
+                Ok(_) => steps.push(TestStep::fail(
                     "auth-password",
                     "server rejected the password".into(),
                 )),
@@ -1216,7 +1211,6 @@ pub fn upload_ftp(data: &[u8], file_name: &str, target: &FtpTarget) -> Result<Up
 
 #[cfg(feature = "sftp")]
 pub fn upload_sftp(data: &[u8], file_name: &str, target: &SftpTarget) -> Result<UploadResult> {
-    use async_trait::async_trait;
     use russh::client;
     use russh::keys::HashAlg;
     use russh_sftp::client::SftpSession;
@@ -1257,7 +1251,6 @@ pub fn upload_sftp(data: &[u8], file_name: &str, target: &SftpTarget) -> Result<
         mismatch_error: Arc<Mutex<Option<String>>>,
     }
 
-    #[async_trait]
     impl client::Handler for VerifyHostKey {
         type Error = russh::Error;
         async fn check_server_key(
@@ -1329,20 +1322,16 @@ pub fn upload_sftp(data: &[u8], file_name: &str, target: &SftpTarget) -> Result<
         if !key_path.is_empty() {
             match load_private_key(&key_path, &key_pass) {
                 Ok(pk) => {
-                    match russh::keys::key::PrivateKeyWithHashAlg::new(
+                    let pkwha = russh::keys::key::PrivateKeyWithHashAlg::new(
                         std::sync::Arc::new(pk),
                         None,
-                    ) {
-                        Ok(pkwha) => {
-                            match session.authenticate_publickey(&username, pkwha).await {
-                                Ok(true) => auth_ok = true,
-                                Ok(false) => auth_diag.push(
-                                    "publickey: server rejected the key (not in authorized_keys?)".into(),
-                                ),
-                                Err(e) => auth_diag.push(format!("publickey: {e}")),
-                            }
-                        }
-                        Err(e) => auth_diag.push(format!("publickey: key/hash-alg wrap failed: {e}")),
+                    );
+                    match session.authenticate_publickey(&username, pkwha).await {
+                        Ok(r) if r.success() => auth_ok = true,
+                        Ok(_) => auth_diag.push(
+                            "publickey: server rejected the key (not in authorized_keys?)".into(),
+                        ),
+                        Err(e) => auth_diag.push(format!("publickey: {e}")),
                     }
                 }
                 Err(e) => auth_diag.push(format!("publickey: {e}")),
@@ -1350,8 +1339,8 @@ pub fn upload_sftp(data: &[u8], file_name: &str, target: &SftpTarget) -> Result<
         }
         if !auth_ok && !password.is_empty() {
             match session.authenticate_password(&username, &password).await {
-                Ok(true) => auth_ok = true,
-                Ok(false) => auth_diag.push("password: server rejected the password".into()),
+                Ok(r) if r.success() => auth_ok = true,
+                Ok(_) => auth_diag.push("password: server rejected the password".into()),
                 Err(e) => auth_diag.push(format!("password: {e}")),
             }
         }

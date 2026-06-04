@@ -6,6 +6,11 @@ format follows [keep-a-changelog](https://keepachangelog.com/en/1.1.0/) loosely.
 
 nothing pending. drop ideas in github issues.
 
+## [0.5.21] — 2026-06-04
+
+### security
+- upgraded russh 0.49 → 0.60.3, clearing RUSTSEC-2026-0154 (unbounded 32-bit allocation in russh) and RUSTSEC-2026-0153 (russh-cryptovec allocation handling). russh 0.60 requires a crypto backend; the default `aws-lc-rs` is disabled (aws-lc-sys fails to build on the current MSVC) in favour of `ring`. the SFTP client was migrated to the 0.60 API: native-async `Handler` (no `async-trait`), `authenticate_*` now return `AuthResult`, and `PrivateKeyWithHashAlg::new` is infallible
+
 ## [0.5.20] — 2026-06-04
 
 ### added

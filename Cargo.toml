@@ -1,6 +1,6 @@
 [package]
 name = "capscr"
-version = "0.5.20"
+version = "0.5.21"
 edition = "2021"
 description = "Fast HDR-aware Windows screen capture — tray-first, signed updates, no telemetry."
 authors = ["rot <96458554+rotlove@users.noreply.github.com>"]
@@ -16,7 +16,7 @@ default = ["sftp", "plugin-runtime"]
 plugin-runtime = ["dep:wasmtime"]
 # SFTP upload destination. Adds russh + russh-sftp (pure-rust SSH). default-on;
 # can be disabled with --no-default-features to skip the SSH stack entirely.
-sftp = ["dep:russh", "dep:russh-sftp", "dep:async-trait"]
+sftp = ["dep:russh", "dep:russh-sftp"]
 
 [dependencies]
 # GUI shell. tauri-runtime-wry 2.9.x has a Send+Sync mismatch with current wry
@@ -102,13 +102,12 @@ sha2 = "0.10"
 hex = "0.4"
 
 # Upload destinations: FTP via suppaftp, SFTP via russh under the `sftp`
-# feature. russh is pure-rust, so no nasm/perl/openssl-sys compilation on
-# Windows — adding it pulls in tokio (already a dep) and ed25519/aes/etc
-# pure-rust crypto crates.
+# feature. russh 0.60.3 patches RUSTSEC-2026-0153 / RUSTSEC-2026-0154; from 0.60
+# it needs a crypto backend (ring or aws-lc-rs). aws-lc-sys fails to compile on
+# the current MSVC, so the default aws-lc-rs is disabled and `ring` is used.
 suppaftp = { version = "6.0", features = ["native-tls"] }
-russh = { version = "0.49", optional = true }
+russh = { version = "0.60.3", default-features = false, features = ["flate2", "rsa", "ring"], optional = true }
 russh-sftp = { version = "2", optional = true }
-async-trait = { version = "0.1", optional = true }
 
 # HDR-preserved output (Phase 10 will add JXL/AVIF; pure-rust PNG cICP is fine here)
 png = "0.17"
