@@ -6,6 +6,11 @@ format follows [keep-a-changelog](https://keepachangelog.com/en/1.1.0/) loosely.
 
 nothing pending. drop ideas in github issues.
 
+## [0.5.19] — 2026-06-04
+
+### changed
+- keyboard focus now uses a greyscale focus ring matching the instrument aesthetic on the sidebar nav, sub-tabs, filter pills, statusbar buttons, history tiles and tile actions, titlebar buttons, and checkboxes, instead of the browser's default (clashing) ring. mouse interaction is unaffected — the ring only shows for keyboard focus (`:focus-visible`)
+
 ## [0.5.18] — 2026-06-04
 
 ### changed

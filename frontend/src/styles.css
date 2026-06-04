@@ -755,6 +755,34 @@ button.btn,
   outline-offset: 2px;
 }
 
+/* keyboard focus for the other interactive controls — match the greyscale
+   instrument aesthetic instead of the browser's default (often blue) ring.
+   :focus-visible only, so mouse interaction stays ring-free; inset outline so
+   it never clips on tightly-packed controls (sidebar nav, statusbar, tiles). */
+.nav-item:focus-visible,
+.subnav-item:focus-visible,
+.filter-pill:focus-visible,
+.seg-btn:focus-visible,
+.icon-btn:focus-visible,
+.search-clear:focus-visible,
+.toast-close:focus-visible,
+.hk-clear:focus-visible,
+.tile:focus-visible,
+.titlebar-btn:focus-visible {
+  outline: 2px solid var(--paper);
+  outline-offset: -2px;
+}
+
+.check input:focus-visible {
+  outline: 2px solid var(--paper);
+  outline-offset: 2px;
+}
+
+.link:focus-visible {
+  outline: none;
+  text-decoration-color: var(--paper);
+}
+
 .btn:disabled {
   color: var(--rule-2);
   border-color: var(--rule);
