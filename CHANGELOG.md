@@ -6,6 +6,12 @@ format follows [keep-a-changelog](https://keepachangelog.com/en/1.1.0/) loosely.
 
 nothing pending. drop ideas in github issues.
 
+## [0.5.23] — 2026-06-05
+
+### changed
+- plugins/marketplace view is code-split out of the hub's initial bundle (a 7.8 kB chunk loaded on demand when the tab opens, like the editor), trimming hub first-paint weight
+- installed plugins are indexed by id so the registry list does O(1) lookups instead of a scan per entry, and the installed list no longer flashes "none installed" while the initial scan is still loading
+
 ## [0.5.22] — 2026-06-04
 
 ### fixed

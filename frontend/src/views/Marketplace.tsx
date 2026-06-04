@@ -1,4 +1,4 @@
-import { createResource, createSignal, For, Show } from "solid-js";
+import { createMemo, createResource, createSignal, For, Show } from "solid-js";
 import { FolderOpen, RefreshCw, Power, Download, Trash2, ExternalLink } from "lucide-solid";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { Section } from "../components/Section";
@@ -104,9 +104,15 @@ export function Marketplace() {
     }
   };
 
-  const isInstalled = (entryId: string): InstalledPlugin | undefined => {
-    return plugins()?.find((p) => p.id === entryId);
-  };
+  // index installed plugins by id so the registry list does O(1) lookups
+  // instead of an O(installed) scan per browse entry on every render
+  const installedById = createMemo(() => {
+    const map = new Map<string, InstalledPlugin>();
+    for (const p of plugins() ?? []) map.set(p.id, p);
+    return map;
+  });
+  const isInstalled = (entryId: string): InstalledPlugin | undefined =>
+    installedById().get(entryId);
 
   return (
     <>
@@ -151,7 +157,7 @@ export function Marketplace() {
         </Show>
 
         <Show
-          when={(plugins() ?? []).length > 0}
+          when={plugins.loading || (plugins() ?? []).length > 0}
           fallback={
             <div class="empty">
               <span class="stick" />

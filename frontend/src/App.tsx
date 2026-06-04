@@ -10,13 +10,16 @@ import { configDirty, setConfigDirty } from "./dirty";
 import { Settings } from "./views/Settings";
 import { History } from "./views/History";
 import { Destinations } from "./views/Destinations";
-import { Marketplace } from "./views/Marketplace";
 import { Tasks } from "./views/Tasks";
 
 // lazy-loaded so the hub bundle doesn't ship the full canvas editor and the
 // editor window doesn't ship the hub. Editor is a named export, so adapt it to
 // the default export the lazy loader expects.
 const Editor = lazy(() => import("./views/Editor").then((m) => ({ default: m.Editor })));
+
+// plugins view is code-split out of the hub's initial bundle — it isn't the
+// default tab, so its registry browser + icons load only when the tab is opened
+const Marketplace = lazy(() => import("./views/Marketplace").then((m) => ({ default: m.Marketplace })));
 
 interface Toast {
   id: number;
@@ -410,23 +413,31 @@ function Hub() {
         <Show when={active()} keyed>
           {(activeId) => (
             <div class="view-anim">
-              <Switch>
-                <Match when={activeId === "settings"}>
-                  <Settings />
-                </Match>
-                <Match when={activeId === "tasks"}>
-                  <Tasks />
-                </Match>
-                <Match when={activeId === "history"}>
-                  <History />
-                </Match>
-                <Match when={activeId === "destinations"}>
-                  <Destinations />
-                </Match>
-                <Match when={activeId === "marketplace"}>
-                  <Marketplace />
-                </Match>
-              </Switch>
+              <Suspense
+                fallback={
+                  <div class="skeleton" style="margin-top: 14px;">
+                    <div class="skeleton-line" style="width: 45%;" />
+                  </div>
+                }
+              >
+                <Switch>
+                  <Match when={activeId === "settings"}>
+                    <Settings />
+                  </Match>
+                  <Match when={activeId === "tasks"}>
+                    <Tasks />
+                  </Match>
+                  <Match when={activeId === "history"}>
+                    <History />
+                  </Match>
+                  <Match when={activeId === "destinations"}>
+                    <Destinations />
+                  </Match>
+                  <Match when={activeId === "marketplace"}>
+                    <Marketplace />
+                  </Match>
+                </Switch>
+              </Suspense>
             </div>
           )}
         </Show>
