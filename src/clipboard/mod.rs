@@ -64,7 +64,10 @@ impl ClipboardManager {
             return Err(anyhow!("Image has zero dimension"));
         }
 
-        let rgba_data = image.as_raw().to_vec();
+        // borrow the pixels directly — arboard copies them into the clipboard
+        // itself, so the previous to_vec was a redundant full-frame allocation
+        // (tens of MB at 4K) on every clipboard capture, the default action.
+        let raw: &[u8] = image.as_raw();
         let w = width as usize;
         let h = height as usize;
 
@@ -72,7 +75,7 @@ impl ClipboardManager {
             let img_data = arboard::ImageData {
                 width: w,
                 height: h,
-                bytes: std::borrow::Cow::Borrowed(&rgba_data),
+                bytes: std::borrow::Cow::Borrowed(raw),
             };
             clipboard.set_image(img_data)
         })

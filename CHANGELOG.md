@@ -6,6 +6,11 @@ format follows [keep-a-changelog](https://keepachangelog.com/en/1.1.0/) loosely.
 
 nothing pending. drop ideas in github issues.
 
+## [0.5.15] — 2026-06-04
+
+### performance
+- copying a capture to the clipboard no longer clones the whole frame first — the pixels are passed to the clipboard backend by reference, removing a redundant full-frame allocation (tens of MB at 4K) from the default capture-to-clipboard path
+
 ## [0.5.14] — 2026-06-04
 
 ### changed
