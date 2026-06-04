@@ -6,6 +6,11 @@ format follows [keep-a-changelog](https://keepachangelog.com/en/1.1.0/) loosely.
 
 nothing pending. drop ideas in github issues.
 
+## [0.5.18] — 2026-06-04
+
+### changed
+- added end-to-end regression tests for the HDR tonemap dispatch path (scRGB f16 decode → tonemap routing), which the existing tonemap-math tests bypassed. these lock in byte-stable HDR screenshot output across the capture-path performance work
+
 ## [0.5.17] — 2026-06-04
 
 ### performance

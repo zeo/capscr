@@ -976,4 +976,36 @@ mod tests {
         let _capture = HdrCapture::new();
         let _is_available = HdrCapture::is_hdr_available();
     }
+
+    // end-to-end guard for HdrCapture::tonemap's scRGB dispatch: the f16 decode
+    // + routing into scrgb_to_sdr_bt2390. The tonemapping.rs tests cover the
+    // tonemap math directly but bypass this decode/dispatch path, which is the
+    // one perf changes here touch. These pin the HDR-safety contract for it.
+    #[test]
+    fn scrgb_tonemap_dispatch_passes_sdr_white_through() {
+        // SDR white at a 250-nit SDR-white display is scRGB 3.125 (= 250/80).
+        // f16: 3.125 = 0x4240, 1.0 = 0x3C00, little-endian byte pairs. A 2x2
+        // frame of that must survive as near-white, matching the tonemapping
+        // sdr_pixels_pass_through expectation (sRGB ~246).
+        let px = [0x40u8, 0x42, 0x40, 0x42, 0x40, 0x42, 0x00, 0x3C];
+        let mut raw = Vec::with_capacity(px.len() * 4);
+        for _ in 0..4 {
+            raw.extend_from_slice(&px);
+        }
+        let img = HdrCapture::new().tonemap(&raw, 2, 2, HdrFormat::ScRgb, 250.0);
+        let p = img.get_pixel(0, 0);
+        assert!(
+            p[0] >= 245 && p[1] >= 245 && p[2] >= 245,
+            "SDR white via tonemap dispatch must stay near-white: {p:?}"
+        );
+        assert_eq!(p[3], 255, "alpha must be opaque");
+    }
+
+    #[test]
+    fn scrgb_tonemap_dispatch_keeps_black_black() {
+        let raw = vec![0u8; 2 * 2 * 8]; // all-zero scRGB 2x2 (8 bytes/pixel)
+        let img = HdrCapture::new().tonemap(&raw, 2, 2, HdrFormat::ScRgb, 250.0);
+        let p = img.get_pixel(0, 0);
+        assert_eq!([p[0], p[1], p[2]], [0, 0, 0], "black scRGB must stay black: {p:?}");
+    }
 }
