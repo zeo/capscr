@@ -107,6 +107,12 @@ mod windows_impl {
     static VIRTUAL_Y: AtomicI32 = AtomicI32::new(0);
 
     static WINDOW_LIST: Mutex<Vec<CachedWindow>> = Mutex::new(Vec::new());
+    // window enumeration kicked off ahead of the freeze-frame capture so it
+    // overlaps that work instead of running serially at the top of select().
+    // holds the JoinHandle the selector later consumes; if absent (no prewarm),
+    // select() falls back to enumerating inline.
+    static PREWARMED_WINDOWS: Mutex<Option<std::thread::JoinHandle<Vec<CachedWindow>>>> =
+        Mutex::new(None);
     static HOVERED_WINDOW: AtomicU32 = AtomicU32::new(0);
     static CURSOR_X: AtomicI32 = AtomicI32::new(0);
     static CURSOR_Y: AtomicI32 = AtomicI32::new(0);
@@ -190,6 +196,32 @@ mod windows_impl {
         BOOL(1)
     }
 
+    // spawn window enumeration on a background thread. called at the very top of
+    // the capture pipeline so it runs concurrently with the (usually dominant)
+    // freeze-frame capture; select() then joins the result instead of paying the
+    // EnumWindows + per-window DwmGetWindowAttribute cost on its critical path.
+    pub fn prewarm_window_list() {
+        if let Ok(handle) = std::thread::Builder::new()
+            .name("capscr-window-enum".into())
+            .spawn(enumerate_windows)
+        {
+            // replace any stale handle from a capture that never consumed it;
+            // dropping a JoinHandle just detaches that thread, which finishes on
+            // its own and discards its now-unused result.
+            *PREWARMED_WINDOWS.lock().unwrap() = Some(handle);
+        }
+    }
+
+    // consume the prewarmed enumeration if one is pending, otherwise enumerate
+    // inline. a panicked enum thread falls back to a fresh inline enumeration.
+    fn take_window_list() -> Vec<CachedWindow> {
+        let handle = PREWARMED_WINDOWS.lock().unwrap().take();
+        match handle {
+            Some(h) => h.join().unwrap_or_else(|_| enumerate_windows()),
+            None => enumerate_windows(),
+        }
+    }
+
     fn find_window_at_point(pt: POINT) -> Option<CachedWindow> {
         let windows = WINDOW_LIST.lock().unwrap();
         for win in windows.iter() {
@@ -235,25 +267,77 @@ mod windows_impl {
             return None;
         }
 
-        // Copy pixel bytes from img (RGBA) to GDI buffer (BGRA)
+        // Copy pixel bytes from img (RGBA) into the GDI DIB (BGRA), swapping R/B
+        // in the same pass. The previous code did a full copy_from_slice and
+        // then a second in-place swap loop — two passes over the whole virtual
+        // screen; fusing them halves the memory traffic with byte-identical
+        // output.
         let pixels = img.as_raw();
         unsafe {
             let p = bits_ptr as *mut u8;
             let len = (width as usize) * (height as usize) * 4;
             let dest_slice = std::slice::from_raw_parts_mut(p, len);
-
-            if pixels.len() == len {
-                dest_slice.copy_from_slice(pixels);
-            } else {
-                let limit = dest_slice.len().min(pixels.len());
-                dest_slice[..limit].copy_from_slice(&pixels[..limit]);
+            let n = dest_slice.len().min(pixels.len());
+            for (dst, src) in dest_slice[..n]
+                .chunks_exact_mut(4)
+                .zip(pixels[..n].chunks_exact(4))
+            {
+                dst[0] = src[2]; // B
+                dst[1] = src[1]; // G
+                dst[2] = src[0]; // R
+                dst[3] = src[3]; // A
             }
+        }
 
-            for chunk in dest_slice.chunks_exact_mut(4) {
-                let r = chunk[0];
-                let b = chunk[2];
-                chunk[0] = b;
-                chunk[2] = r;
+        Some(hbmp)
+    }
+
+    // build a pre-dimmed BGRA GDI bitmap straight from the frozen RGBA frame in
+    // a single pass, baking the darken into the copy. Replaces the old "BitBlt a
+    // full screen copy then AlphaBlend a black layer over it" construction whose
+    // AlphaBlend ran through GDI's software path (~10-30ms on a 4K back buffer)
+    // on every region-capture open. dim_num is the retained fraction numerator
+    // out of 255 (matches the prior SourceConstantAlpha=160 black overlay, i.e.
+    // 255-160 = 95). off-by-one rounding vs AlphaBlend is invisible and never
+    // reaches a saved pixel — this DIB is overlay-only.
+    fn create_dim_gdi_bitmap_from_image(img: &image::RgbaImage, dim_num: u32) -> Option<HBITMAP> {
+        let width = img.width() as i32;
+        let height = img.height() as i32;
+
+        let mut bi: BITMAPINFO = unsafe { std::mem::zeroed() };
+        bi.bmiHeader = BITMAPINFOHEADER {
+            biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+            biWidth: width,
+            biHeight: -height, // top-down
+            biPlanes: 1,
+            biBitCount: 32,
+            biCompression: BI_RGB.0,
+            ..Default::default()
+        };
+
+        let mut bits_ptr: *mut std::ffi::c_void = std::ptr::null_mut();
+        let hbmp = unsafe {
+            CreateDIBSection(HDC::default(), &bi, DIB_RGB_COLORS, &mut bits_ptr, None, 0)
+        }
+        .ok()?;
+        if hbmp.is_invalid() || bits_ptr.is_null() {
+            return None;
+        }
+
+        let pixels = img.as_raw();
+        unsafe {
+            let p = bits_ptr as *mut u8;
+            let len = (width as usize) * (height as usize) * 4;
+            let dest_slice = std::slice::from_raw_parts_mut(p, len);
+            let n = dest_slice.len().min(pixels.len());
+            for (dst, src) in dest_slice[..n]
+                .chunks_exact_mut(4)
+                .zip(pixels[..n].chunks_exact(4))
+            {
+                dst[0] = ((src[2] as u32 * dim_num) / 255) as u8; // B
+                dst[1] = ((src[1] as u32 * dim_num) / 255) as u8; // G
+                dst[2] = ((src[0] as u32 * dim_num) / 255) as u8; // R
+                dst[3] = 255;
             }
         }
 
@@ -309,7 +393,7 @@ mod windows_impl {
         HOVERED_WINDOW.store(0, Ordering::SeqCst);
         PICKED_COLOR_SET.store(false, Ordering::SeqCst);
 
-        let windows = enumerate_windows();
+        let windows = take_window_list();
         *WINDOW_LIST.lock().unwrap() = windows;
 
         unsafe {
@@ -344,43 +428,62 @@ mod windows_impl {
                         BitBlt(mem_dc, 0, 0, virt_width, virt_height, screen_dc, virt_x, virt_y, windows::Win32::Graphics::Gdi::ROP_CODE(SRCCOPY.0 | CAPTUREBLT.0)).ok();
                     }
 
-                    // build a dim copy once, used per-frame during drag to
-                    // paint the "outside selection" area without AlphaBlend.
-                    let dim_dc = CreateCompatibleDC(screen_dc);
-                    let dim_bmp = create_32bpp_dib(virt_width, virt_height).unwrap_or_default();
-                    if !dim_dc.is_invalid() && !dim_bmp.is_invalid() {
-                        let old_dim = SelectObject(dim_dc, dim_bmp);
-                        // start with a copy of the screen (mem_dc currently has bitmap selected)
-                        let _ = BitBlt(dim_dc, 0, 0, virt_width, virt_height, mem_dc, 0, 0, SRCCOPY);
-                        // darken via one AlphaBlend at startup (62% black overlay).
-                        // amortised across the lifetime of the selector instead
-                        // of paying it on every WM_PAINT.
-                        let dim_brush_dc = CreateCompatibleDC(screen_dc);
-                        let dim_brush_bmp = create_32bpp_dib(1, 1).unwrap_or_default();
-                        if !dim_brush_dc.is_invalid() && !dim_brush_bmp.is_invalid() {
-                            let old_db = SelectObject(dim_brush_dc, dim_brush_bmp);
-                            let black = CreateSolidBrush(windows::Win32::Foundation::COLORREF(0x00000000));
-                            let full = RECT { left: 0, top: 0, right: 1, bottom: 1 };
-                            FillRect(dim_brush_dc, &full, black);
-                            let _ = DeleteObject(black);
-                            let blend = BLENDFUNCTION {
-                                BlendOp: AC_SRC_OVER as u8,
-                                BlendFlags: 0,
-                                SourceConstantAlpha: 160,
-                                AlphaFormat: 0,
-                            };
-                            let _ = AlphaBlend(
-                                dim_dc, 0, 0, virt_width, virt_height,
-                                dim_brush_dc, 0, 0, 1, 1,
-                                blend,
-                            );
-                            SelectObject(dim_brush_dc, old_db);
-                            let _ = DeleteObject(dim_brush_bmp);
-                            let _ = DeleteDC(dim_brush_dc);
+                    // build the dim layer once, used per-frame during drag to
+                    // paint the "outside selection" area. With a frozen frame we
+                    // bake the darken straight into a single copy pass (no
+                    // per-open full-screen BitBlt + software AlphaBlend); without
+                    // one (live-BitBlt path) we fall back to copy + a one-shot
+                    // AlphaBlend from the live screen bitmap.
+                    let mut dim_built = false;
+                    if let Some(frozen) = &frozen_frame {
+                        if let Some(dim_bmp) = create_dim_gdi_bitmap_from_image(frozen, 95) {
+                            let dim_dc = CreateCompatibleDC(screen_dc);
+                            if !dim_dc.is_invalid() {
+                                *DIM_BITMAP.lock().unwrap() = Some(dim_bmp.0 as isize);
+                                *DIM_DC.lock().unwrap() = Some(dim_dc.0 as isize);
+                                dim_built = true;
+                            } else {
+                                let _ = DeleteObject(dim_bmp);
+                            }
                         }
-                        SelectObject(dim_dc, old_dim);
-                        *DIM_BITMAP.lock().unwrap() = Some(dim_bmp.0 as isize);
-                        *DIM_DC.lock().unwrap() = Some(dim_dc.0 as isize);
+                    }
+                    if !dim_built {
+                        let dim_dc = CreateCompatibleDC(screen_dc);
+                        let dim_bmp = create_32bpp_dib(virt_width, virt_height).unwrap_or_default();
+                        if !dim_dc.is_invalid() && !dim_bmp.is_invalid() {
+                            let old_dim = SelectObject(dim_dc, dim_bmp);
+                            // start with a copy of the screen (mem_dc currently has bitmap selected)
+                            let _ = BitBlt(dim_dc, 0, 0, virt_width, virt_height, mem_dc, 0, 0, SRCCOPY);
+                            // darken via one AlphaBlend at startup (62% black overlay).
+                            // amortised across the lifetime of the selector instead
+                            // of paying it on every WM_PAINT.
+                            let dim_brush_dc = CreateCompatibleDC(screen_dc);
+                            let dim_brush_bmp = create_32bpp_dib(1, 1).unwrap_or_default();
+                            if !dim_brush_dc.is_invalid() && !dim_brush_bmp.is_invalid() {
+                                let old_db = SelectObject(dim_brush_dc, dim_brush_bmp);
+                                let black = CreateSolidBrush(windows::Win32::Foundation::COLORREF(0x00000000));
+                                let full = RECT { left: 0, top: 0, right: 1, bottom: 1 };
+                                FillRect(dim_brush_dc, &full, black);
+                                let _ = DeleteObject(black);
+                                let blend = BLENDFUNCTION {
+                                    BlendOp: AC_SRC_OVER as u8,
+                                    BlendFlags: 0,
+                                    SourceConstantAlpha: 160,
+                                    AlphaFormat: 0,
+                                };
+                                let _ = AlphaBlend(
+                                    dim_dc, 0, 0, virt_width, virt_height,
+                                    dim_brush_dc, 0, 0, 1, 1,
+                                    blend,
+                                );
+                                SelectObject(dim_brush_dc, old_db);
+                                let _ = DeleteObject(dim_brush_bmp);
+                                let _ = DeleteDC(dim_brush_dc);
+                            }
+                            SelectObject(dim_dc, old_dim);
+                            *DIM_BITMAP.lock().unwrap() = Some(dim_bmp.0 as isize);
+                            *DIM_DC.lock().unwrap() = Some(dim_dc.0 as isize);
+                        }
                     }
 
                     SelectObject(mem_dc, old_bitmap);
@@ -1053,4 +1156,15 @@ impl UnifiedSelector {
     pub fn select(frozen_frame: Option<std::sync::Arc<image::RgbaImage>>) -> SelectionResult {
         fallback_impl::select(frozen_frame)
     }
+
+    /// kick off window enumeration on a background thread ahead of select() so
+    /// it overlaps the freeze-frame capture. safe to call even if the resulting
+    /// selection never materialises — the work is simply discarded.
+    #[cfg(windows)]
+    pub fn prewarm_window_list() {
+        windows_impl::prewarm_window_list();
+    }
+
+    #[cfg(not(windows))]
+    pub fn prewarm_window_list() {}
 }

@@ -1802,3 +1802,47 @@ kbd {
   color: var(--paper);
   border-bottom: 1px dotted var(--paper);
 }
+
+/* ---------------- view transition ---------------- */
+
+/* brief enter animation on tab switch — the wrapper is keyed on the active tab
+   so it remounts and replays this each change. short + composited so it never
+   feels laggy. */
+.view-anim {
+  animation: view-in 120ms var(--easing);
+}
+
+@keyframes view-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* ---------------- reduced motion ---------------- */
+
+/* honour the OS reduce-motion preference: stop the purely-cosmetic infinite and
+   enter animations, but keep the recording / unsaved / error / banner states
+   fully visible (static, opacity:1) so they stay perceptible without motion. */
+@media (prefers-reduced-motion: reduce) {
+  .view-anim,
+  .toast,
+  .drop-overlay,
+  .skeleton-line,
+  .hk.is-capturing .hk-display::before {
+    animation: none !important;
+  }
+
+  .statusbar .seg.is-rec .seg-v,
+  .statusbar .seg.is-dirty .seg-v,
+  .statusbar .seg-btn.is-err .seg-v,
+  .update-banner-glyph,
+  .editor-hdr-glyph {
+    animation: none !important;
+    opacity: 1 !important;
+  }
+}

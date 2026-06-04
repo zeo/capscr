@@ -285,6 +285,17 @@ fn run_capture_pipeline_inner(
         }
     }
 
+    // kick window enumeration onto a background thread so it overlaps the
+    // freeze-frame capture below instead of running serially on the selector's
+    // critical path. only the selector-backed modes consume the result.
+    #[cfg(windows)]
+    if matches!(
+        mode,
+        CaptureModeArg::Region | CaptureModeArg::Window | CaptureModeArg::Fullscreen
+    ) {
+        UnifiedSelector::prewarm_window_list();
+    }
+
     let frozen_frame = if matches!(
         mode,
         CaptureModeArg::Region | CaptureModeArg::Window | CaptureModeArg::Fullscreen

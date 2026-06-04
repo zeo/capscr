@@ -71,14 +71,24 @@ fn main() {
         .init();
 
     let config = config::Config::load().unwrap_or_default();
-    if let Err(e) = config.ensure_output_dir() {
-        // the hub UI isn't up yet — surface this through the OS notification
-        // channel so the user knows captures will fail until they fix it.
-        let _ = clipboard::show_notification(
-            "capscr: captures folder unreachable",
-            &format!("{e}. Open Settings → Output to point at a writable path."),
-        );
-        tracing::error!("ensure_output_dir failed at startup: {e:#}");
+    // ensure the output dir exists off the startup critical path: the capture
+    // and save paths create it on demand anyway, so this is only an early
+    // warning, and canonicalize on a cold or networked Pictures folder can
+    // stall time-to-tray.
+    {
+        let cfg = config.clone();
+        std::thread::spawn(move || {
+            if let Err(e) = cfg.ensure_output_dir() {
+                // the hub UI isn't up yet — surface this through the OS
+                // notification channel so the user knows captures will fail
+                // until they fix it.
+                let _ = clipboard::show_notification(
+                    "capscr: captures folder unreachable",
+                    &format!("{e}. Open Settings → Output to point at a writable path."),
+                );
+                tracing::error!("ensure_output_dir failed at startup: {e:#}");
+            }
+        });
     }
     install_hdr_runtime_from_config(&config);
 
@@ -127,12 +137,27 @@ fn main() {
             .build())
         .manage(app_state)
         .setup(move |app| {
+            // load plugins on a background thread so the cranelift JIT compile
+            // of each enabled WASM plugin doesn't delay the tray or first
+            // capture. dispatch sees zero plugins until the load swaps them in.
+            {
+                let handle = app.handle().clone();
+                std::thread::spawn(move || {
+                    handle.state::<state::AppState>().load_plugins();
+                });
+            }
             build_tray(app)?;
             sync_autostart(app, autostart_desired);
+            // jump-list registration does synchronous COM (CoCreateInstance per
+            // task) — push it off the setup/UI thread so the hub WebView2
+            // prewarm can start sooner. it only needs the AUMID (set early in
+            // main) and current_exe, neither tied to the UI thread.
             #[cfg(windows)]
-            if let Err(e) = jumplist::register() {
-                tracing::warn!("jumplist register failed: {e}");
-            }
+            std::thread::spawn(|| {
+                if let Err(e) = jumplist::register() {
+                    tracing::warn!("jumplist register failed: {e}");
+                }
+            });
             // make sure the asset:// protocol can reach the user's configured
             // output dir even if they moved it off the default $PICTURE/capscr.
             // the static scope in tauri.conf.json is the fallback; this widens
@@ -155,12 +180,9 @@ fn main() {
                     }
                 }
             }
-            // pre-create the plugins folder so 'Open folder' from the
-            // Marketplace tab succeeds on a fresh install without round-
-            // tripping through the open_plugins_folder fallback create.
-            if let Ok(dirs) = commands::resolve_plugins_dir() {
-                let _ = std::fs::create_dir_all(&dirs);
-            }
+            // the plugins folder is created on demand by open_plugins_folder
+            // (Marketplace → Open folder) and load_all tolerates its absence, so
+            // there's no need to pre-create it synchronously during setup.
             let (tx, rx) = cb::unbounded::<HotkeyCommand>();
             {
                 let st = app.state::<state::AppState>();

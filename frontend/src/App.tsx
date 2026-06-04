@@ -1,4 +1,4 @@
-import { createResource, createSignal, For, Match, onCleanup, onMount, Show, Switch } from "solid-js";
+import { createResource, createSignal, For, lazy, Match, onCleanup, onMount, Show, Suspense, Switch } from "solid-js";
 import { listen, UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
@@ -12,7 +12,11 @@ import { History } from "./views/History";
 import { Destinations } from "./views/Destinations";
 import { Marketplace } from "./views/Marketplace";
 import { Tasks } from "./views/Tasks";
-import { Editor } from "./views/Editor";
+
+// lazy-loaded so the hub bundle doesn't ship the full canvas editor and the
+// editor window doesn't ship the hub. Editor is a named export, so adapt it to
+// the default export the lazy loader expects.
+const Editor = lazy(() => import("./views/Editor").then((m) => ({ default: m.Editor })));
 
 interface Toast {
   id: number;
@@ -44,7 +48,11 @@ const TABS: Tab[] = [
 export function App() {
   const label = getCurrentWindow().label;
   if (label === "editor") {
-    return <Editor />;
+    return (
+      <Suspense fallback={<div class="editor-loading">loading editor…</div>}>
+        <Editor />
+      </Suspense>
+    );
   }
   return <Hub />;
 }
@@ -396,23 +404,32 @@ function Hub() {
       </Show>
 
       <main class="content">
-        <Switch>
-          <Match when={active() === "settings"}>
-            <Settings />
-          </Match>
-          <Match when={active() === "tasks"}>
-            <Tasks />
-          </Match>
-          <Match when={active() === "history"}>
-            <History />
-          </Match>
-          <Match when={active() === "destinations"}>
-            <Destinations />
-          </Match>
-          <Match when={active() === "marketplace"}>
-            <Marketplace />
-          </Match>
-        </Switch>
+        {/* keyed on the active tab so switching remounts the wrapper and
+            re-runs the brief enter animation (matches the existing toast/drop
+            motion vocabulary); same-tab clicks are guarded upstream */}
+        <Show when={active()} keyed>
+          {(activeId) => (
+            <div class="view-anim">
+              <Switch>
+                <Match when={activeId === "settings"}>
+                  <Settings />
+                </Match>
+                <Match when={activeId === "tasks"}>
+                  <Tasks />
+                </Match>
+                <Match when={activeId === "history"}>
+                  <History />
+                </Match>
+                <Match when={activeId === "destinations"}>
+                  <Destinations />
+                </Match>
+                <Match when={activeId === "marketplace"}>
+                  <Marketplace />
+                </Match>
+              </Switch>
+            </div>
+          )}
+        </Show>
       </main>
 
       <footer class="statusbar">

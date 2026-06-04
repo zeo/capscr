@@ -60,18 +60,18 @@ pub struct UploadRecord {
 
 impl AppState {
     pub fn new(config: Config) -> Self {
-        let mut plugin_manager = PluginManager::new();
-        plugin_manager.set_lazy_loading(config.performance.lazy_init_plugins);
-        let load_errors = plugin_manager.load_all();
-        for err in &load_errors {
-            tracing::warn!("Plugin load error: {}", err);
-        }
+        // plugins are loaded off-thread after construction (see load_plugins),
+        // so the tray icon appears immediately instead of waiting on the
+        // cranelift JIT compile of every enabled WASM plugin. until the
+        // background load swaps the manager in, dispatch sees zero plugins,
+        // which matches the existing no-plugin behaviour.
+        let plugin_manager = PluginManager::new();
 
         let disabled = config.hotkeys.disabled_globally;
         Self {
             config: Mutex::new(config),
             plugin_manager: RwLock::new(plugin_manager),
-            plugin_load_errors: Mutex::new(load_errors),
+            plugin_load_errors: Mutex::new(Vec::new()),
             hotkey_tx: Mutex::new(None),
             gif_recorder: Mutex::new(None),
             recording_state: Mutex::new(RecordingState::Idle),
@@ -84,6 +84,23 @@ impl AppState {
             hotkeys_disabled: AtomicBool::new(disabled),
             hotkey_status: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// load and instantiate plugins, then atomically swap them into the live
+    /// manager. Built off-lock so the (potentially slow) cranelift compile of
+    /// each WASM plugin never holds the dispatch read-lock; only the final swap
+    /// takes the write lock and it's instant. Intended to run on a background
+    /// thread spawned at startup so the tray isn't blocked.
+    pub fn load_plugins(&self) {
+        let lazy = self.config.lock().unwrap().performance.lazy_init_plugins;
+        let mut pm = PluginManager::new();
+        pm.set_lazy_loading(lazy);
+        let errors = pm.load_all();
+        for err in &errors {
+            tracing::warn!("Plugin load error: {}", err);
+        }
+        *self.plugin_load_errors.lock().unwrap() = errors;
+        *self.plugin_manager.write().unwrap() = pm;
     }
 
     pub fn send_hotkey_reload(&self, tasks: Vec<CaptureTask>) {

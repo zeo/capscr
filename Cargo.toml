@@ -1,6 +1,6 @@
 [package]
 name = "capscr"
-version = "0.5.6"
+version = "0.5.7"
 edition = "2021"
 description = "Fast HDR-aware Windows screen capture — tray-first, signed updates, no telemetry."
 authors = ["rot <96458554+rotlove@users.noreply.github.com>"]
@@ -43,13 +43,15 @@ crossbeam-channel = "0.5"
 # Screen capture
 xcap = "0.0.14"
 
-# Image processing and formats
+# image processing and formats. tauri pulls image with its default features for
+# icon handling, and cargo unifies features additively, so the full codec set is
+# always built regardless of what we request here — default-features=false would
+# be a no-op. we just pin the formats capscr itself encodes/decodes.
 image = { version = "0.25", features = ["png", "jpeg", "gif", "webp", "bmp"] }
 
-# GIF encoding
-gif = "0.13"
-imgref = "1.10"
-rgb = "0.8"
+# gif encoding. 0.14 matches the version image already pulls in via its gif
+# feature, so the two collapse to one crate instead of compiling 0.13 and 0.14
+gif = "0.14"
 
 # Clipboard (native fallback)
 arboard = "3.4"
@@ -61,7 +63,7 @@ toml = "0.8"
 directories = "5.0"
 
 # HTTP client for uploads
-reqwest = { version = "0.12", features = ["blocking", "multipart", "json"] }
+reqwest = { version = "0.12", features = ["blocking", "multipart"] }
 
 # URL parsing for security validation
 url = "2.5"

@@ -6,6 +6,21 @@ format follows [keep-a-changelog](https://keepachangelog.com/en/1.1.0/) loosely.
 
 nothing pending. drop ideas in github issues.
 
+## [0.5.7] — 2026-06-04
+
+### performance
+- region/window/fullscreen capture now enumerates the on-screen windows on a background thread that overlaps the freeze-frame capture, instead of running the `EnumWindows` + per-window `DwmGetWindowAttribute` walk serially on the selector's critical path, so capture mode opens sooner
+- the selector's dimmed backdrop is now baked straight from the freeze frame in a single copy pass, removing the per-open full-screen `BitBlt` + software `AlphaBlend` (GDI's slow software path) that ran every time capture mode opened
+- the freeze-frame `RGBA`→`BGRA` conversion for the overlay bitmap is now a single fused copy-and-swap pass instead of a full copy followed by a separate swap loop
+- plugins now load (and JIT-compile) on a background thread, and jump-list registration plus output-dir validation moved off the startup thread, so the tray icon and first capture are ready immediately on launch
+
+### changed
+- dropped the duplicate `gif` crate (the direct dependency now tracks the 0.14 the image crate already pulls in rather than compiling a separate 0.13), removed the unused `reqwest` `json` feature, and removed the unused direct `imgref`/`rgb` dependencies
+
+### added
+- a lightweight CSS boot animation on the loading screen, a brief fade on hub view switches, and `prefers-reduced-motion` handling for the interface animations
+- the image editor is now code-split into its own bundle chunk, so the hub window no longer ships the editor's code (and the editor window no longer ships the hub's), trimming first-paint work
+
 ## [0.5.6] — 2026-06-01
 
 ### fixed
