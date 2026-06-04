@@ -6,7 +6,7 @@ use crate::recording::{GifRecorder, RecordingState};
 use crossbeam_channel::Sender;
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, RwLock};
 
 const RECENT_UPLOADS_CAP: usize = 5;
@@ -34,6 +34,11 @@ pub struct AppState {
     // once in new()); surfaced to the plugins tab via the plugin_load_errors
     // command so a broken plugin isn't a silent no-op
     pub plugin_load_errors: Mutex<Vec<String>>,
+    // flipped true once the background plugin load (load_plugins) finishes its
+    // swap. capture dispatch briefly waits on this so a capture fired right
+    // after launch (e.g. a jump-list/hotkey shot) still runs on_capture hooks
+    // instead of racing the load and silently skipping every plugin.
+    pub plugins_ready: AtomicBool,
     pub hotkey_tx: Mutex<Option<Sender<HotkeyCommand>>>,
     pub gif_recorder: Mutex<Option<GifRecorder>>,
     pub recording_state: Mutex<RecordingState>,
@@ -72,6 +77,7 @@ impl AppState {
             config: Mutex::new(config),
             plugin_manager: RwLock::new(plugin_manager),
             plugin_load_errors: Mutex::new(Vec::new()),
+            plugins_ready: AtomicBool::new(false),
             hotkey_tx: Mutex::new(None),
             gif_recorder: Mutex::new(None),
             recording_state: Mutex::new(RecordingState::Idle),
@@ -101,6 +107,26 @@ impl AppState {
         }
         *self.plugin_load_errors.lock().unwrap() = errors;
         *self.plugin_manager.write().unwrap() = pm;
+        self.plugins_ready.store(true, Ordering::SeqCst);
+    }
+
+    /// block up to `max` for the background plugin load to finish so a capture
+    /// dispatched right after launch still sees the loaded plugins. interactive
+    /// captures effectively never wait — the user's region/window selection time
+    /// already covers the sub-second load — so this only costs anything for an
+    /// instant capture fired during the load window, and it's bounded so a slow
+    /// or stuck load can never hang the capture.
+    pub fn await_plugins_ready(&self, max: std::time::Duration) {
+        if self.plugins_ready.load(Ordering::SeqCst) {
+            return;
+        }
+        let start = std::time::Instant::now();
+        while !self.plugins_ready.load(Ordering::SeqCst) {
+            if start.elapsed() >= max {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
     }
 
     pub fn send_hotkey_reload(&self, tasks: Vec<CaptureTask>) {

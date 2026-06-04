@@ -6,6 +6,11 @@ format follows [keep-a-changelog](https://keepachangelog.com/en/1.1.0/) loosely.
 
 nothing pending. drop ideas in github issues.
 
+## [0.5.10] — 2026-06-04
+
+### fixed
+- a capture fired in the brief window right after launch (e.g. an autostart plus a jump-list or hotkey shot) could run before the background plugin load finished and silently skip every `on_capture` plugin hook; the capture pipeline now briefly waits for the load to finish before dispatching. interactive region/window captures never wait (the selection time already covers the load) and the wait is bounded so a slow load can't hang the capture
+
 ## [0.5.9] — 2026-06-04
 
 ### performance

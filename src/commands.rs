@@ -479,6 +479,12 @@ fn run_capture_pipeline_inner(
 
     let mut image = Arc::new(image);
     {
+        // make sure the background plugin load has finished before dispatching
+        // on_capture, so a capture fired right after launch still runs plugin
+        // hooks instead of racing the load. interactive captures never wait —
+        // the selection time covers the load — and the wait is bounded so a
+        // slow load can't hang the capture.
+        state.await_plugins_ready(Duration::from_secs(3));
         let plugin_manager = state.plugin_manager.read().unwrap();
         let event = PluginEvent::PostCapture {
             image: image.clone(),
@@ -1937,11 +1943,6 @@ fn plugins_dir() -> Result<PathBuf, String> {
     let project = directories::ProjectDirs::from("com", "capscr", "capscr")
         .ok_or_else(|| "cannot resolve plugins directory".to_string())?;
     Ok(project.data_dir().to_path_buf().join("plugins"))
-}
-
-// wrapper exported for setup-time pre-creation in main.rs.
-pub fn resolve_plugins_dir() -> Result<PathBuf, String> {
-    plugins_dir()
 }
 
 #[tauri::command]
