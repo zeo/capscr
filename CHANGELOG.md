@@ -6,6 +6,11 @@ format follows [keep-a-changelog](https://keepachangelog.com/en/1.1.0/) loosely.
 
 nothing pending. drop ideas in github issues.
 
+## [0.5.22] — 2026-06-04
+
+### fixed
+- clippy under rust 1.91: give the capture serial-convert thread-local a `const` initializer, and keep the HDR tonemap's `min/max` verbatim behind `#[allow(clippy::manual_clamp)]` (clamp differs from min/max on NaN and the tonemap output is byte-exact). unblocks the CI lint job
+
 ## [0.5.21] — 2026-06-04
 
 ### security

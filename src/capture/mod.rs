@@ -36,7 +36,7 @@ thread_local! {
     // set while a parallel monitor-capture worker runs so par_convert falls back
     // to a serial pass instead of spawning a nested thread pool — the monitor
     // loop already occupies every core, so nesting would only oversubscribe.
-    static SERIAL_CONVERT: std::cell::Cell<bool> = std::cell::Cell::new(false);
+    static SERIAL_CONVERT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 // run `f` with par_convert forced to its serial path on this thread. used by the

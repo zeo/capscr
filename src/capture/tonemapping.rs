@@ -243,6 +243,10 @@ pub fn scrgb_to_sdr_bt2390(
             }
         }
     }
+    // kept as explicit min/max rather than clamp: clamp returns NaN on a NaN
+    // input where min/max pin to the bound, and this feeds the byte-exact hdr
+    // tonemap, so the expression must stay verbatim
+    #[allow(clippy::manual_clamp)]
     let l_src = (raw_peak * coeff).min(40.0).max(1.05);
 
     tracing::info!(
