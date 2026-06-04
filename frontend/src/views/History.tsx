@@ -254,6 +254,7 @@ export function History() {
                   src={convertFileSrc(e.path)}
                   alt={e.filename}
                   loading="lazy"
+                  decoding="async"
                   onError={(ev) => {
                     (ev.currentTarget as HTMLImageElement).style.opacity =
                       "0.3";

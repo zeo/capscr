@@ -6,6 +6,14 @@ format follows [keep-a-changelog](https://keepachangelog.com/en/1.1.0/) loosely.
 
 nothing pending. drop ideas in github issues.
 
+## [0.5.8] — 2026-06-04
+
+### performance
+- the SDR/GDI capture path now reads the blitted pixels straight from the DIB section (after a `GdiFlush`) instead of copying them out through `GetDIBits`, removing a full-frame copy from every freeze-frame and single-monitor capture
+
+### changed
+- history thumbnails now decode asynchronously (`decoding="async"`) so a large grid renders without blocking the UI thread
+
 ## [0.5.7] — 2026-06-04
 
 ### performance

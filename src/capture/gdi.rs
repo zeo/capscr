@@ -2,12 +2,15 @@ use anyhow::{anyhow, Result};
 use image::RgbaImage;
 use windows::Win32::Graphics::Gdi::{
     GetDC, CreateCompatibleDC, CreateDIBSection, SelectObject, BitBlt,
-    GetDIBits, DeleteDC, DeleteObject, ReleaseDC, DIB_RGB_COLORS,
+    GdiFlush, DeleteDC, DeleteObject, ReleaseDC, DIB_RGB_COLORS,
     BITMAPINFO, BITMAPINFOHEADER, BI_RGB, SRCCOPY, CAPTUREBLT, HBITMAP,
 };
 use windows::Win32::Foundation::HWND;
 
-fn create_32bpp_dib(width: i32, height: i32) -> Option<HBITMAP> {
+// returns the DIB section bitmap together with the pointer to its pixel bits,
+// so the caller can read the blitted pixels directly (after a GdiFlush) instead
+// of paying a second full-frame copy through GetDIBits.
+fn create_32bpp_dib(width: i32, height: i32) -> Option<(HBITMAP, *mut std::ffi::c_void)> {
     let mut bi = BITMAPINFO::default();
     bi.bmiHeader.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
     bi.bmiHeader.biWidth = width;
@@ -17,7 +20,7 @@ fn create_32bpp_dib(width: i32, height: i32) -> Option<HBITMAP> {
     bi.bmiHeader.biCompression = BI_RGB.0;
 
     let mut bits_ptr: *mut std::ffi::c_void = std::ptr::null_mut();
-    unsafe {
+    let hbmp = unsafe {
         CreateDIBSection(
             windows::Win32::Graphics::Gdi::HDC::default(),
             &bi,
@@ -27,7 +30,11 @@ fn create_32bpp_dib(width: i32, height: i32) -> Option<HBITMAP> {
             0,
         )
     }
-    .ok()
+    .ok()?;
+    if hbmp.is_invalid() || bits_ptr.is_null() {
+        return None;
+    }
+    Some((hbmp, bits_ptr))
 }
 
 pub fn fast_gdi_capture(x: i32, y: i32, width: u32, height: u32) -> Result<RgbaImage> {
@@ -41,7 +48,7 @@ pub fn fast_gdi_capture(x: i32, y: i32, width: u32, height: u32) -> Result<RgbaI
             ReleaseDC(HWND::default(), screen_dc);
             return Err(anyhow!("CreateCompatibleDC failed"));
         }
-        let bitmap = create_32bpp_dib(width as i32, height as i32)
+        let (bitmap, bits_ptr) = create_32bpp_dib(width as i32, height as i32)
             .ok_or_else(|| anyhow!("create_32bpp_dib failed"))?;
 
         let old_bitmap = SelectObject(mem_dc, bitmap);
@@ -65,45 +72,29 @@ pub fn fast_gdi_capture(x: i32, y: i32, width: u32, height: u32) -> Result<RgbaI
             return Err(anyhow!("BitBlt failed"));
         }
 
-        let mut bi = BITMAPINFO::default();
-        bi.bmiHeader.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
-        bi.bmiHeader.biWidth = width as i32;
-        bi.bmiHeader.biHeight = -(height as i32); // top-down
-        bi.bmiHeader.biPlanes = 1;
-        bi.bmiHeader.biBitCount = 32;
-        bi.bmiHeader.biCompression = BI_RGB.0;
+        // flush the GDI batch so the BitBlt has finished writing the DIB before
+        // the CPU reads its bits directly. reading the DIB section pointer skips
+        // the extra full-frame copy GetDIBits would otherwise perform.
+        let _ = GdiFlush();
 
         let pixel_count = (width as usize) * (height as usize);
-        let mut bgra_data = vec![0u8; pixel_count * 4];
-
-        let scanlines = GetDIBits(
-            mem_dc,
-            bitmap,
-            0,
-            height,
-            Some(bgra_data.as_mut_ptr() as *mut _),
-            &mut bi,
-            DIB_RGB_COLORS,
-        );
+        let mut rgba_data = vec![0u8; pixel_count * 4];
+        // read the blitted BGRA bits straight from the DIB section and write
+        // RGBA in the same pass — one copy+swap instead of GetDIBits then swap.
+        let src = std::slice::from_raw_parts(bits_ptr as *const u8, pixel_count * 4);
+        for (dst, s) in rgba_data.chunks_exact_mut(4).zip(src.chunks_exact(4)) {
+            dst[0] = s[2]; // R
+            dst[1] = s[1]; // G
+            dst[2] = s[0]; // B
+            dst[3] = s[3]; // A
+        }
 
         SelectObject(mem_dc, old_bitmap);
         let _ = DeleteObject(bitmap);
         let _ = DeleteDC(mem_dc);
         ReleaseDC(HWND::default(), screen_dc);
 
-        if scanlines == 0 {
-            return Err(anyhow!("GetDIBits failed"));
-        }
-
-        // Convert BGRA -> RGBA in place
-        for chunk in bgra_data.chunks_exact_mut(4) {
-            let b = chunk[0];
-            let r = chunk[2];
-            chunk[0] = r;
-            chunk[2] = b;
-        }
-
-        RgbaImage::from_raw(width, height, bgra_data)
+        RgbaImage::from_raw(width, height, rgba_data)
             .ok_or_else(|| anyhow!("RgbaImage::from_raw failed"))
     }
 }
