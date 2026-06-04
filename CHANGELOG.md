@@ -6,6 +6,11 @@ format follows [keep-a-changelog](https://keepachangelog.com/en/1.1.0/) loosely.
 
 nothing pending. drop ideas in github issues.
 
+## [0.5.9] — 2026-06-04
+
+### performance
+- the SDR/GDI capture path now writes opaque alpha as it copies the pixels, so `capture_one_monitor`'s opacity pass early-returns instead of scanning and then rewriting the whole frame — removing two more full-frame passes from every SDR freeze-frame and single-monitor capture (final pixels are unchanged; a desktop capture is always opaque)
+
 ## [0.5.8] — 2026-06-04
 
 ### performance

@@ -86,7 +86,12 @@ pub fn fast_gdi_capture(x: i32, y: i32, width: u32, height: u32) -> Result<RgbaI
             dst[0] = s[2]; // R
             dst[1] = s[1]; // G
             dst[2] = s[0]; // B
-            dst[3] = s[3]; // A
+            // screen BitBlt leaves the alpha byte undefined (usually 0); force
+            // opaque here since a desktop capture is always opaque. this is what
+            // capture_one_monitor's ensure_opaque pass would do anyway, but
+            // setting it inline lets that pass early-return instead of scanning
+            // and rewriting the whole frame
+            dst[3] = 255;
         }
 
         SelectObject(mem_dc, old_bitmap);
