@@ -6,6 +6,11 @@ format follows [keep-a-changelog](https://keepachangelog.com/en/1.1.0/) loosely.
 
 nothing pending. drop ideas in github issues.
 
+## [0.5.24] — 2026-06-05
+
+### fixed
+- low-level mouse hook now intercepts and consumes WM_XBUTTONUP/WM_NCXBUTTONUP release events for bound or newly captured mouse side buttons to block default browser/system navigation (e.g. moving back/forward a page in browsers)
+
 ## [0.5.23] — 2026-06-05
 
 ### changed

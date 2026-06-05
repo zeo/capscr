@@ -45,6 +45,7 @@ pub enum HookEvent {
 // delivers — eliminates browser e.code ↔ VK_* drift across keyboard
 // layouts, NumLock state, and FN-combined laptop keys.
 pub static CAPTURE_REQUEST: AtomicBool = AtomicBool::new(false);
+static LAST_CAPTURED_XBUTTON: AtomicU8 = AtomicU8::new(0);
 
 pub fn begin_capture() {
     CAPTURE_REQUEST.store(true, Ordering::SeqCst);
@@ -241,51 +242,70 @@ unsafe extern "system" fn mouse_hook_proc(code: i32, wparam: WPARAM, lparam: LPA
         return unsafe { CallNextHookEx(None, code, wparam, lparam) };
     }
     let msg = wparam.0 as u32;
-    // WM_XBUTTONDOWN = 0x020B, WM_NCXBUTTONDOWN = 0x00AB
-    if msg == 0x020B || msg == 0x00AB {
+    let is_down = msg == 0x020B || msg == 0x00AB;
+    let is_up = msg == 0x020C || msg == 0x00AC;
+
+    if is_down || is_up {
         let ms = unsafe { &*(lparam.0 as *const MSLLHOOKSTRUCT) };
         let xbutton = (ms.mouseData >> 16) as u16;
         let vk = if xbutton == 1 { 0x05 } else { 0x06 };
 
-        HOOK_KEYDOWN_CALLS.fetch_add(1, Ordering::SeqCst);
-        let mods = MODIFIER_STATE.load(Ordering::SeqCst);
-        HOOK_LAST_VK.store(vk, Ordering::SeqCst);
-        HOOK_LAST_MODS.store(mods, Ordering::SeqCst);
+        if is_down {
+            HOOK_KEYDOWN_CALLS.fetch_add(1, Ordering::SeqCst);
+            let mods = MODIFIER_STATE.load(Ordering::SeqCst);
+            HOOK_LAST_VK.store(vk, Ordering::SeqCst);
+            HOOK_LAST_MODS.store(mods, Ordering::SeqCst);
 
-        // capture mode
-        if CAPTURE_REQUEST.swap(false, Ordering::SeqCst) {
-            let tx_opt = {
+            // capture mode
+            if CAPTURE_REQUEST.swap(false, Ordering::SeqCst) {
+                LAST_CAPTURED_XBUTTON.store(vk as u8, Ordering::SeqCst);
+                let tx_opt = {
+                    let reg = match registry().lock() {
+                        Ok(g) => g,
+                        Err(_) => return LRESULT(1),
+                    };
+                    reg.tx.clone()
+                };
+                if let Some(tx) = tx_opt {
+                    let _ = tx.try_send(HookEvent::Captured { vk, mods });
+                }
+                return LRESULT(1);
+            }
+
+            let binding = HookBinding { vk, mods };
+            let (task_id, tx) = {
                 let reg = match registry().lock() {
                     Ok(g) => g,
-                    Err(_) => return LRESULT(1),
+                    Err(_) => return unsafe { CallNextHookEx(None, code, wparam, lparam) },
                 };
-                reg.tx.clone()
+                if !reg.enabled {
+                    return unsafe { CallNextHookEx(None, code, wparam, lparam) };
+                }
+                (reg.bindings.get(&binding).cloned(), reg.tx.clone())
             };
-            if let Some(tx) = tx_opt {
-                let _ = tx.try_send(HookEvent::Captured { vk, mods });
-            }
-            return LRESULT(1);
-        }
 
-        let binding = HookBinding { vk, mods };
-        let (task_id, tx) = {
-            let reg = match registry().lock() {
-                Ok(g) => g,
-                Err(_) => return unsafe { CallNextHookEx(None, code, wparam, lparam) },
-            };
-            if !reg.enabled {
-                return unsafe { CallNextHookEx(None, code, wparam, lparam) };
+            if let (Some(task_id), Some(tx)) = (task_id, tx) {
+                HOOK_MATCHED_CALLS.fetch_add(1, Ordering::SeqCst);
+                match tx.try_send(HookEvent::Fire { task_id }) {
+                    Ok(()) => HOOK_DISPATCH_SENT.fetch_add(1, Ordering::SeqCst),
+                    Err(_) => HOOK_DISPATCH_DROPPED.fetch_add(1, Ordering::SeqCst),
+                };
+                return LRESULT(1);
             }
-            (reg.bindings.get(&binding).cloned(), reg.tx.clone())
-        };
-
-        if let (Some(task_id), Some(tx)) = (task_id, tx) {
-            HOOK_MATCHED_CALLS.fetch_add(1, Ordering::SeqCst);
-            match tx.try_send(HookEvent::Fire { task_id }) {
-                Ok(()) => HOOK_DISPATCH_SENT.fetch_add(1, Ordering::SeqCst),
-                Err(_) => HOOK_DISPATCH_DROPPED.fetch_add(1, Ordering::SeqCst),
+        } else if is_up {
+            // consume release event if it was just captured or matches an active binding
+            let was_captured = LAST_CAPTURED_XBUTTON.swap(0, Ordering::SeqCst) == vk as u8;
+            let is_bound = {
+                let reg = match registry().lock() {
+                    Ok(g) => g,
+                    Err(_) => return unsafe { CallNextHookEx(None, code, wparam, lparam) },
+                };
+                reg.enabled && reg.bindings.keys().any(|b| b.vk == vk)
             };
-            return LRESULT(1);
+
+            if was_captured || is_bound {
+                return LRESULT(1);
+            }
         }
     }
     unsafe { CallNextHookEx(None, code, wparam, lparam) }
