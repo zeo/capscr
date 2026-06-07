@@ -8,7 +8,40 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::capture::{Rectangle, ScreenCapture};
+use crate::capture::{Capture, Rectangle, ScreenCapture, MonitorInfo};
+
+fn find_best_monitor(rect: Rectangle) -> Option<MonitorInfo> {
+    let monitors = crate::capture::fast_list_monitors().ok()?;
+    let mut best_monitor: Option<MonitorInfo> = None;
+    let mut max_overlap_area = 0i64;
+
+    for m in monitors {
+        let rx1 = rect.x;
+        let rx2 = rect.x.checked_add(rect.width as i32).unwrap_or(rect.x);
+        let ry1 = rect.y;
+        let ry2 = rect.y.checked_add(rect.height as i32).unwrap_or(rect.y);
+
+        let mx1 = m.x;
+        let mx2 = m.x.checked_add(m.width as i32).unwrap_or(m.x);
+        let my1 = m.y;
+        let my2 = m.y.checked_add(m.height as i32).unwrap_or(m.y);
+
+        let ox1 = rx1.max(mx1);
+        let ox2 = rx2.min(mx2);
+        let oy1 = ry1.max(my1);
+        let oy2 = ry2.min(my2);
+
+        if ox1 < ox2 && oy1 < oy2 {
+            let area = (ox2 - ox1) as i64 * (oy2 - oy1) as i64;
+            if area > max_overlap_area {
+                max_overlap_area = area;
+                best_monitor = Some(m);
+            }
+        }
+    }
+
+    best_monitor
+}
 
 use super::{RecordingSettings, RecordingState};
 
@@ -134,19 +167,44 @@ impl GifRecorder {
                 let frame_start = Instant::now();
 
                 let capture_result = if let Some(rect) = region {
-                    let full = ScreenCapture::all_monitors();
-                    full.and_then(|img| {
-                        let x = rect.x.max(0) as u32;
-                        let y = rect.y.max(0) as u32;
-                        let max_w = img.width().saturating_sub(x);
-                        let max_h = img.height().saturating_sub(y);
-                        let w = rect.width.min(max_w).min(MAX_GIF_DIMENSION);
-                        let h = rect.height.min(max_h).min(MAX_GIF_DIMENSION);
-                        if w == 0 || h == 0 {
-                            return Err(anyhow::anyhow!("Invalid region"));
+                    let single_monitor_capture = if let Some(m) = find_best_monitor(rect) {
+                        ScreenCapture::with_monitor(m.id).capture().map(|img| {
+                            let local_x = (rect.x - m.x).max(0) as u32;
+                            let local_y = (rect.y - m.y).max(0) as u32;
+                            let max_w = img.width().saturating_sub(local_x);
+                            let max_h = img.height().saturating_sub(local_y);
+                            let w = rect.width.min(max_w).min(MAX_GIF_DIMENSION);
+                            let h = rect.height.min(max_h).min(MAX_GIF_DIMENSION);
+                            (img, local_x, local_y, w, h)
+                        })
+                    } else {
+                        Err(anyhow!("No monitor matches the region"))
+                    };
+
+                    match single_monitor_capture {
+                        Ok((img, local_x, local_y, w, h)) => {
+                            if w == 0 || h == 0 {
+                                Err(anyhow!("Invalid region"))
+                            } else {
+                                Ok(image::imageops::crop_imm(&img, local_x, local_y, w, h).to_image())
+                            }
                         }
-                        Ok(image::imageops::crop_imm(&img, x, y, w, h).to_image())
-                    })
+                        Err(_) => {
+                            let full = ScreenCapture::all_monitors();
+                            full.and_then(|img| {
+                                let x = rect.x.max(0) as u32;
+                                let y = rect.y.max(0) as u32;
+                                let max_w = img.width().saturating_sub(x);
+                                let max_h = img.height().saturating_sub(y);
+                                let w = rect.width.min(max_w).min(MAX_GIF_DIMENSION);
+                                let h = rect.height.min(max_h).min(MAX_GIF_DIMENSION);
+                                if w == 0 || h == 0 {
+                                    return Err(anyhow!("Invalid region"));
+                                }
+                                Ok(image::imageops::crop_imm(&img, x, y, w, h).to_image())
+                            })
+                        }
+                    }
                 } else {
                     ScreenCapture::all_monitors().map(|img| {
                         if img.width() > MAX_GIF_DIMENSION || img.height() > MAX_GIF_DIMENSION {
@@ -262,28 +320,66 @@ impl GifRecorder {
             }
         }
 
-        // scope the encoder so it's dropped (and its file handle closed/flushed)
-        // before we check the file size with metadata(). On Windows, an open
-        // file handle prevents accurate metadata reads and may block deletion.
+        let fps = self.settings.fps.clamp(1, 60);
+        let delay = (100.0 / fps as f64).clamp(2.0, 100.0) as u16;
+
+        let filter = if self.settings.quality >= 80 {
+            image::imageops::FilterType::Lanczos3
+        } else if self.settings.quality >= 50 {
+            image::imageops::FilterType::Triangle
+        } else {
+            image::imageops::FilterType::Nearest
+        };
+
+        let num_frames = frames.len();
+        let sample_step = (num_frames / 15).max(1);
+        let mut sample_pixels = Vec::new();
+
+        for i in (0..num_frames).step_by(sample_step) {
+            let captured = &frames[i];
+            let resized = if captured.image.width() != orig_width
+                || captured.image.height() != orig_height
+            {
+                image::imageops::resize(
+                    &captured.image,
+                    orig_width,
+                    orig_height,
+                    filter,
+                )
+            } else {
+                captured.image.clone()
+            };
+
+            let rgba = resized.as_raw();
+            let total_pixels = resized.width() * resized.height();
+            let pixel_step = (total_pixels / 10000).max(1) as usize;
+
+            for chunk in rgba.chunks_exact(4).step_by(pixel_step) {
+                sample_pixels.extend_from_slice(chunk);
+            }
+        }
+
+        if sample_pixels.is_empty() {
+            sample_pixels.extend_from_slice(&[0, 0, 0, 255]);
+        }
+
+        let nq = color_quant::NeuQuant::new(10, 256, &sample_pixels);
+        let colormap_rgba = nq.color_map_rgba();
+        let mut global_palette = Vec::with_capacity(256 * 3);
+        for chunk in colormap_rgba.chunks_exact(4) {
+            global_palette.push(chunk[0]);
+            global_palette.push(chunk[1]);
+            global_palette.push(chunk[2]);
+        }
+
         {
             let file = OpenOptions::new()
                 .write(true)
                 .create(true)
                 .truncate(true)
                 .open(path)?;
-            let mut encoder = Encoder::new(file, width, height, &[])?;
+            let mut encoder = Encoder::new(file, width, height, &global_palette)?;
             encoder.set_repeat(Repeat::Infinite)?;
-
-            let fps = self.settings.fps.clamp(1, 60);
-            let delay = (100.0 / fps as f64).clamp(2.0, 100.0) as u16;
-
-            let filter = if self.settings.quality >= 80 {
-                image::imageops::FilterType::Lanczos3
-            } else if self.settings.quality >= 50 {
-                image::imageops::FilterType::Triangle
-            } else {
-                image::imageops::FilterType::Nearest
-            };
 
             for captured in frames.iter() {
                 let resized = if captured.image.width() != orig_width
@@ -299,24 +395,41 @@ impl GifRecorder {
                     captured.image.clone()
                 };
 
-                let rgba_data: Vec<u8> = resized.into_raw();
+                let rgba_data = resized.as_raw();
                 let pixel_count = (width as usize).saturating_mul(height as usize);
-                let rgb_capacity = pixel_count.saturating_mul(3);
 
-                if rgb_capacity > 64 * 1024 * 1024 {
+                if pixel_count.saturating_mul(4) > 64 * 1024 * 1024 {
                     return Err(anyhow!("Frame too large to encode"));
                 }
 
-                let mut rgb_data: Vec<u8> = Vec::with_capacity(rgb_capacity);
+                let mut indexed_pixels = vec![0u8; pixel_count];
+                let mut last_pixel = [0u8; 4];
+                let mut last_index = 0u8;
+                let mut cache_valid = false;
 
-                for chunk in rgba_data.chunks_exact(4) {
-                    rgb_data.push(chunk[0]);
-                    rgb_data.push(chunk[1]);
-                    rgb_data.push(chunk[2]);
+                for (idx, chunk) in rgba_data.chunks_exact(4).enumerate() {
+                    if cache_valid
+                        && chunk[0] == last_pixel[0]
+                        && chunk[1] == last_pixel[1]
+                        && chunk[2] == last_pixel[2]
+                        && chunk[3] == last_pixel[3]
+                    {
+                        indexed_pixels[idx] = last_index;
+                    } else {
+                        let color_idx = nq.index_of(chunk) as u8;
+                        indexed_pixels[idx] = color_idx;
+                        last_pixel.copy_from_slice(chunk);
+                        last_index = color_idx;
+                        cache_valid = true;
+                    }
                 }
 
-                let mut frame = Frame::from_rgb(width, height, &rgb_data);
+                let mut frame = Frame::default();
+                frame.width = width;
+                frame.height = height;
                 frame.delay = delay;
+                frame.buffer = std::borrow::Cow::Owned(indexed_pixels);
+
                 encoder.write_frame(&frame)?;
             }
         } // encoder and file handle dropped here — all bytes flushed before size check
@@ -345,5 +458,27 @@ impl GifRecorder {
 impl Default for GifRecorder {
     fn default() -> Self {
         Self::new(RecordingSettings::default())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_find_best_monitor_overlap() {
+        if let Ok(monitors) = crate::capture::fast_list_monitors() {
+            if let Some(m) = monitors.first() {
+                let rect = Rectangle {
+                    x: m.x + 10,
+                    y: m.y + 10,
+                    width: 100,
+                    height: 100,
+                };
+                let best = find_best_monitor(rect);
+                assert!(best.is_some());
+                assert_eq!(best.unwrap().id, m.id);
+            }
+        }
     }
 }

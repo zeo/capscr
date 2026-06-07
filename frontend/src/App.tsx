@@ -11,6 +11,7 @@ import { Settings } from "./views/Settings";
 import { History } from "./views/History";
 import { Destinations } from "./views/Destinations";
 import { Tasks } from "./views/Tasks";
+import { config, refetchConfig } from "./store";
 
 // lazy-loaded so the hub bundle doesn't ship the full canvas editor and the
 // editor window doesn't ship the hub. Editor is a named export, so adapt it to
@@ -71,7 +72,6 @@ function Hub() {
   const [recording, setRecording] = createSignal(false);
   const [recordingSince, setRecordingSince] = createSignal<number | null>(null);
   const [recordingElapsed, setRecordingElapsed] = createSignal("00:00");
-  const [config, { mutate: setConfig }] = createResource(api.getConfig);
   const [dragOver, setDragOver] = createSignal(false);
   const [updateInfo, setUpdateInfo] = createSignal<UpdateInfo | null>(null);
   const [updateDismissed, setUpdateDismissed] = createSignal(false);
@@ -151,8 +151,7 @@ function Hub() {
       // dropdown stays in sync
       await listen("capscr://config-updated", async () => {
         try {
-          const fresh = await api.getConfig();
-          setConfig(fresh);
+          await refetchConfig();
         } catch {
           /* config refetch best-effort */
         }

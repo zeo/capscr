@@ -727,6 +727,7 @@ dependencies = [
  "anyhow",
  "arboard",
  "chrono",
+ "color_quant",
  "crossbeam-channel",
  "directories",
  "gif",

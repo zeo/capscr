@@ -5,6 +5,7 @@ import { Section } from "../components/Section";
 import { api, AppConfig, HotkeyDiagnostics, SftpKnownHost } from "../api";
 import { configDirty, setConfigDirty } from "../dirty";
 import { FolderOpen, RotateCcw, Save } from "lucide-solid";
+import { config, mutateConfig } from "../store";
 
 type Pane = "general" | "capture" | "hdr" | "hotkeys" | "ssh" | "notify";
 
@@ -18,7 +19,6 @@ const PANES: { id: Pane; label: string }[] = [
 ];
 
 export function Settings() {
-  const [config, { mutate }] = createResource<AppConfig>(api.getConfig);
   const [pane, setPane] = createSignal<Pane>("general");
   const [saving, setSaving] = createSignal(false);
   const [status, setStatus] = createSignal<{ tone: string; msg: string } | null>(
@@ -28,7 +28,7 @@ export function Settings() {
   const patch = <K extends keyof AppConfig>(key: K, value: AppConfig[K]) => {
     const c = config();
     if (!c) return;
-    mutate({ ...c, [key]: value });
+    mutateConfig({ ...c, [key]: value });
     setConfigDirty(true);
   };
 
@@ -55,7 +55,7 @@ export function Settings() {
     setStatus({ tone: "", msg: "loading defaults..." });
     try {
       const defaults = await api.getDefaultConfig();
-      mutate(defaults);
+      mutateConfig(defaults);
       setConfigDirty(true);
       setStatus({ tone: "ok", msg: "loaded — click save to commit." });
     } catch (e) {

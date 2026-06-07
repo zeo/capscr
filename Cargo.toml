@@ -53,6 +53,8 @@ image = { version = "0.25", features = ["png", "jpeg", "gif", "webp", "bmp"] }
 # feature, so the two collapse to one crate instead of compiling 0.13 and 0.14
 gif = "0.14"
 
+color_quant = "1.1"
+
 # Clipboard (native fallback)
 arboard = "3.4"
 

@@ -1,9 +1,10 @@
 import { createResource, createSignal, For, onCleanup, Show } from "solid-js";
 import { listen } from "@tauri-apps/api/event";
 import { Plus, Save, Trash2, Zap } from "lucide-solid";
-import { api, AppConfig, CaptureTask, HotkeyDiagnostics } from "../api";
+import { api, CaptureTask, HotkeyDiagnostics } from "../api";
 import { configDirty, setConfigDirty } from "../dirty";
 import { HotkeyInput } from "../components/HotkeyInput";
+import { config, mutateConfig } from "../store";
 
 const CAPTURE_MODES: { id: CaptureTask["capture_mode"]; label: string }[] = [
   { id: "region", label: "region (drag a rect)" },
@@ -31,7 +32,6 @@ const UPLOAD_TARGETS: NonNullable<CaptureTask["target_destination"]>[] = [
 ];
 
 export function Tasks() {
-  const [config, { mutate }] = createResource<AppConfig>(api.getConfig);
   const [status, setStatus] = createSignal<{ tone: string; msg: string } | null>(
     null,
   );
@@ -56,7 +56,7 @@ export function Tasks() {
     if (!c) return;
     const next = [...c.capture_tasks];
     next[index] = { ...next[index], ...partial } as CaptureTask;
-    mutate({ ...c, capture_tasks: next });
+    mutateConfig({ ...c, capture_tasks: next });
     setConfigDirty(true);
   };
 
@@ -64,7 +64,7 @@ export function Tasks() {
     const c = config();
     if (!c) return;
     const next = c.capture_tasks.filter((_, i) => i !== index);
-    mutate({ ...c, capture_tasks: next });
+    mutateConfig({ ...c, capture_tasks: next });
     setConfigDirty(true);
   };
 
@@ -80,7 +80,7 @@ export function Tasks() {
       post_action: "save-and-clipboard",
       target_destination: null,
     };
-    mutate({ ...c, capture_tasks: [...c.capture_tasks, newTask] });
+    mutateConfig({ ...c, capture_tasks: [...c.capture_tasks, newTask] });
     setConfigDirty(true);
   };
 

@@ -151,6 +151,8 @@ pub fn set_config(
             tracing::warn!("autostart toggle failed: {e}");
         }
     }
+    crate::rebuild_tray_menu(&app);
+    let _ = app.emit("capscr://config-updated", ());
     Ok(())
 }
 

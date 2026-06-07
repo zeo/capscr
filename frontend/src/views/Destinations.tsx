@@ -1,12 +1,12 @@
-import { createResource, createSignal, For, Show } from "solid-js";
+import { createSignal, For, Show } from "solid-js";
 import { Save, FolderOpen, Zap } from "lucide-solid";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { Section } from "../components/Section";
 import { api, AppConfig, ConnectionTestReport } from "../api";
 import { configDirty, setConfigDirty } from "../dirty";
+import { config, mutateConfig } from "../store";
 
 export function Destinations() {
-  const [config, { mutate }] = createResource<AppConfig>(api.getConfig);
   const [status, setStatus] = createSignal<{ tone: string; msg: string } | null>(
     null,
   );
@@ -46,7 +46,7 @@ export function Destinations() {
   const patch = (next: AppConfig["upload"]) => {
     const c = config();
     if (!c) return;
-    mutate({ ...c, upload: next });
+    mutateConfig({ ...c, upload: next });
     setConfigDirty(true);
   };
 
