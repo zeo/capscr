@@ -1,7 +1,7 @@
 import { createResource, createSignal, For, onCleanup, Show } from "solid-js";
 import { listen } from "@tauri-apps/api/event";
 import { Plus, Save, Trash2, Zap } from "lucide-solid";
-import { api, CaptureTask, HotkeyDiagnostics } from "../api";
+import { api, AppConfig, CaptureTask, HotkeyDiagnostics } from "../api";
 import { configDirty, setConfigDirty } from "../dirty";
 import { HotkeyInput } from "../components/HotkeyInput";
 import { config, mutateConfig } from "../store";
@@ -51,21 +51,48 @@ export function Tasks() {
     return d.statuses.find((s) => s.task_id === taskId) ?? null;
   };
 
-  const updateTask = (index: number, partial: Partial<CaptureTask>) => {
+  const saveConfig = async (c: AppConfig) => {
+    const bound = c.capture_tasks.map((t) => t.hotkey).filter(Boolean);
+    const dupes = bound.filter((h, i) => bound.indexOf(h) !== i);
+    if (dupes.length > 0) {
+      setStatus({ tone: "err", msg: `duplicate hotkey: ${[...new Set(dupes)].join(", ")} — each task needs a unique key combo` });
+      return;
+    }
+
+    setStatus({ tone: "", msg: "saving..." });
+    try {
+      await api.setConfig(c);
+      setStatus({
+        tone: "ok",
+        msg: `${c.capture_tasks.length} task${c.capture_tasks.length === 1 ? "" : "s"} live.`,
+      });
+      setConfigDirty(false);
+    } catch (e) {
+      setStatus({ tone: "err", msg: `err: ${e}` });
+    }
+  };
+
+  const updateTask = (index: number, partial: Partial<CaptureTask>, shouldSave = true) => {
     const c = config();
     if (!c) return;
     const next = [...c.capture_tasks];
     next[index] = { ...next[index], ...partial } as CaptureTask;
-    mutateConfig({ ...c, capture_tasks: next });
-    setConfigDirty(true);
+    const nextConfig = { ...c, capture_tasks: next };
+    mutateConfig(nextConfig);
+    if (shouldSave) {
+      saveConfig(nextConfig);
+    } else {
+      setConfigDirty(true);
+    }
   };
 
   const deleteTask = (index: number) => {
     const c = config();
     if (!c) return;
     const next = c.capture_tasks.filter((_, i) => i !== index);
-    mutateConfig({ ...c, capture_tasks: next });
-    setConfigDirty(true);
+    const nextConfig = { ...c, capture_tasks: next };
+    mutateConfig(nextConfig);
+    saveConfig(nextConfig);
   };
 
   const addTask = () => {
@@ -80,33 +107,15 @@ export function Tasks() {
       post_action: "save-and-clipboard",
       target_destination: null,
     };
-    mutateConfig({ ...c, capture_tasks: [...c.capture_tasks, newTask] });
-    setConfigDirty(true);
+    const nextConfig = { ...c, capture_tasks: [...c.capture_tasks, newTask] };
+    mutateConfig(nextConfig);
+    saveConfig(nextConfig);
   };
 
   const save = async () => {
     const c = config();
     if (!c) return;
-
-    // duplicate hotkey guard — two tasks sharing a hotkey means only one fires
-    const bound = c.capture_tasks.map((t) => t.hotkey).filter(Boolean);
-    const dupes = bound.filter((h, i) => bound.indexOf(h) !== i);
-    if (dupes.length > 0) {
-      setStatus({ tone: "err", msg: `duplicate hotkey: ${[...new Set(dupes)].join(", ")} — each task needs a unique key combo` });
-      return;
-    }
-
-    setStatus({ tone: "", msg: "re-registering hotkeys..." });
-    try {
-      await api.setConfig(c);
-      setStatus({
-        tone: "ok",
-        msg: `${c.capture_tasks.length} task${c.capture_tasks.length === 1 ? "" : "s"} live.`,
-      });
-      setConfigDirty(false);
-    } catch (e) {
-      setStatus({ tone: "err", msg: `err: ${e}` });
-    }
+    saveConfig(c);
   };
 
   return (
@@ -234,8 +243,12 @@ export function Tasks() {
                                 onInput={(e) =>
                                   updateTask(i(), {
                                     name: e.currentTarget.value,
-                                  })
+                                  }, false)
                                 }
+                                onChange={() => {
+                                  const c = config();
+                                  if (c) saveConfig(c);
+                                }}
                               />
                             </div>
                           </div>

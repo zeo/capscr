@@ -193,6 +193,11 @@ function Hub() {
     unlisteners.push(() => clearInterval(tickHandle));
 
     const onKey = (ev: KeyboardEvent) => {
+      // prevent default browser find dialog (ctrl+f)
+      if (ev.key.toLowerCase() === "f" && (ev.ctrlKey || ev.metaKey)) {
+        ev.preventDefault();
+        return;
+      }
       // F1 — toggle the shortcuts cheatsheet, no modifiers required.
       if (ev.key === "F1" && !ev.ctrlKey && !ev.altKey && !ev.metaKey) {
         ev.preventDefault();
