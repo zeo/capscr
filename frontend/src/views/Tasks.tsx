@@ -12,6 +12,7 @@ const CAPTURE_MODES: { id: CaptureTask["capture_mode"]; label: string }[] = [
   { id: "fullscreen", label: "fullscreen (primary)" },
   { id: "active-monitor", label: "active monitor" },
   { id: "region-gif", label: "region gif" },
+  { id: "region-mp4", label: "region mp4 (video)" },
 ];
 
 const POST_ACTIONS: { id: CaptureTask["post_action"]; label: string }[] = [

@@ -59,6 +59,7 @@ pub enum TaskCaptureMode {
     Fullscreen,
     ActiveMonitor,
     RegionGif,
+    RegionMp4,
 }
 
 impl TaskCaptureMode {
@@ -69,6 +70,7 @@ impl TaskCaptureMode {
             TaskCaptureMode::Fullscreen => "Fullscreen (selector)",
             TaskCaptureMode::ActiveMonitor => "Active monitor",
             TaskCaptureMode::RegionGif => "Region GIF",
+            TaskCaptureMode::RegionMp4 => "Region MP4",
         }
     }
 }
@@ -123,6 +125,14 @@ fn default_capture_tasks() -> Vec<CaptureTask> {
             name: "Region GIF to file".to_string(),
             hotkey: "Ctrl+Shift+G".to_string(),
             capture_mode: TaskCaptureMode::RegionGif,
+            post_action: TaskPostAction::SaveFile,
+            target_destination: None,
+        },
+        CaptureTask {
+            id: "mp4-save".to_string(),
+            name: "Region MP4 to file".to_string(),
+            hotkey: "Ctrl+Shift+V".to_string(),
+            capture_mode: TaskCaptureMode::RegionMp4,
             post_action: TaskPostAction::SaveFile,
             target_destination: None,
         },

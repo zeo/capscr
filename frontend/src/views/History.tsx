@@ -21,7 +21,7 @@ import {
 } from "lucide-solid";
 import { api } from "../api";
 
-type FilterKind = "all" | "images" | "gifs" | "hdr";
+type FilterKind = "all" | "images" | "gifs" | "videos" | "hdr";
 
 function formatBytes(b: number): string {
   if (b < 1024) return `${b} B`;
@@ -84,7 +84,8 @@ export function History() {
     const kind = filter();
     return list.filter((e) => {
       if (kind === "gifs" && !e.is_gif) return false;
-      if (kind === "images" && e.is_gif) return false;
+      if (kind === "videos" && !e.is_mp4) return false;
+      if (kind === "images" && (e.is_gif || e.is_mp4)) return false;
       if (kind === "hdr" && !e.has_hdr) return false;
       if (needle && !e.filename.toLowerCase().includes(needle)) return false;
       return true;
@@ -165,7 +166,7 @@ export function History() {
             </Show>
           </label>
           <div class="history-filters">
-            <For each={["all", "images", "gifs", "hdr"] as const}>
+            <For each={["all", "images", "gifs", "videos", "hdr"] as const}>
               {(k) => (
                 <button
                   type="button"
@@ -249,17 +250,32 @@ export function History() {
                   void api.openEditor(e.path);
                 }}
               >
-                <img
-                  class="tile-img"
-                  src={convertFileSrc(e.path)}
-                  alt={e.filename}
-                  loading="lazy"
-                  decoding="async"
-                  onError={(ev) => {
-                    (ev.currentTarget as HTMLImageElement).style.opacity =
-                      "0.3";
-                  }}
-                />
+                <Show
+                  when={e.is_mp4}
+                  fallback={
+                    <img
+                      class="tile-img"
+                      src={convertFileSrc(e.path)}
+                      alt={e.filename}
+                      loading="lazy"
+                      decoding="async"
+                      onError={(ev) => {
+                        (ev.currentTarget as HTMLImageElement).style.opacity =
+                          "0.3";
+                      }}
+                    />
+                  }
+                >
+                  <video
+                    class="tile-img"
+                    src={convertFileSrc(e.path)}
+                    autoplay
+                    muted
+                    loop
+                    playsinline
+                    style={{ "object-fit": "cover" }}
+                  />
+                </Show>
                 <div class="tile-actions">
                   <button
                     class="icon-btn"

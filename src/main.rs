@@ -298,7 +298,7 @@ fn build_tray_menu<R: tauri::Runtime, M: tauri::Manager<R>>(
         &[&cap_region, &cap_window, &cap_fullscreen, &cap_active],
     )?;
 
-    // --- Record submenu ---
+    // record submenu
     let rec_region_gif = MenuItem::with_id(
         app,
         "rec_region_gif",
@@ -306,8 +306,15 @@ fn build_tray_menu<R: tauri::Runtime, M: tauri::Manager<R>>(
         true,
         None::<&str>,
     )?;
+    let rec_region_mp4 = MenuItem::with_id(
+        app,
+        "rec_region_mp4",
+        "Region MP4 (toggle)",
+        true,
+        None::<&str>,
+    )?;
     let record_submenu =
-        Submenu::with_items(app, "Record", true, &[&rec_region_gif])?;
+        Submenu::with_items(app, "Record", true, &[&rec_region_gif, &rec_region_mp4])?;
 
     // --- Recent uploads submenu (dynamic) ---
     let state = app.state::<state::AppState>();
@@ -518,7 +525,7 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
                 "rec_region_gif" => {
                     // synthesize a tray-driven gif task so run_gif_task's start/stop
                     // toggle (keyed off the task id in AppState) works the same as
-                    // a real hotkey-bound task.
+                    // a real hotkey-bound task
                     let app = app.clone();
                     std::thread::spawn(move || {
                         let task = config::CaptureTask {
@@ -532,6 +539,26 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
                         if let Err(e) = commands::run_task(&task, &app) {
                             tracing::warn!("tray gif failed: {e}");
                             commands::emit_error(&app, "gif", &e.to_string());
+                        }
+                    });
+                }
+                "rec_region_mp4" => {
+                    // synthesize a tray-driven mp4 task so run_gif_task's start/stop
+                    // toggle (keyed off the task id in AppState) works the same as
+                    // a real hotkey-bound task
+                    let app = app.clone();
+                    std::thread::spawn(move || {
+                        let task = config::CaptureTask {
+                            id: "__tray_mp4".into(),
+                            name: "Tray MP4".into(),
+                            hotkey: String::new(),
+                            capture_mode: config::TaskCaptureMode::RegionMp4,
+                            post_action: config::TaskPostAction::SaveFile,
+                            target_destination: None,
+                        };
+                        if let Err(e) = commands::run_task(&task, &app) {
+                            tracing::warn!("tray mp4 failed: {e}");
+                            commands::emit_error(&app, "mp4", &e.to_string());
                         }
                     });
                 }

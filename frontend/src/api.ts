@@ -94,7 +94,7 @@ export interface CaptureTask {
   id: string;
   name: string;
   hotkey: string;
-  capture_mode: "region" | "window" | "fullscreen" | "active-monitor" | "region-gif";
+  capture_mode: "region" | "window" | "fullscreen" | "active-monitor" | "region-gif" | "region-mp4";
   post_action:
     | "clipboard"
     | "save-file"
@@ -126,6 +126,7 @@ export interface HistoryEntry {
   size_bytes: number;
   modified_unix: number;
   is_gif: boolean;
+  is_mp4: boolean;
   has_hdr: boolean;
 }
 

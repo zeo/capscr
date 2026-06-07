@@ -52,6 +52,7 @@ pub struct HistoryEntry {
     pub size_bytes: u64,
     pub modified_unix: u64,
     pub is_gif: bool,
+    pub is_mp4: bool,
     pub has_hdr: bool,
 }
 
@@ -953,7 +954,7 @@ pub fn list_captures(state: State<AppState>) -> Result<Vec<HistoryEntry>, String
             .and_then(|e| e.to_str())
             .map(|s| s.to_lowercase())
             .unwrap_or_default();
-        if !matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp") {
+        if !matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "mp4") {
             continue;
         }
         let filename = path
@@ -988,12 +989,14 @@ pub fn list_captures(state: State<AppState>) -> Result<Vec<HistoryEntry>, String
             path_str
         };
 
+        let is_mp4 = ext == "mp4";
         entries.push(HistoryEntry {
             path: path_clean,
             filename,
             size_bytes: metadata.len(),
             modified_unix,
             is_gif: ext == "gif",
+            is_mp4,
             has_hdr,
         });
     }
@@ -1051,6 +1054,14 @@ pub fn copy_capture_to_clipboard(path: String, state: State<AppState>) -> Result
     if !is_path_allowed(&canonical, &config) {
         return Err("Path is outside the allowed directories".into());
     }
+    let ext = canonical.extension()
+        .and_then(|e| e.to_str())
+        .map(|s| s.to_lowercase())
+        .unwrap_or_default();
+    if ext == "gif" || ext == "mp4" {
+        let mut cb = ClipboardManager::new().map_err(|e| e.to_string())?;
+        return cb.copy_text(&canonical.to_string_lossy()).map_err(|e| e.to_string());
+    }
     let img = image::open(&canonical).map_err(|e| e.to_string())?;
     let rgba = img.into_rgba8();
     let mut cb = ClipboardManager::new().map_err(|e| e.to_string())?;
@@ -1077,6 +1088,9 @@ pub fn reupload_capture(
         .unwrap_or_default();
     if ext == "gif" {
         return Err("GIF reupload is not yet supported — open the file manually and upload it from there".into());
+    }
+    if ext == "mp4" {
+        return Err("MP4 reupload is not yet supported — open the file manually and upload it from there".into());
     }
     let mime = match ext.as_str() {
         "jpg" | "jpeg" => "image/jpeg",
@@ -1408,6 +1422,7 @@ pub fn upload_file(
         "gif" => "image/gif",
         "webp" => "image/webp",
         "bmp" => "image/bmp",
+        "mp4" => "video/mp4",
         "" => return Err("file has no extension; cannot detect type".into()),
         other => return Err(format!("unsupported file type: .{}", other)),
     };
@@ -1508,7 +1523,7 @@ pub fn trigger_task(app: &AppHandle, task_id: &str) {
 }
 
 pub fn run_task(task: &CaptureTask, app: &AppHandle) -> anyhow::Result<()> {
-    if matches!(task.capture_mode, TaskCaptureMode::RegionGif) {
+    if matches!(task.capture_mode, TaskCaptureMode::RegionGif | TaskCaptureMode::RegionMp4) {
         return run_gif_task(task, app);
     }
     let mode = match task.capture_mode {
@@ -1516,7 +1531,7 @@ pub fn run_task(task: &CaptureTask, app: &AppHandle) -> anyhow::Result<()> {
             CaptureModeArg::from_task_mode(task.capture_mode)
         }
         TaskCaptureMode::ActiveMonitor => CaptureModeArg::ActiveMonitor,
-        TaskCaptureMode::RegionGif => unreachable!("handled above"),
+        TaskCaptureMode::RegionGif | TaskCaptureMode::RegionMp4 => unreachable!("handled above"),
     };
     let post = PostActionArg::from_task_action(task.post_action);
     run_capture_pipeline_with_target(mode, post, app, task.target_destination)
@@ -1528,8 +1543,8 @@ fn run_gif_task(task: &CaptureTask, app: &AppHandle) -> anyhow::Result<()> {
     let active_id = state.recording_task_id.lock().unwrap().clone();
 
     if matches!(current, RecordingState::Recording) {
-        // same task hotkey re-pressed → user wants to stop.
-        // different task hotkey while recording → reject and tell the user.
+        // same task hotkey re-pressed -> user wants to stop
+        // different task hotkey while recording -> reject and tell the user
         if active_id.as_deref() == Some(task.id.as_str()) {
             stop_gif_recording(app);
         } else {
@@ -1553,7 +1568,7 @@ fn run_gif_task(task: &CaptureTask, app: &AppHandle) -> anyhow::Result<()> {
     }
 
     if matches!(current, RecordingState::Processing) {
-        // mid-save from a previous run; skip.
+        // mid-save from a previous run; skip
         return Ok(());
     }
 
@@ -1659,7 +1674,7 @@ fn finalize_gif_recording(task: &CaptureTask, app: &AppHandle) {
     if let Some(ref mut rec) = recorder {
         rec.stop();
         // wait for the capture thread to finish rather than sleeping a fixed
-        // duration — the thread sets state to Processing after its last frame
+        // duration -- the thread sets state to processing after its last frame
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         while !matches!(rec.state(), crate::recording::RecordingState::Processing) {
             if std::time::Instant::now() >= deadline {
@@ -1669,26 +1684,40 @@ fn finalize_gif_recording(task: &CaptureTask, app: &AppHandle) {
             std::thread::sleep(Duration::from_millis(20));
         }
 
+        let is_mp4 = matches!(task.capture_mode, TaskCaptureMode::RegionMp4);
+
         let mut path = cfg.output_path();
-        path.set_extension("gif");
+        if is_mp4 {
+            path.set_extension("mp4");
+        } else {
+            path.set_extension("gif");
+        }
         let path = get_unique_filepath(&path);
         if let Err(e) = std::fs::create_dir_all(&cfg.output.directory) {
             tracing::warn!("failed to create output dir: {e}");
         }
 
-        match rec.save(&path) {
+        let save_result = if is_mp4 {
+            rec.save_mp4(&path)
+        } else {
+            rec.save(&path)
+        };
+
+        match save_result {
             Ok(()) => {
                 *state.last_save.lock().unwrap() = Some(path.clone());
                 Sound::Screenshot.play_if_enabled(cfg.post_capture.play_sound);
                 if cfg.ui.show_notifications {
-                    let _ = show_notification("GIF saved", &path.to_string_lossy());
+                    let title = if is_mp4 { "Video saved" } else { "GIF saved" };
+                    let _ = show_notification(title, &path.to_string_lossy());
                 }
                 notify_capture_saved(app, &path);
                 apply_gif_post_action(task, app, &path, &cfg);
             }
             Err(e) => {
-                tracing::warn!("gif save failed: {e}");
-                emit_error(app, "gif-save", &e.to_string());
+                let err_type = if is_mp4 { "mp4-save" } else { "gif-save" };
+                tracing::warn!("{} failed: {e}", err_type);
+                emit_error(app, err_type, &e.to_string());
             }
         }
     }
@@ -1708,8 +1737,8 @@ fn set_tray_tooltip(app: &AppHandle, tooltip: &str) {
 fn apply_gif_post_action(task: &CaptureTask, app: &AppHandle, path: &std::path::Path, cfg: &Config) {
     match task.post_action {
         TaskPostAction::Clipboard | TaskPostAction::SaveAndClipboard => {
-            // clipboard support for animated GIF varies wildly across OSes/apps.
-            // for now: copy the file path text so the user can paste into anything path-aware.
+            // clipboard support for animated gif/mp4 varies wildly across oses/apps
+            // for now: copy the file path text so the user can paste into anything path-aware
             if let Ok(mut cb) = ClipboardManager::new() {
                 let _ = cb.copy_text(&path.to_string_lossy());
             }
@@ -1738,11 +1767,17 @@ fn apply_gif_post_action(task: &CaptureTask, app: &AppHandle, path: &std::path::
                     }
                 };
                 let service = build_upload_service_for_target(&cfg, target_override);
+                let is_mp4 = path.extension().is_some_and(|ext| ext == "mp4");
+                let (mime, default_name) = if is_mp4 {
+                    ("video/mp4", "capture.mp4")
+                } else {
+                    ("image/gif", "capture.gif")
+                };
                 let file_name = path
                     .file_name()
                     .and_then(|n| n.to_str())
-                    .unwrap_or("capture.gif");
-                match uploader.upload_raw(&bytes, "image/gif", file_name, &service) {
+                    .unwrap_or(default_name);
+                match uploader.upload_raw(&bytes, mime, file_name, &service) {
                     Ok(result) => {
                         let st = app2.state::<AppState>();
                         st.record_upload(UploadRecord {
@@ -1761,7 +1796,7 @@ fn apply_gif_post_action(task: &CaptureTask, app: &AppHandle, path: &std::path::
             });
         }
         TaskPostAction::SaveFile | TaskPostAction::Prompt | TaskPostAction::DoNothing => {
-            // already saved to disk; nothing further.
+            // already saved to disk; nothing further
         }
     }
 }
@@ -1773,7 +1808,7 @@ impl CaptureModeArg {
             TaskCaptureMode::Window => CaptureModeArg::Window,
             TaskCaptureMode::Fullscreen => CaptureModeArg::Fullscreen,
             TaskCaptureMode::ActiveMonitor => CaptureModeArg::ActiveMonitor,
-            TaskCaptureMode::RegionGif => CaptureModeArg::Region,
+            TaskCaptureMode::RegionGif | TaskCaptureMode::RegionMp4 => CaptureModeArg::Region,
         }
     }
 }

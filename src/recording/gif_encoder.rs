@@ -446,6 +446,98 @@ impl GifRecorder {
         Ok(())
     }
 
+    pub fn save_mp4<P: AsRef<Path>>(&self, path: P) -> Result<()> {
+        let path = path.as_ref();
+
+        let path_str = path.to_string_lossy();
+        if path_str.contains("..") {
+            return Err(anyhow!("Path contains directory traversal"));
+        }
+        #[cfg(windows)]
+        if path_str.starts_with("\\\\") {
+            return Err(anyhow!("Network paths not allowed"));
+        }
+
+        let frames = self.frames.lock().unwrap_or_else(|e| e.into_inner());
+
+        if frames.is_empty() {
+            return Err(anyhow!("No frames captured"));
+        }
+
+        let first_frame = &frames[0].image;
+        let orig_width = first_frame.width();
+        let orig_height = first_frame.height();
+
+        if orig_width == 0 || orig_height == 0 {
+            return Err(anyhow!("Image has zero dimension"));
+        }
+
+        if let Some(parent) = path.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent)?;
+            }
+        }
+
+        let fps = self.settings.fps.clamp(1, 60);
+        let filter = if self.settings.quality >= 80 {
+            image::imageops::FilterType::Lanczos3
+        } else if self.settings.quality >= 50 {
+            image::imageops::FilterType::Triangle
+        } else {
+            image::imageops::FilterType::Nearest
+        };
+
+        // spawn ffmpeg child process and write raw rgba video frames to stdin
+        let mut child = std::process::Command::new("ffmpeg")
+            .args([
+                "-f", "rawvideo",
+                "-pix_fmt", "rgba",
+                "-s", &format!("{}x{}", orig_width, orig_height),
+                "-r", &fps.to_string(),
+                "-i", "-",
+                "-c:v", "libx264",
+                "-pix_fmt", "yuv420p",
+                "-crf", "23",
+                "-y",
+                &path.to_string_lossy(),
+            ])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .map_err(|e| anyhow!("Failed to spawn ffmpeg: {}", e))?;
+
+        {
+            use std::io::Write;
+            let mut stdin = child.stdin.take().ok_or_else(|| anyhow!("Failed to open ffmpeg stdin"))?;
+
+            for captured in frames.iter() {
+                let resized = if captured.image.width() != orig_width
+                    || captured.image.height() != orig_height
+                {
+                    image::imageops::resize(
+                        &captured.image,
+                        orig_width,
+                        orig_height,
+                        filter,
+                    )
+                } else {
+                    captured.image.clone()
+                };
+
+                let rgba_data = resized.as_raw();
+                stdin.write_all(rgba_data).map_err(|e| anyhow!("Failed to write to ffmpeg stdin: {}", e))?;
+            }
+        } // stdin is closed here, signaling eof to ffmpeg
+
+        let status = child.wait().map_err(|e| anyhow!("Failed to wait for ffmpeg: {}", e))?;
+        if !status.success() {
+            return Err(anyhow!("ffmpeg exited with error status: {}", status));
+        }
+
+        Ok(())
+    }
+
     pub fn reset(&mut self) {
         self.stop();
         if let Ok(mut frames) = self.frames.lock() {
