@@ -6,6 +6,15 @@ format follows [keep-a-changelog](https://keepachangelog.com/en/1.1.0/) loosely.
 
 nothing pending. drop ideas in github issues.
 
+## [0.5.28] — 2026-06-09
+
+### added
+- first-launch onboarding overlay prompting users to configure their screenshot keybind shortcut if none is bound
+
+### fixed
+- resolved task name text input losing focus on every typed character in the tasks editor panel
+- resolved missing application window icon on Windows taskbar for frameless windows
+
 ## [0.5.27] — 2026-06-09
 
 ### added
