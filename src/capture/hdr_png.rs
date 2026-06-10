@@ -73,6 +73,7 @@ pub fn encode_hdr_png(path: &Path, bitmap: &HdrBitmap, transfer: HdrTransfer) ->
     }
 }
 
+#[allow(clippy::uninit_vec)]
 fn encode_hdr10_png(path: &Path, bitmap: &HdrBitmap) -> Result<()> {
     let pixel_count = bitmap.pixel_count();
     let expected_bytes = pixel_count
@@ -104,12 +105,18 @@ fn encode_hdr10_png(path: &Path, bitmap: &HdrBitmap) -> Result<()> {
     let cicp: [u8; 4] = [9, 16, 0, 1];
     writer.write_chunk(ChunkType(*b"cICP"), &cicp)?;
 
-    // convert little-endian u16s to big-endian for PNG. Allocates once.
     let mut be_data = Vec::with_capacity(bitmap.data.len());
-    for chunk in bitmap.data.chunks_exact(2) {
-        // chunk[0] is low byte (LE); flip to high-first.
-        be_data.push(chunk[1]);
-        be_data.push(chunk[0]);
+    unsafe {
+        be_data.set_len(bitmap.data.len());
+    }
+    let src_ptr: *const u8 = bitmap.data.as_ptr();
+    let dest_ptr: *mut u8 = be_data.as_mut_ptr();
+    let num_u16s = bitmap.data.len() / 2;
+    for i in 0..num_u16s {
+        unsafe {
+            let val = std::ptr::read_unaligned(src_ptr.add(i * 2) as *const u16);
+            std::ptr::write_unaligned(dest_ptr.add(i * 2) as *mut u16, val.swap_bytes());
+        }
     }
     writer.write_image_data(&be_data)?;
     writer.finish()?;
@@ -124,6 +131,7 @@ fn encode_hdr10_png(path: &Path, bitmap: &HdrBitmap) -> Result<()> {
 //      reference HDR white
 //   3. HLG OETF: encode linear E -> non-linear E' per BT.2100 / ARIB STD-B67
 //   4. quantise back to u16, write 16-bit RGBA PNG, attach cICP 9/18/0/1
+#[allow(clippy::uninit_vec)]
 fn encode_hdr10_as_hlg_png(path: &Path, bitmap: &HdrBitmap) -> Result<()> {
     let pixel_count = bitmap.pixel_count();
     let expected_bytes = pixel_count
@@ -163,21 +171,31 @@ fn encode_hdr10_as_hlg_png(path: &Path, bitmap: &HdrBitmap) -> Result<()> {
     let cicp: [u8; 4] = [9, 18, 0, 1];
     writer.write_chunk(ChunkType(*b"cICP"), &cicp)?;
 
-    // convert LE u16 source -> transcoded BE u16 destination in one pass.
     let mut out = Vec::with_capacity(bitmap.data.len());
-    for pixel in bitmap.data.chunks_exact(8) {
-        // R, G, B get the LUT; A passes through. all stored big-endian
-        let r = u16::from_le_bytes([pixel[0], pixel[1]]);
-        let g = u16::from_le_bytes([pixel[2], pixel[3]]);
-        let b = u16::from_le_bytes([pixel[4], pixel[5]]);
-        let a = u16::from_le_bytes([pixel[6], pixel[7]]);
-        let r2 = pq_to_hlg[r as usize];
-        let g2 = pq_to_hlg[g as usize];
-        let b2 = pq_to_hlg[b as usize];
-        out.extend_from_slice(&r2.to_be_bytes());
-        out.extend_from_slice(&g2.to_be_bytes());
-        out.extend_from_slice(&b2.to_be_bytes());
-        out.extend_from_slice(&a.to_be_bytes());
+    unsafe {
+        out.set_len(bitmap.data.len());
+    }
+    let src_ptr: *const u8 = bitmap.data.as_ptr();
+    let dest_ptr: *mut u8 = out.as_mut_ptr();
+    let num_pixels = bitmap.data.len() / 8;
+    for i in 0..num_pixels {
+        unsafe {
+            let offset = i * 8;
+            let r = std::ptr::read_unaligned(src_ptr.add(offset) as *const u16);
+            let g = std::ptr::read_unaligned(src_ptr.add(offset + 2) as *const u16);
+            let b = std::ptr::read_unaligned(src_ptr.add(offset + 4) as *const u16);
+            let a = std::ptr::read_unaligned(src_ptr.add(offset + 6) as *const u16);
+
+            let r2 = pq_to_hlg[u16::from_le(r) as usize].to_be();
+            let g2 = pq_to_hlg[u16::from_le(g) as usize].to_be();
+            let b2 = pq_to_hlg[u16::from_le(b) as usize].to_be();
+            let a2 = u16::from_le(a).to_be();
+
+            std::ptr::write_unaligned(dest_ptr.add(offset) as *mut u16, r2);
+            std::ptr::write_unaligned(dest_ptr.add(offset + 2) as *mut u16, g2);
+            std::ptr::write_unaligned(dest_ptr.add(offset + 4) as *mut u16, b2);
+            std::ptr::write_unaligned(dest_ptr.add(offset + 6) as *mut u16, a2);
+        }
     }
     writer.write_image_data(&out)?;
     writer.finish()?;

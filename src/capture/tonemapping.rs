@@ -196,6 +196,7 @@ fn tonemap_pixel(r: f32, g: f32, b: f32, l_src: f32) -> (f32, f32, f32) {
     (r_desat * scale, g_desat * scale, b_desat * scale)
 }
 
+#[allow(clippy::uninit_vec)]
 pub fn scrgb_to_sdr_bt2390(
     scrgb_rgba: &[f32],
     width: u32,
@@ -267,7 +268,10 @@ pub fn scrgb_to_sdr_bt2390(
         .unwrap_or(4)
         .max(1);
     let chunk_pixels = pixel_count.div_ceil(thread_count);
-    let mut out_bytes = vec![0u8; pixel_count * 4];
+    let mut out_bytes = Vec::with_capacity(pixel_count * 4);
+    unsafe {
+        out_bytes.set_len(pixel_count * 4);
+    }
 
     std::thread::scope(|s| {
         for (chunk_idx, out_chunk) in out_bytes.chunks_mut(chunk_pixels * 4).enumerate() {
@@ -317,6 +321,7 @@ pub fn scrgb_to_sdr_bt2390(
     RgbaImage::from_raw(width, height, out_bytes).unwrap_or_else(|| RgbaImage::new(width, height))
 }
 
+#[allow(clippy::uninit_vec)]
 pub fn hdr10_to_sdr_bt2390(
     pq_data: &[u16],
     width: u32,
@@ -338,7 +343,10 @@ pub fn hdr10_to_sdr_bt2390(
 
     // decode PQ -> linear nits, then rescale into scRGB (1.0 = 80 nits)
     // so we can hand off to the scRGB path.
-    let mut scrgb = vec![0.0f32; pixel_count * 4];
+    let mut scrgb = Vec::with_capacity(pixel_count * 4);
+    unsafe {
+        scrgb.set_len(pixel_count * 4);
+    }
     for (src, dest) in pq_data.chunks_exact(4).zip(scrgb.chunks_exact_mut(4)) {
         let r_pq = src[0] as f32 / 65535.0;
         let g_pq = src[1] as f32 / 65535.0;
@@ -352,6 +360,7 @@ pub fn hdr10_to_sdr_bt2390(
     scrgb_to_sdr_bt2390(&scrgb, width, height, sdr_white_nits, params)
 }
 
+#[allow(clippy::uninit_vec)]
 pub fn hlg_to_sdr_bt2390(
     hlg_data: &[u8],
     width: u32,
@@ -373,7 +382,10 @@ pub fn hlg_to_sdr_bt2390(
 
     // HLG reference white is roughly 0.75 signal -> 1.0 linear; bring the
     // peak up to scRGB ~12 (1000 nits) before handing to the scRGB path.
-    let mut scrgb = vec![0.0f32; pixel_count * 4];
+    let mut scrgb = Vec::with_capacity(pixel_count * 4);
+    unsafe {
+        scrgb.set_len(pixel_count * 4);
+    }
     for (src, dest) in hlg_data.chunks_exact(4).zip(scrgb.chunks_exact_mut(4)) {
         let r_hlg = src[0] as f32 / 255.0;
         let g_hlg = src[1] as f32 / 255.0;
