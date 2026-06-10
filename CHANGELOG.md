@@ -6,6 +6,11 @@ format follows [keep-a-changelog](https://keepachangelog.com/en/1.1.0/) loosely.
 
 nothing pending. drop ideas in github issues.
 
+## [0.5.30] — 2026-06-10
+
+### added
+- automatic download and configuration for FFmpeg when a user initiates a video recording (MP4) but does not have FFmpeg installed on their system
+
 ## [0.5.29] — 2026-06-10
 
 ### fixed

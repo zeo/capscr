@@ -554,7 +554,7 @@ impl GifRecorder {
     }
 }
 
-fn find_ffmpeg() -> std::path::PathBuf {
+pub fn find_ffmpeg() -> std::path::PathBuf {
     if let Ok(exe_path) = std::env::current_exe() {
         if let Some(parent) = exe_path.parent() {
             let local_ffmpeg = parent.join("ffmpeg.exe");
@@ -580,6 +580,21 @@ fn find_ffmpeg() -> std::path::PathBuf {
     }
 
     std::path::PathBuf::from("ffmpeg")
+}
+
+pub fn is_ffmpeg_available() -> bool {
+    let path = find_ffmpeg();
+    if path != std::path::Path::new("ffmpeg") {
+        return path.exists();
+    }
+    // check if system ffmpeg is runnable
+    std::process::Command::new("ffmpeg")
+        .arg("-version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map(|mut child| child.wait().is_ok())
+        .unwrap_or(false)
 }
 
 impl Default for GifRecorder {

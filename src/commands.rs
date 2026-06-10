@@ -1618,6 +1618,99 @@ pub fn run_task(task: &CaptureTask, app: &AppHandle) -> anyhow::Result<()> {
     run_capture_pipeline_with_target(mode, post, app, task.target_destination)
 }
 
+use std::sync::atomic::{AtomicBool, Ordering};
+static FFMPEG_DOWNLOADING: AtomicBool = AtomicBool::new(false);
+
+fn perform_ffmpeg_download() -> anyhow::Result<()> {
+    #[cfg(windows)]
+    const FFMPEG_BIN_NAME: &str = "ffmpeg.exe";
+    #[cfg(not(windows))]
+    const FFMPEG_BIN_NAME: &str = "ffmpeg";
+
+    let proj_dirs = directories::ProjectDirs::from("com", "capscr", "capscr")
+        .ok_or_else(|| anyhow::anyhow!("failed to locate app data directory"))?;
+    let data_dir = proj_dirs.data_dir();
+    std::fs::create_dir_all(data_dir)?;
+    let dest_path = data_dir.join(FFMPEG_BIN_NAME);
+
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(300))
+        .build()?;
+
+    let url = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip";
+    let resp = client.get(url).send()?;
+    if !resp.status().is_success() {
+        return Err(anyhow::anyhow!("http error: {}", resp.status()));
+    }
+
+    let zip_bytes = resp.bytes()?;
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(zip_bytes.as_ref()))?;
+    let mut found = false;
+
+    for i in 0..archive.len() {
+        let mut file = archive.by_index(i)?;
+        let name = file.name();
+        if name.ends_with("bin/ffmpeg.exe") || name.ends_with("bin/ffmpeg") {
+            let mut out_file = std::fs::File::create(&dest_path)?;
+            std::io::copy(&mut file, &mut out_file)?;
+
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mut perms = std::fs::metadata(&dest_path)?.permissions();
+                perms.set_mode(0o755);
+                std::fs::set_permissions(&dest_path, perms)?;
+            }
+
+            found = true;
+            break;
+        }
+    }
+
+    if !found {
+        return Err(anyhow::anyhow!("ffmpeg binary not found in zip archive"));
+    }
+
+    Ok(())
+}
+
+fn handle_missing_ffmpeg(app: &AppHandle) -> anyhow::Result<()> {
+    if FFMPEG_DOWNLOADING.load(Ordering::SeqCst) {
+        let _ = show_notification(
+            "FFmpeg Download",
+            "FFmpeg is already downloading in the background. Please wait."
+        );
+        return Ok(());
+    }
+
+    use tauri_plugin_dialog::DialogExt;
+    let is_confirmed = app.dialog()
+        .message("Recording MP4 requires FFmpeg, which was not found on your system.\n\nWould you like to automatically download and configure it?")
+        .title("FFmpeg Required")
+        .kind(tauri_plugin_dialog::MessageDialogKind::Info)
+        .buttons(tauri_plugin_dialog::MessageDialogButtons::YesNo)
+        .blocking_show();
+
+    if is_confirmed {
+        FFMPEG_DOWNLOADING.store(true, Ordering::SeqCst);
+        std::thread::spawn(move || {
+            let _ = show_notification("FFmpeg Download", "Starting FFmpeg download (approx. 90MB)...");
+            match perform_ffmpeg_download() {
+                Ok(()) => {
+                    let _ = show_notification("FFmpeg Configured", "FFmpeg has been downloaded and configured. You can now record MP4 videos.");
+                }
+                Err(e) => {
+                    tracing::error!("failed to download ffmpeg: {}", e);
+                    let _ = show_notification("FFmpeg Download Failed", &format!("Could not configure FFmpeg: {}", e));
+                }
+            }
+            FFMPEG_DOWNLOADING.store(false, Ordering::SeqCst);
+        });
+    }
+
+    Ok(())
+}
+
 fn run_gif_task(task: &CaptureTask, app: &AppHandle) -> anyhow::Result<()> {
     // cancel selection if already active
     if UnifiedSelector::active_selector_active() {
@@ -1657,6 +1750,13 @@ fn run_gif_task(task: &CaptureTask, app: &AppHandle) -> anyhow::Result<()> {
 
     if matches!(current, RecordingState::Processing) {
         // mid-save from a previous run; skip
+        return Ok(());
+    }
+
+    if matches!(task.capture_mode, TaskCaptureMode::RegionMp4)
+        && !crate::recording::is_ffmpeg_available()
+    {
+        handle_missing_ffmpeg(app)?;
         return Ok(());
     }
 
