@@ -6,6 +6,15 @@ format follows [keep-a-changelog](https://keepachangelog.com/en/1.1.0/) loosely.
 
 nothing pending. drop ideas in github issues.
 
+## [0.5.33] — 2026-06-10
+
+### added
+- recording overlay control bar with a live elapsed/limit timer and a clickable stop button, placed outside the captured region so it never appears in the recording
+
+### fixed
+- resolved the image editor window opening as a blank white page that could not be closed
+- copying a recorded GIF/MP4 now places the actual file on the clipboard (pasteable into explorer and chat apps) instead of the file path as text
+
 ## [0.5.32] — 2026-06-10
 
 ### performance
