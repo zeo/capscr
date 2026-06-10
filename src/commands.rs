@@ -1820,7 +1820,15 @@ fn start_gif_recording(
     *state.recording_state.lock().unwrap() = RecordingState::Recording;
     *state.recording_task_id.lock().unwrap() = Some(task.id.clone());
 
-    RecordingOverlay::start(region);
+    // the overlay's stop button ends the recording the same way a re-pressed
+    // hotkey does; the callback fires on the overlay thread, which is safe
+    // because stop_gif_recording only touches mutex-guarded state
+    let app_for_stop = app.clone();
+    RecordingOverlay::start(
+        region,
+        cfg.capture.gif_max_duration_secs as u64,
+        Box::new(move || stop_gif_recording(&app_for_stop)),
+    );
     let _ = app.emit("capscr://recording-started", task.id.clone());
     set_tray_tooltip(app, &format!("capscr · recording '{}'", task.name));
 
