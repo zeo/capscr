@@ -552,7 +552,19 @@ mod windows_hdr {
     }
 
     pub fn is_hdr_at_point(x: i32, y: i32) -> bool {
-        unsafe {
+        #[allow(clippy::type_complexity)]
+        static CACHE: OnceLock<Mutex<HashMap<(i32, i32), (bool, std::time::Instant)>>> = OnceLock::new();
+        let cache_mutex = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+
+        if let Ok(cache) = cache_mutex.lock() {
+            if let Some(&(is_hdr, timestamp)) = cache.get(&(x, y)) {
+                if timestamp.elapsed() < std::time::Duration::from_millis(2000) {
+                    return is_hdr;
+                }
+            }
+        }
+
+        let is_hdr = unsafe {
             let factory = match CreateDXGIFactory1() {
                 Ok(f) => f,
                 Err(_) => return false,
@@ -564,11 +576,20 @@ mod windows_hdr {
             if let Ok(output6) = output.cast::<IDXGIOutput6>() {
                 if let Ok(desc1) = output6.GetDesc1() {
                     let color_space = desc1.ColorSpace.0;
-                    return color_space == 12 || color_space == 13 || color_space == 14;
+                    color_space == 12 || color_space == 13 || color_space == 14
+                } else {
+                    false
                 }
+            } else {
+                false
             }
-            false
+        };
+
+        if let Ok(mut cache) = cache_mutex.lock() {
+            cache.insert((x, y), (is_hdr, std::time::Instant::now()));
         }
+
+        is_hdr
     }
 
     pub fn capture_hdr_screen(

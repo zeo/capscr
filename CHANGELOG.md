@@ -6,6 +6,13 @@ format follows [keep-a-changelog](https://keepachangelog.com/en/1.1.0/) loosely.
 
 nothing pending. drop ideas in github issues.
 
+## [0.5.31] — 2026-06-10
+
+### performance
+- optimized regional recording loop to resolve target monitor once at startup and capture the screen directly, bypassing redundant monitor enumerations
+- cached `is_hdr_at_point` queries for 2 seconds to reduce heavy DXGI and display configuration queries
+- enabled high-precision 1ms timer resolution on Windows during active recording using `timeBeginPeriod` and `timeEndPeriod` to guarantee smooth frame pacing and eliminate stutter
+
 ## [0.5.30] — 2026-06-10
 
 ### added

@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::capture::{Capture, MonitorInfo, Rectangle, ScreenCapture};
+use crate::capture::{MonitorInfo, Rectangle, ScreenCapture};
 
 fn find_best_monitor(rect: Rectangle) -> Option<MonitorInfo> {
     let monitors = crate::capture::fast_list_monitors().ok()?;
@@ -145,8 +145,25 @@ impl GifRecorder {
         let fps = self.settings.fps.max(1);
         let max_duration = self.settings.max_duration;
         let region = self.region;
+        let best_monitor = region.and_then(find_best_monitor);
 
         thread::spawn(move || {
+            #[cfg(windows)]
+            struct TimerGuard;
+            #[cfg(windows)]
+            impl Drop for TimerGuard {
+                fn drop(&mut self) {
+                    unsafe {
+                        let _ = windows::Win32::Media::timeEndPeriod(1);
+                    }
+                }
+            }
+            #[cfg(windows)]
+            let _timer_guard = unsafe {
+                let _ = windows::Win32::Media::timeBeginPeriod(1);
+                TimerGuard
+            };
+
             let min_frame_duration = Duration::from_millis(MIN_FRAME_INTERVAL_MS);
             let frame_duration = Duration::from_secs_f64(1.0 / fps as f64).max(min_frame_duration);
             let start_time = Instant::now();
@@ -167,8 +184,8 @@ impl GifRecorder {
                 let frame_start = Instant::now();
 
                 let capture_result = if let Some(rect) = region {
-                    let single_monitor_capture = if let Some(m) = find_best_monitor(rect) {
-                        ScreenCapture::with_monitor(m.id).capture().map(|img| {
+                    let single_monitor_capture = if let Some(ref m) = best_monitor {
+                        crate::capture::capture_one_monitor(m).map(|img| {
                             let local_x = (rect.x - m.x).max(0) as u32;
                             let local_y = (rect.y - m.y).max(0) as u32;
                             let max_w = img.width().saturating_sub(local_x);
