@@ -101,6 +101,110 @@ impl ClipboardManager {
     }
 }
 
+/// put the file itself on the clipboard as a CF_HDROP file list, the format
+/// explorer/discord/slack expect when pasting a file. arboard has no file-list
+/// support, so this goes through the win32 clipboard directly
+#[cfg(windows)]
+pub fn copy_file_to_clipboard(path: &Path) -> Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows::Win32::Foundation::{GlobalFree, HANDLE, HGLOBAL, POINT};
+    use windows::Win32::System::DataExchange::{
+        CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData,
+    };
+    use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
+    use windows::Win32::System::Ole::CF_HDROP;
+    use windows::Win32::UI::Shell::DROPFILES;
+
+    if !path.is_absolute() {
+        return Err(anyhow!("Clipboard file copy requires an absolute path"));
+    }
+    if !path.exists() {
+        return Err(anyhow!("File does not exist: {}", path.display()));
+    }
+
+    // canonicalize produces \\?\-prefixed paths that some paste targets
+    // don't understand — hand them the plain drive-letter form
+    let plain: std::path::PathBuf = match path.to_str().and_then(|s| s.strip_prefix(r"\\?\")) {
+        Some(stripped) if !stripped.starts_with("UNC\\") => stripped.into(),
+        _ => path.to_path_buf(),
+    };
+
+    let wide: Vec<u16> = plain
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0)) // path terminator
+        .chain(std::iter::once(0)) // list terminator
+        .collect();
+
+    let header_size = std::mem::size_of::<DROPFILES>();
+    let total_size = header_size + wide.len() * std::mem::size_of::<u16>();
+
+    let _lock = CLIPBOARD_LOCK
+        .lock()
+        .map_err(|_| anyhow!("Clipboard lock poisoned"))?;
+
+    unsafe {
+        let hglobal: HGLOBAL = GlobalAlloc(GMEM_MOVEABLE, total_size)
+            .map_err(|e| anyhow!("GlobalAlloc failed: {e}"))?;
+
+        let ptr = GlobalLock(hglobal);
+        if ptr.is_null() {
+            let _ = GlobalFree(hglobal);
+            return Err(anyhow!("GlobalLock failed"));
+        }
+
+        let dropfiles = DROPFILES {
+            pFiles: header_size as u32,
+            pt: POINT { x: 0, y: 0 },
+            fNC: false.into(),
+            fWide: true.into(),
+        };
+        std::ptr::write_unaligned(ptr as *mut DROPFILES, dropfiles);
+        std::ptr::copy_nonoverlapping(
+            wide.as_ptr(),
+            ptr.byte_add(header_size) as *mut u16,
+            wide.len(),
+        );
+        // GlobalUnlock signals "fully unlocked" through an error-shaped return;
+        // the memory is fine, so the result is intentionally ignored
+        let _ = GlobalUnlock(hglobal);
+
+        let mut opened = false;
+        for attempt in 0..CLIPBOARD_MAX_RETRIES {
+            if OpenClipboard(None).is_ok() {
+                opened = true;
+                break;
+            }
+            if attempt < CLIPBOARD_MAX_RETRIES - 1 {
+                thread::sleep(Duration::from_millis(CLIPBOARD_RETRY_DELAY_MS));
+            }
+        }
+        if !opened {
+            let _ = GlobalFree(hglobal);
+            return Err(anyhow!(
+                "Clipboard occupied after {CLIPBOARD_MAX_RETRIES} retries"
+            ));
+        }
+
+        let result = EmptyClipboard()
+            .map_err(|e| anyhow!("EmptyClipboard failed: {e}"))
+            .and_then(|_| {
+                SetClipboardData(CF_HDROP.0 as u32, HANDLE(hglobal.0))
+                    .map_err(|e| anyhow!("SetClipboardData failed: {e}"))
+            });
+        let _ = CloseClipboard();
+
+        match result {
+            // on success the clipboard owns the allocation
+            Ok(_) => Ok(()),
+            Err(e) => {
+                let _ = GlobalFree(hglobal);
+                Err(e)
+            }
+        }
+    }
+}
+
 const WINDOWS_INVALID_CHARS: &[char] = &['<', '>', ':', '"', '/', '\\', '|', '?', '*'];
 const WINDOWS_RESERVED_NAMES: &[&str] = &[
     "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",

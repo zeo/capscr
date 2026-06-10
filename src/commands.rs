@@ -1112,6 +1112,12 @@ pub fn copy_capture_to_clipboard(path: String, state: State<AppState>) -> Result
         .map(|s| s.to_lowercase())
         .unwrap_or_default();
     if ext == "gif" || ext == "mp4" {
+        // copy the file itself so pasting inserts the animation instead of a
+        // path string; fall back to path text if the file copy fails
+        #[cfg(windows)]
+        if crate::clipboard::copy_file_to_clipboard(&canonical).is_ok() {
+            return Ok(());
+        }
         let mut cb = ClipboardManager::new().map_err(|e| e.to_string())?;
         return cb
             .copy_text(&canonical.to_string_lossy())
@@ -1933,10 +1939,23 @@ fn apply_gif_post_action(
 ) {
     match task.post_action {
         TaskPostAction::Clipboard | TaskPostAction::SaveAndClipboard => {
-            // clipboard support for animated gif/mp4 varies wildly across oses/apps
-            // for now: copy the file path text so the user can paste into anything path-aware
-            if let Ok(mut cb) = ClipboardManager::new() {
-                let _ = cb.copy_text(&path.to_string_lossy());
+            // animated gif/mp4 can't go on the clipboard as pixels without
+            // flattening, so copy the saved file itself (CF_HDROP) — pasting
+            // into explorer/discord/slack then inserts the actual file
+            #[cfg(windows)]
+            let copied = match crate::clipboard::copy_file_to_clipboard(path) {
+                Ok(()) => true,
+                Err(e) => {
+                    tracing::warn!("file clipboard copy failed: {e}; falling back to path text");
+                    false
+                }
+            };
+            #[cfg(not(windows))]
+            let copied = false;
+            if !copied {
+                if let Ok(mut cb) = ClipboardManager::new() {
+                    let _ = cb.copy_text(&path.to_string_lossy());
+                }
             }
         }
         TaskPostAction::OpenEditor => {
