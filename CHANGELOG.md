@@ -6,6 +6,12 @@ format follows [keep-a-changelog](https://keepachangelog.com/en/1.1.0/) loosely.
 
 nothing pending. drop ideas in github issues.
 
+## [0.5.32] — 2026-06-10
+
+### performance
+- optimized HDR PNG encoding to utilize uninitialized vectors and fast pointer byte copies, bypassing vector push and copy overhead
+- optimized tonemapping buffer allocations to avoid zero-initializing large vectors, eliminating redundant memory writes
+
 ## [0.5.31] — 2026-06-10
 
 ### performance
