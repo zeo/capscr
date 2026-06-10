@@ -1413,8 +1413,15 @@ pub fn get_editor_image_path(state: State<AppState>) -> Option<String> {
     state.editor_image_path.lock().unwrap().clone()
 }
 
+// async so the webview window is built off the main thread — a sync command
+// runs on the main thread and WebviewWindowBuilder::build deadlocks there on
+// windows, leaving a white window that can't be closed
 #[tauri::command]
-pub fn open_editor(path: String, app: AppHandle, state: State<AppState>) -> Result<(), String> {
+pub async fn open_editor(
+    path: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
     let buf = PathBuf::from(&path);
     let canonical = std::fs::canonicalize(&buf).map_err(|e| e.to_string())?;
     let cfg = state.config.lock().unwrap().clone();
