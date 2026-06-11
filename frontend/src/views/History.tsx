@@ -247,6 +247,12 @@ export function History() {
                   // don't open the editor when the click landed on an
                   // overlay button.
                   if ((ev.target as HTMLElement).closest(".tile-actions")) return;
+                  // recordings can't be edited — clicking them reveals the
+                  // file instead of opening the editor
+                  if (e.is_gif || e.is_mp4) {
+                    void api.openInExplorer(e.path);
+                    return;
+                  }
                   void api.openEditor(e.path);
                 }}
               >
@@ -277,13 +283,15 @@ export function History() {
                   />
                 </Show>
                 <div class="tile-actions">
-                  <button
-                    class="icon-btn"
-                    title="edit"
-                    onClick={() => api.openEditor(e.path)}
-                  >
-                    <Edit3 size={12} stroke-width={1.5} />
-                  </button>
+                  <Show when={!e.is_gif && !e.is_mp4}>
+                    <button
+                      class="icon-btn"
+                      title="edit"
+                      onClick={() => api.openEditor(e.path)}
+                    >
+                      <Edit3 size={12} stroke-width={1.5} />
+                    </button>
+                  </Show>
                   <button
                     class="icon-btn"
                     title="re-upload"

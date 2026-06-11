@@ -1466,6 +1466,14 @@ pub async fn open_editor(
     if !canonical.starts_with(&dir_canonical) {
         return Err("Path is outside the configured output directory".into());
     }
+    let ext = canonical
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|s| s.to_lowercase())
+        .unwrap_or_default();
+    if ext == "gif" || ext == "mp4" {
+        return Err("Recordings can't be edited — the editor would flatten the animation".into());
+    }
     open_editor_window(&app, &canonical.to_string_lossy()).map_err(|e| e.to_string())
 }
 
@@ -2011,7 +2019,15 @@ fn apply_gif_post_action(
             }
         }
         TaskPostAction::OpenEditor => {
-            let _ = open_editor_window(app, &path.to_string_lossy());
+            // recordings can't be annotated without flattening their frames —
+            // reveal the saved file in explorer instead of opening the editor
+            #[cfg(windows)]
+            {
+                let _ = std::process::Command::new("explorer")
+                    .arg("/select,")
+                    .arg(path)
+                    .spawn();
+            }
         }
         TaskPostAction::Upload => {
             let app2 = app.clone();

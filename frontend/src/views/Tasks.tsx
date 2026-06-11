@@ -25,6 +25,16 @@ const POST_ACTIONS: { id: CaptureTask["post_action"]; label: string }[] = [
   { id: "do-nothing", label: "do nothing" },
 ];
 
+const isRecordingMode = (mode: CaptureTask["capture_mode"]) =>
+  mode === "region-gif" || mode === "region-mp4";
+
+// recordings can't be edited (the canvas editor would flatten the animation),
+// so the editor post-action is only offered for still-image modes
+const postActionsFor = (mode: CaptureTask["capture_mode"]) =>
+  isRecordingMode(mode)
+    ? POST_ACTIONS.filter((p) => p.id !== "open-editor")
+    : POST_ACTIONS;
+
 const UPLOAD_TARGETS: NonNullable<CaptureTask["target_destination"]>[] = [
   "imgur",
   "custom",
@@ -268,12 +278,22 @@ export function Tasks() {
                             <div class="field-control">
                               <select
                                 value={task.capture_mode}
-                                onChange={(e) =>
-                                  updateTask(i(), {
-                                    capture_mode: e.currentTarget
-                                      .value as never,
-                                  })
-                                }
+                                onChange={(e) => {
+                                  const mode = e.currentTarget
+                                    .value as CaptureTask["capture_mode"];
+                                  const update: Partial<CaptureTask> = {
+                                    capture_mode: mode,
+                                  };
+                                  // editor post-action doesn't exist for
+                                  // recordings — fall back to save
+                                  if (
+                                    isRecordingMode(mode) &&
+                                    task.post_action === "open-editor"
+                                  ) {
+                                    update.post_action = "save-file";
+                                  }
+                                  updateTask(i(), update);
+                                }}
                               >
                                 <For each={CAPTURE_MODES}>
                                   {(m) => (
@@ -298,7 +318,7 @@ export function Tasks() {
                                   updateTask(i(), update);
                                 }}
                               >
-                                <For each={POST_ACTIONS}>
+                                <For each={postActionsFor(task.capture_mode)}>
                                   {(p) => (
                                     <option value={p.id}>{p.label}</option>
                                   )}
