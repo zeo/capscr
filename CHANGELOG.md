@@ -6,6 +6,13 @@ format follows [keep-a-changelog](https://keepachangelog.com/en/1.1.0/) loosely.
 
 nothing pending. drop ideas in github issues.
 
+## [0.5.35] — 2026-06-11
+
+### fixed
+- resolved GIF and MP4 recordings playing back much faster than real time: frames are now timestamped at capture and encoded with their true durations (per-frame GIF delays; held frames in MP4), so duplicate-frame skipping and slow captures no longer compress the timeline
+- resolved the flashing red recording border faintly bleeding into captured frames: the border stroke is now clipped to the outside of the recorded region
+- resolved "captures folder unreachable" for output directories on secondary drives: any writable local folder is accepted now instead of only home/pictures/temp
+
 ## [0.5.34] — 2026-06-11
 
 ### fixed
