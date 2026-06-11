@@ -6,6 +6,14 @@ format follows [keep-a-changelog](https://keepachangelog.com/en/1.1.0/) loosely.
 
 nothing pending. drop ideas in github issues.
 
+## [0.5.34] — 2026-06-11
+
+### fixed
+- resolved the editor window opening as a blank white page with no way to close it: dynamically created webviews could land on about:blank instead of the app url; the editor now detects this and re-navigates until the page boots
+
+### changed
+- editing is disabled for GIF/MP4 recordings across the app: the history edit button is hidden for recordings, clicking a recording tile reveals the file in explorer instead, recording tasks no longer offer the "open in editor" post-action, and existing tasks configured that way reveal the saved file instead
+
 ## [0.5.33] — 2026-06-10
 
 ### added
