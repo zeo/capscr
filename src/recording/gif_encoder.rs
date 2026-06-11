@@ -63,6 +63,36 @@ struct CapturedFrame {
     image: RgbaImage,
     #[allow(dead_code)]
     fingerprint: u64,
+    // capture time relative to recording start; encoding uses the real gaps
+    // between frames so dedup-skipped and slow captures don't speed playback
+    at: Duration,
+}
+
+// display duration of each frame: frame i is on screen until frame i+1 was
+// captured; the last frame holds for one nominal interval
+fn frame_durations(times: &[Duration], nominal: Duration) -> Vec<Duration> {
+    times
+        .iter()
+        .enumerate()
+        .map(|(i, t)| match times.get(i + 1) {
+            Some(next) => next.saturating_sub(*t),
+            None => nominal,
+        })
+        .collect()
+}
+
+// gif delays count in hundredths of a second; players treat <2cs as a slow
+// 10cs default, so floor there. Cap a single frame's hold at 60s so one bad
+// gap can't freeze the loop
+fn gif_delay_cs(d: Duration) -> u16 {
+    (d.as_millis() / 10).clamp(2, 6000) as u16
+}
+
+// ffmpeg consumes rawvideo at a constant input rate; holding a frame for
+// round(duration * fps) ticks preserves wall-clock timing through dedup
+fn mp4_frame_repeats(d: Duration, fps: u32) -> u64 {
+    let capped = d.min(Duration::from_secs(60));
+    ((capped.as_secs_f64() * fps as f64).round() as u64).max(1)
 }
 
 fn compute_frame_fingerprint(image: &RgbaImage) -> u64 {
@@ -272,7 +302,11 @@ impl GifRecorder {
                                 break;
                             }
                             total_memory = total_memory.saturating_add(frame_size);
-                            frames_lock.push(CapturedFrame { image, fingerprint });
+                            frames_lock.push(CapturedFrame {
+                                image,
+                                fingerprint,
+                                at: frame_start.duration_since(start_time),
+                            });
                         }
                     }
                 }
@@ -344,7 +378,9 @@ impl GifRecorder {
         }
 
         let fps = self.settings.fps.clamp(1, 60);
-        let delay = (100.0 / fps as f64).clamp(2.0, 100.0) as u16;
+        let nominal = Duration::from_secs_f64(1.0 / fps as f64);
+        let times: Vec<Duration> = frames.iter().map(|f| f.at).collect();
+        let durations = frame_durations(&times, nominal);
 
         let filter = if self.settings.quality >= 80 {
             image::imageops::FilterType::Lanczos3
@@ -398,7 +434,7 @@ impl GifRecorder {
             let mut encoder = Encoder::new(file, width, height, &global_palette)?;
             encoder.set_repeat(Repeat::Infinite)?;
 
-            for captured in frames.iter() {
+            for (frame_idx, captured) in frames.iter().enumerate() {
                 let resized = if captured.image.width() != orig_width
                     || captured.image.height() != orig_height
                 {
@@ -439,7 +475,7 @@ impl GifRecorder {
                 let frame = Frame {
                     width,
                     height,
-                    delay,
+                    delay: gif_delay_cs(durations[frame_idx]),
                     buffer: std::borrow::Cow::Owned(indexed_pixels),
                     ..Default::default()
                 };
@@ -491,6 +527,9 @@ impl GifRecorder {
         }
 
         let fps = self.settings.fps.clamp(1, 60);
+        let nominal = Duration::from_secs_f64(1.0 / fps as f64);
+        let times: Vec<Duration> = frames.iter().map(|f| f.at).collect();
+        let durations = frame_durations(&times, nominal);
         let filter = if self.settings.quality >= 80 {
             image::imageops::FilterType::Lanczos3
         } else if self.settings.quality >= 50 {
@@ -534,7 +573,7 @@ impl GifRecorder {
                 .take()
                 .ok_or_else(|| anyhow!("Failed to open ffmpeg stdin"))?;
 
-            for captured in frames.iter() {
+            for (frame_idx, captured) in frames.iter().enumerate() {
                 let resized = if captured.image.width() != orig_width
                     || captured.image.height() != orig_height
                 {
@@ -544,9 +583,14 @@ impl GifRecorder {
                 };
 
                 let rgba_data = resized.as_raw();
-                stdin
-                    .write_all(rgba_data)
-                    .map_err(|e| anyhow!("Failed to write to ffmpeg stdin: {}", e))?;
+                // the rawvideo input is constant-rate: repeat each frame to
+                // cover its real on-screen duration, otherwise dedup-skipped
+                // and slow captures compress time and the video plays sped up
+                for _ in 0..mp4_frame_repeats(durations[frame_idx], fps) {
+                    stdin
+                        .write_all(rgba_data)
+                        .map_err(|e| anyhow!("Failed to write to ffmpeg stdin: {}", e))?;
+                }
             }
         } // stdin is closed here, signaling eof to ffmpeg
 
@@ -623,6 +667,37 @@ impl Default for GifRecorder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn frame_durations_use_real_gaps() {
+        let times = vec![
+            Duration::from_millis(0),
+            Duration::from_millis(100),
+            Duration::from_millis(600),
+        ];
+        let nominal = Duration::from_millis(66);
+        let durations = frame_durations(&times, nominal);
+        assert_eq!(durations[0], Duration::from_millis(100));
+        assert_eq!(durations[1], Duration::from_millis(500));
+        assert_eq!(durations[2], nominal);
+    }
+
+    #[test]
+    fn gif_delay_floors_and_caps() {
+        assert_eq!(gif_delay_cs(Duration::from_millis(5)), 2);
+        assert_eq!(gif_delay_cs(Duration::from_millis(500)), 50);
+        assert_eq!(gif_delay_cs(Duration::from_secs(120)), 6000);
+    }
+
+    #[test]
+    fn mp4_repeats_preserve_wall_clock() {
+        // a 500ms gap at 15fps must hold the frame ~7-8 ticks, not 1
+        assert_eq!(mp4_frame_repeats(Duration::from_millis(500), 15), 8);
+        // fast frames still emit at least one tick
+        assert_eq!(mp4_frame_repeats(Duration::from_millis(1), 15), 1);
+        // a 10s static span keeps its duration
+        assert_eq!(mp4_frame_repeats(Duration::from_secs(10), 15), 150);
+    }
 
     #[test]
     fn test_find_best_monitor_overlap() {
