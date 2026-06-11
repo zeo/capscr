@@ -1104,51 +1104,13 @@ impl Config {
         }
 
         fs::create_dir_all(dir)?;
-        let canonical = fs::canonicalize(dir)?;
 
-        let home = directories::BaseDirs::new().map(|b| b.home_dir().to_path_buf());
-        let pictures =
-            directories::UserDirs::new().and_then(|d| d.picture_dir().map(|p| p.to_path_buf()));
-
-        let mut allowed = false;
-
-        if let Some(home_dir) = &home {
-            if let Ok(canonical_home) = fs::canonicalize(home_dir) {
-                if canonical.starts_with(&canonical_home) {
-                    allowed = true;
-                }
-            }
-        }
-
-        if let Some(pictures_dir) = &pictures {
-            if let Ok(canonical_pictures) = fs::canonicalize(pictures_dir) {
-                if canonical.starts_with(&canonical_pictures) {
-                    allowed = true;
-                }
-            }
-        }
-
-        #[cfg(unix)]
-        if canonical.starts_with("/tmp") || canonical.starts_with("/var/tmp") {
-            allowed = true;
-        }
-
-        #[cfg(windows)]
-        {
-            let canonical_str = canonical.to_string_lossy().to_lowercase();
-            if canonical_str.contains("\\temp\\") || canonical_str.contains("\\tmp\\") {
-                allowed = true;
-            }
-            if canonical_str.starts_with("c:\\users\\") {
-                allowed = true;
-            }
-        }
-
-        if !allowed {
-            return Err(anyhow!(
-                "Output directory must be within user home, pictures, or temp directory"
-            ));
-        }
+        // any local directory the user can actually write to is a valid
+        // output dir — people keep captures on secondary drives. Probe
+        // writability directly instead of whitelisting home/pictures/temp.
+        let probe = dir.join(".capscr-write-probe");
+        fs::write(&probe, b"").map_err(|e| anyhow!("Output directory is not writable: {e}"))?;
+        let _ = fs::remove_file(&probe);
 
         Ok(())
     }
