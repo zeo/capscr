@@ -1,9 +1,10 @@
 #!/usr/bin/env node
-// Regenerate platform icons + installer artwork from icon-master.png if it
-// exists, otherwise fall back to icons/icon.png. Runs before dev/build.
+// build the frontend before dev/build, and (opt-in) regenerate platform icons
+// from icon-master.png. icon regen is gated behind CAPSCR_REGEN_ICONS=1 so a
+// normal build never clobbers the committed, max-compat icons
 
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, statSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -22,19 +23,20 @@ const ico = resolve(root, "icons", "icon.ico");
 
 
 // source = master if present (preferred — kept high-res for sharp downscale),
-// otherwise fall back to icons/icon.png (which `cargo tauri icon` overwrites
-// at 512px, so it loses fidelity over time).
+// otherwise fall back to icons/icon.png
 const source = existsSync(master) ? master : iconPng;
 
-if (!existsSync(source)) {
-  console.error(`icon source not found: ${source}`);
-  process.exit(1);
-}
+// regeneration is opt-in: `cargo tauri icon` overwrites icon.png at 512px and
+// emits an all-png icon.ico that windows fails to render at small sizes, so a
+// normal build keeps the committed icons untouched
+const regenRequested =
+  process.env.CAPSCR_REGEN_ICONS === "1" || process.argv.includes("--regen-icons");
 
-const sourceMtime = statSync(source).mtimeMs;
-const needs = (target) => !existsSync(target) || sourceMtime > statSync(target).mtimeMs;
-
-if (needs(ico)) {
+if (!existsSync(ico) || regenRequested) {
+  if (!existsSync(source)) {
+    console.error(`icon source not found: ${source}`);
+    process.exit(1);
+  }
   console.log(`[capscr] regenerating platform icons from ${source}`);
   mkdirSync(resolve(root, "icons"), { recursive: true });
   // prefer the npm-global `tauri` binary (what tauri-action installs in CI);
@@ -66,7 +68,9 @@ if (needs(ico)) {
     process.exit(lastStatus);
   }
 } else {
-  console.log("[capscr] icons up-to-date, skipping regen");
+  console.log(
+    "[capscr] using committed icons; set CAPSCR_REGEN_ICONS=1 to rebuild from icon-master.png",
+  );
 }
 
 
