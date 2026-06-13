@@ -14,7 +14,7 @@ mod tonemapping;
 mod wgc;
 mod window;
 
-pub use cursor::composite_system_cursor;
+pub use cursor::{capture_cursor_shot, composite_cursor_shot, composite_system_cursor};
 #[cfg(windows)]
 pub use d2d_tonemap::capture_hdr_to_sdr_sweep;
 #[cfg(windows)]

@@ -337,6 +337,15 @@ fn run_capture_pipeline_inner(
         None
     };
 
+    // snapshot the cursor at the freeze-frame instant for selector-backed modes
+    // so the composite step paints it where it was when the screen froze instead
+    // of wherever the mouse ended up after the region drag
+    let frozen_cursor = if frozen_frame.is_some() {
+        crate::capture::capture_cursor_shot()
+    } else {
+        None
+    };
+
     let selection = match mode {
         CaptureModeArg::Region | CaptureModeArg::Window | CaptureModeArg::Fullscreen => {
             UnifiedSelector::select(frozen_frame.clone())
@@ -505,7 +514,16 @@ fn run_capture_pipeline_inner(
         let show = state.config.lock().unwrap().capture.show_cursor;
         if show {
             if let Some(origin) = screen_origin {
-                crate::capture::composite_system_cursor(&mut image, origin);
+                match &frozen_cursor {
+                    // selector-backed capture: paint the cursor as it was when the
+                    // frame froze, so it only appears if it sat inside the selected
+                    // area and never lands on the drag-release corner
+                    Some(shot) => {
+                        crate::capture::composite_cursor_shot(&mut image, shot, origin);
+                    }
+                    // instant capture has no overlay, so the live cursor is correct
+                    None => crate::capture::composite_system_cursor(&mut image, origin),
+                }
             }
         }
     }
@@ -1856,6 +1874,7 @@ fn start_gif_recording(
         fps: cfg.capture.gif_fps,
         max_duration: Duration::from_secs(cfg.capture.gif_max_duration_secs as u64),
         quality: cfg.output.quality,
+        show_cursor: cfg.capture.show_cursor,
     };
 
     let mut recorder = GifRecorder::new(settings).with_region(region);

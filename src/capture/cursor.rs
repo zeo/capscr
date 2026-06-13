@@ -1,32 +1,68 @@
-// cursor overlay — fetches the current system cursor from Win32 and alpha-
-// composites it onto a captured RgbaImage at the right screen-relative
-// position. Used by run_capture_pipeline when `config.capture.show_cursor`
-// is enabled. Linux falls back to a no-op.
+// captures the system cursor from Win32 and alpha-composites it onto a
+// captured RgbaImage at the right screen-relative position. used by the
+// capture pipeline when config.capture.show_cursor is enabled, for both still
+// captures and recordings. non-windows falls back to a no-op
 
 use image::RgbaImage;
 
-/// composite the system cursor onto `image` at its screen-relative position.
-/// `screen_origin` is the (x, y) of the image's top-left pixel in virtual
-/// desktop coordinates. Quietly no-ops if the cursor isn't showing, the
-/// cursor handle is unresolvable, or any Win32 call fails — we never want
-/// cursor compositing to take down a capture.
-pub fn composite_system_cursor(image: &mut RgbaImage, screen_origin: (i32, i32)) {
-    #[cfg(windows)]
-    {
-        if let Some((cursor_img, screen_x, screen_y)) = windows_impl::fetch_cursor() {
-            let rel_x = screen_x - screen_origin.0;
-            let rel_y = screen_y - screen_origin.1;
-            composite_at(image, &cursor_img, rel_x, rel_y);
-        }
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = (image, screen_origin);
+// a snapshot of the system cursor: its bitmap plus the screen-space position
+// of its top-left pixel, with the hotspot already subtracted. taken once at
+// capture time so a still capture composites the cursor where it was when the
+// frame was frozen rather than where the mouse drifted during region selection
+pub struct CursorShot {
+    image: RgbaImage,
+    screen_x: i32,
+    screen_y: i32,
+}
+
+impl CursorShot {
+    pub fn screen_pos(&self) -> (i32, i32) {
+        (self.screen_x, self.screen_y)
     }
 }
 
-#[cfg(windows)]
-fn composite_at(dst: &mut RgbaImage, src: &RgbaImage, x: i32, y: i32) {
+// snapshot the current system cursor. returns None if the cursor is hidden,
+// unresolvable, or any Win32 call fails — cursor capture must never take down a
+// screen capture. always None off windows
+pub fn capture_cursor_shot() -> Option<CursorShot> {
+    #[cfg(windows)]
+    {
+        let (image, screen_x, screen_y) = windows_impl::fetch_cursor()?;
+        Some(CursorShot {
+            image,
+            screen_x,
+            screen_y,
+        })
+    }
+    #[cfg(not(windows))]
+    {
+        None
+    }
+}
+
+// composite a previously captured cursor onto `image`. `screen_origin` is the
+// (x, y) of the image's top-left pixel in virtual desktop coordinates. returns
+// true when any cursor pixel falls inside the image bounds
+pub fn composite_cursor_shot(
+    image: &mut RgbaImage,
+    shot: &CursorShot,
+    screen_origin: (i32, i32),
+) -> bool {
+    let rel_x = shot.screen_x - screen_origin.0;
+    let rel_y = shot.screen_y - screen_origin.1;
+    composite_at(image, &shot.image, rel_x, rel_y)
+}
+
+// composite the live system cursor onto `image` at its screen-relative
+// position. used by instant captures with no selection overlay, where the
+// cursor has not moved since the trigger. quietly no-ops if it can't be grabbed
+pub fn composite_system_cursor(image: &mut RgbaImage, screen_origin: (i32, i32)) {
+    if let Some(shot) = capture_cursor_shot() {
+        composite_cursor_shot(image, &shot, screen_origin);
+    }
+}
+
+fn composite_at(dst: &mut RgbaImage, src: &RgbaImage, x: i32, y: i32) -> bool {
     let dst_w = dst.width() as i32;
     let dst_h = dst.height() as i32;
     let src_w = src.width() as i32;
@@ -37,7 +73,7 @@ fn composite_at(dst: &mut RgbaImage, src: &RgbaImage, x: i32, y: i32) {
     let x1 = (x + src_w).min(dst_w);
     let y1 = (y + src_h).min(dst_h);
     if x0 >= x1 || y0 >= y1 {
-        return;
+        return false;
     }
     for dy in y0..y1 {
         for dx in x0..x1 {
@@ -61,6 +97,7 @@ fn composite_at(dst: &mut RgbaImage, src: &RgbaImage, x: i32, y: i32) {
             dst.put_pixel(dx as u32, dy as u32, image::Rgba([r, g, b, a]));
         }
     }
+    true
 }
 
 #[cfg(windows)]

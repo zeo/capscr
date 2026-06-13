@@ -282,6 +282,7 @@ function CapturePane(props: { c: AppConfig; patch: Patch }) {
                 {c().capture.show_cursor ? "captured" : "hidden"}
               </span>
             </label>
+            <span class="field-hint">applies to screenshots and recordings</span>
           </div>
         </div>
       </Section>

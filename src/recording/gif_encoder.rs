@@ -176,6 +176,7 @@ impl GifRecorder {
         let max_duration = self.settings.max_duration;
         let region = self.region;
         let best_monitor = region.and_then(find_best_monitor);
+        let show_cursor = self.settings.show_cursor;
 
         thread::spawn(move || {
             #[cfg(windows)]
@@ -273,9 +274,30 @@ impl GifRecorder {
                     })
                 };
 
-                if let Ok(image) = capture_result {
+                if let Ok(mut image) = capture_result {
                     if image.width() <= MAX_GIF_DIMENSION && image.height() <= MAX_GIF_DIMENSION {
-                        let fingerprint = compute_frame_fingerprint(&image);
+                        // grab the cursor once so the same snapshot drives both the
+                        // dedup fingerprint and the composite below
+                        let cursor_shot = if show_cursor && region.is_some() {
+                            crate::capture::capture_cursor_shot()
+                        } else {
+                            None
+                        };
+
+                        let mut fingerprint = compute_frame_fingerprint(&image);
+                        if let (Some(shot), Some(rect)) = (&cursor_shot, region) {
+                            let (cx, cy) = shot.screen_pos();
+                            // only perturb the fingerprint while the cursor is inside the
+                            // region: movement within it yields new frames, while a cursor
+                            // moving outside the capture must not defeat dedup
+                            if cx >= rect.x
+                                && cy >= rect.y
+                                && cx < rect.x.saturating_add(rect.width as i32)
+                                && cy < rect.y.saturating_add(rect.height as i32)
+                            {
+                                fingerprint ^= ((cx as u32 as u64) << 32) | (cy as u32 as u64);
+                            }
+                        }
 
                         if fingerprint == last_fingerprint {
                             consecutive_dupes += 1;
@@ -289,6 +311,15 @@ impl GifRecorder {
                         }
                         consecutive_dupes = 0;
                         last_fingerprint = fingerprint;
+
+                        // paint the cursor only onto frames we actually keep
+                        if let (Some(shot), Some(rect)) = (&cursor_shot, region) {
+                            crate::capture::composite_cursor_shot(
+                                &mut image,
+                                shot,
+                                (rect.x, rect.y),
+                            );
+                        }
 
                         let frame_size = (image.width() as usize)
                             .saturating_mul(image.height() as usize)
