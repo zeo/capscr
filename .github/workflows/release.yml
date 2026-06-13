@@ -8,6 +8,9 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  # bypass the runner's machine-level sccache wrapper, whose server drops
+  # connections mid-build; Swatinem/rust-cache still caches deps between runs
+  RUSTC_WRAPPER: ""
 
 jobs:
   build-windows:
