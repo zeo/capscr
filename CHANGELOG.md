@@ -6,6 +6,11 @@ format follows [keep-a-changelog](https://keepachangelog.com/en/1.1.0/) loosely.
 
 nothing pending. drop ideas in github issues.
 
+## [0.5.37] — 2026-06-13
+
+### fixed
+- resolved capscr showing a generic icon in Windows Explorer and the taskbar: the embedded icon now carries BMP-format entries for the small sizes (16–128px) that Windows renders for executables, instead of PNG-only entries it could not decode at those sizes
+
 ## [0.5.36] — 2026-06-13
 
 ### added
