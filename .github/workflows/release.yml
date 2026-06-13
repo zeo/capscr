@@ -18,6 +18,32 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Extract changelog for tag
+        id: changelog
+        shell: powershell
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          $version = $env:TAG_NAME -replace '^v', ''
+          $pattern = '^##\s+\[' + [regex]::Escape($version) + '\]'
+          $lines = Get-Content -LiteralPath 'CHANGELOG.md'
+          $start = -1
+          for ($i = 0; $i -lt $lines.Count; $i++) {
+            if ($lines[$i] -match $pattern) { $start = $i; break }
+          }
+          $collected = New-Object System.Collections.Generic.List[string]
+          if ($start -ge 0) {
+            for ($j = $start + 1; $j -lt $lines.Count; $j++) {
+              if ($lines[$j] -match '^##\s+\[') { break }
+              $collected.Add($lines[$j])
+            }
+          }
+          $body = ($collected -join "`n").Trim()
+          if ([string]::IsNullOrWhiteSpace($body)) { $body = "capscr $version" }
+          $delim = 'CHANGELOG_EOF_' + [System.Guid]::NewGuid().ToString('N')
+          $payload = "notes<<$delim`n$body`n$delim`n"
+          [System.IO.File]::AppendAllText($env:GITHUB_OUTPUT, $payload, (New-Object System.Text.UTF8Encoding $false))
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
@@ -42,6 +68,7 @@ jobs:
         with:
           tagName: ${{ github.ref_name }}
           releaseName: 'capscr ${{ github.ref_name }}'
+          releaseBody: ${{ steps.changelog.outputs.notes }}
           releaseDraft: false
           prerelease: false
           includeUpdaterJson: true
