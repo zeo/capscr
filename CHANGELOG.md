@@ -6,6 +6,14 @@ format follows [keep-a-changelog](https://keepachangelog.com/en/1.1.0/) loosely.
 
 nothing pending. drop ideas in github issues.
 
+## [0.5.36] — 2026-06-13
+
+### added
+- the mouse cursor is now drawn into GIF and MP4 recordings when "show cursor" is enabled, so the pointer is visible and follows the mouse through the clip; the toggle now applies to both screenshots and recordings
+
+### fixed
+- resolved the cursor being stamped into the corner of region and window screenshots: it is now captured at the instant the screen freezes and only appears if it was inside the selected area, instead of landing wherever the mouse came to rest after the drag
+
 ## [0.5.35] — 2026-06-11
 
 ### fixed
