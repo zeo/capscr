@@ -11,11 +11,15 @@ Fast HDR-aware Windows screen capture — tray-first, signed updates, no telemet
 
 HDR captures via Windows.Graphics.Capture FP16, ICtCp luminance-only tonemap (per-frame MaxCLL via P99), SDR PNG output. Per-monitor SDR-white detection.
 
-Per-hotkey task model. Each hotkey binds a capture mode plus a post-action (save, clipboard, GIF, upload). No central default — every hotkey is its own task. Default bindings: `PrintScreen` for region → save + clipboard, `Ctrl+Shift+G` for region GIF → save.
+Per-hotkey task model. Each hotkey binds a capture mode (region, window, fullscreen, active monitor, region GIF, region MP4) plus a post-action (save, clipboard, open in editor, upload). No central default — every hotkey is its own task. Default tasks: region → save + clipboard (unbound out of the box; a first-launch prompt asks you to pick a key), `Ctrl+Shift+G` for region GIF → save, `Ctrl+Shift+V` for region MP4 → save.
 
 Selection overlay: drag for region, click for window, Enter for fullscreen, `Alt+click` for color picker (pixel `#RRGGBB` copied to clipboard). Live `WxH @ X,Y` readout, 8× magnifier loupe, window-snap highlight.
 
-Uploads: Imgur (anonymous), custom HTTPS POST, FTP. HTTP and FTP both go through SSRF protection (DNS double-resolve, private-IP / cloud-metadata rejection).
+Recording: region GIF and H.264 MP4 (MP4 via ffmpeg, auto-downloaded on first use) with a live timer + stop control drawn outside the captured area and frames timed to real wall-clock playback. The mouse cursor is composited into recordings and screenshots when **show cursor** is enabled.
+
+In-app editor: arrows, text, blur, step numbers, and crop, reached via the "open in editor" post-action.
+
+Uploads: Imgur (anonymous), custom HTTPS POST, FTP, and SFTP. HTTP and FTP go through SSRF protection (DNS double-resolve, private-IP / cloud-metadata rejection); stored FTP/SFTP passwords are kept as per-user DPAPI blobs, not cleartext.
 
 Tray-only at idle (~14 MB working set). The hub window allocates a webview only when opened.
 
@@ -42,8 +46,9 @@ Configurable in **hub → Tasks**.
 
 | hotkey | action |
 |---|---|
-| `PrintScreen` | region capture → save + clipboard |
+| _(unbound — set on first launch or in **hub → Tasks**)_ | region capture → save + clipboard |
 | `Ctrl+Shift+G` | region GIF → save to file |
+| `Ctrl+Shift+V` | region MP4 (H.264) → save to file |
 
 Hold `Alt` while the selection overlay is up and click any pixel to copy its `#RRGGBB` to clipboard.
 
@@ -58,7 +63,7 @@ user_brightness_scale = 1.0  # global pre-tonemap exposure multiplier
 use_p99_max_cll = true       # ignore extreme outliers when picking source peak
 
 [upload]
-destination = "Imgur"        # or "Custom" / "Ftp"
+destination = "Imgur"        # or "Custom" / "Ftp" / "Sftp"
 copy_url_to_clipboard = true
 
 [upload.ftp]
@@ -66,6 +71,14 @@ host = "files.example.com"
 port = 21
 username = "user"
 password = "secret"           # migrated to a per-user DPAPI blob on first save
+remote_dir = "/screenshots"
+public_url_template = "https://files.example.com/{filename}"
+
+[upload.sftp]
+host = "files.example.com"
+port = 22
+username = "user"
+password = "secret"           # or set private_key_path; migrated to a per-user DPAPI blob on first save
 remote_dir = "/screenshots"
 public_url_template = "https://files.example.com/{filename}"
 ```
@@ -94,13 +107,11 @@ Status: the plugin runtime (event hooks, WASM host) ships in v0.4. WASM plugins 
 
 ## roadmap
 
-Work that did not make 0.3.1:
+Most of the original roadmap has shipped: the in-app editor, the WASM plugin host + marketplace, HDR-preserved PNG (PQ cICP and HLG), the SFTP destination, and DPAPI-encrypted upload credentials.
 
-- in-app canvas editor (arrows, text, blur, step numbers, crop) — shipped 0.3.10+
-- WASM plugin host with manifest-declared permissions + marketplace fed by github.com/lintowe/capscr-plugins — marketplace client shipped 0.3.29, runtime host shipped 0.4.0 (capability-gated clipboard/notify/fetch host imports)
-- HDR-preserved output (JPEG-XL, AVIF with PQ, PNG+cICP) — PNG+cICP shipped 0.3.28 for HDR10 source, HLG shipped 0.3.52; scRGB and JXL/AVIF deferred
-- SFTP destination — shipped behind the default-on `sftp` feature (pure-rust russh)
-- DPAPI / Windows credential vault for stored FTP/SFTP passwords — shipped; config stores a per-user `CryptProtectData` blob, not cleartext
+Still deferred:
+
+- HDR-preserved output in more formats — scRGB, plus JPEG-XL and AVIF with PQ (PNG+cICP and HLG already ship)
 
 ## credits
 
