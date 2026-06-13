@@ -4,7 +4,7 @@ Fast HDR-aware Windows screen capture — tray-first, signed updates, no telemet
 
 - homepage: [rot.lt/work/capscr](https://rot.lt/work/capscr)
 - plugins: [rot.lt/work/capscr/plugins](https://rot.lt/work/capscr/plugins) — publishing contract in [`docs/marketplace.md`](docs/marketplace.md), registry at [`lintowe/capscr-plugins`](https://github.com/lintowe/capscr-plugins)
-- downloads: [GitHub Releases](https://github.com/lintowe/capscr/releases) (MSI + NSIS, signed updater)
+- downloads: [GitHub Releases](https://github.com/lintowe/capscr/releases) (signed MSI + auto-updater)
 - license: MIT
 
 ## features
@@ -33,9 +33,8 @@ Download from the [releases page](https://github.com/lintowe/capscr/releases/lat
 
 | file | use |
 |---|---|
-| `capscr_x.x.x_x64-setup.exe` | NSIS installer (recommended) |
 | `capscr_x.x.x_x64_en-US.msi` | MSI installer |
-| `*.sig` | updater signatures — keep alongside the installer if running the updater manually |
+| `capscr_x.x.x_x64_en-US.msi.sig` | updater signature — keep alongside the MSI if running the updater manually |
 | `latest.json` | auto-updater manifest, not for manual install |
 
 Windows 10 1903+ required. HDR capture goes through Windows.Graphics.Capture FP16, which is Windows-only — no macOS or Linux builds exist. The Cargo target hooks for those platforms are vestigial scaffolding from earlier prototyping.
