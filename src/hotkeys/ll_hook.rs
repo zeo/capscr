@@ -16,9 +16,9 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
 use std::sync::{Mutex, OnceLock};
 use windows::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::{
-    CallNextHookEx, DispatchMessageW, GetMessageW, SetWindowsHookExW, TranslateMessage,
-    UnhookWindowsHookEx, HHOOK, KBDLLHOOKSTRUCT, MSG, MSLLHOOKSTRUCT, WH_KEYBOARD_LL, WH_MOUSE_LL,
-    WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP,
+    CallNextHookEx, DispatchMessageW, GetMessageW, PostThreadMessageW, SetWindowsHookExW,
+    TranslateMessage, UnhookWindowsHookEx, HHOOK, KBDLLHOOKSTRUCT, MSG, MSLLHOOKSTRUCT,
+    WH_KEYBOARD_LL, WH_MOUSE_LL, WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP,
 };
 
 pub const MOD_CTRL: u8 = 1;
@@ -49,10 +49,13 @@ static LAST_CAPTURED_XBUTTON: AtomicU8 = AtomicU8::new(0);
 
 pub fn begin_capture() {
     CAPTURE_REQUEST.store(true, Ordering::SeqCst);
+    // capture needs the keyboard (and mouse) hook live even if nothing is bound
+    notify_hook_thread();
 }
 
 pub fn cancel_capture() {
     CAPTURE_REQUEST.store(false, Ordering::SeqCst);
+    notify_hook_thread();
 }
 
 pub fn is_capturing() -> bool {
@@ -79,6 +82,31 @@ fn registry() -> &'static Mutex<HookRegistry> {
 
 pub fn init(tx: Sender<HookEvent>) {
     registry().lock().unwrap().tx = Some(tx);
+}
+
+// thread id of the hook thread. used to wake it (PostThreadMessageW) whenever
+// the desired hook set changes, so it installs/uninstalls on its own thread —
+// UnhookWindowsHookEx / SetWindowsHookExW must run on the owning thread
+static HOOK_THREAD_ID: AtomicU32 = AtomicU32::new(0);
+// thread message asking the hook thread to re-evaluate which hooks to install
+const WM_REAPPLY: u32 = 0x8000 + 1; // WM_APP + 1
+
+fn notify_hook_thread() {
+    let tid = HOOK_THREAD_ID.load(Ordering::SeqCst);
+    if tid != 0 {
+        unsafe {
+            let _ = PostThreadMessageW(tid, WM_REAPPLY, WPARAM(0), LPARAM(0));
+        }
+    }
+}
+
+fn has_keyboard_binding(reg: &HookRegistry) -> bool {
+    // xbutton1 / xbutton2 are mouse side buttons; everything else is keyboard
+    reg.bindings.keys().any(|b| b.vk != 0x05 && b.vk != 0x06)
+}
+
+fn has_mouse_binding(reg: &HookRegistry) -> bool {
+    reg.bindings.keys().any(|b| b.vk == 0x05 || b.vk == 0x06)
 }
 
 // telemetry — every counter incremented from the hook callback or from the
@@ -128,10 +156,12 @@ pub fn snapshot_telemetry() -> HookTelemetry {
 
 pub fn set_bindings(bindings: HashMap<HookBinding, String>) {
     registry().lock().unwrap().bindings = bindings;
+    notify_hook_thread();
 }
 
 pub fn set_enabled(enabled: bool) {
     registry().lock().unwrap().enabled = enabled;
+    notify_hook_thread();
 }
 
 pub fn current_enabled() -> bool {
@@ -357,6 +387,53 @@ fn modifier_bit(vk: u32) -> Option<u8> {
     }
 }
 
+// install or remove the keyboard and mouse hooks to match the desired set.
+// only ever runs on the hook thread — SetWindowsHookExW / UnhookWindowsHookEx
+// must be called from the thread that owns the hook. idempotent: re-reads the
+// registry on every call and only acts on the delta, so capscr keeps no
+// system-wide input hook it doesn't currently need
+#[cfg(windows)]
+unsafe fn reapply_hooks(
+    kbd: &mut Option<HHOOK>,
+    mouse: &mut Option<HHOOK>,
+    hinstance: windows::Win32::Foundation::HINSTANCE,
+) {
+    let (kbd_wanted, mouse_wanted) = {
+        let capturing = CAPTURE_REQUEST.load(Ordering::SeqCst);
+        match registry().lock() {
+            Ok(reg) => (
+                capturing || (reg.enabled && has_keyboard_binding(&reg)),
+                capturing || (reg.enabled && has_mouse_binding(&reg)),
+            ),
+            Err(_) => return,
+        }
+    };
+
+    if kbd_wanted && kbd.is_none() {
+        match SetWindowsHookExW(WH_KEYBOARD_LL, Some(hook_proc), hinstance, 0) {
+            Ok(h) => *kbd = Some(h),
+            Err(e) => tracing::error!("SetWindowsHookExW(WH_KEYBOARD_LL) failed: {e}"),
+        }
+    } else if !kbd_wanted {
+        if let Some(h) = kbd.take() {
+            let _ = UnhookWindowsHookEx(h);
+        }
+    }
+
+    if mouse_wanted && mouse.is_none() {
+        match SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_hook_proc), hinstance, 0) {
+            Ok(h) => *mouse = Some(h),
+            Err(e) => tracing::warn!("SetWindowsHookExW(WH_MOUSE_LL) failed: {e}"),
+        }
+    } else if !mouse_wanted {
+        if let Some(h) = mouse.take() {
+            let _ = UnhookWindowsHookEx(h);
+        }
+    }
+
+    HOOK_INSTALLED.store(kbd.is_some(), Ordering::SeqCst);
+}
+
 pub fn spawn_hook_thread() -> std::io::Result<()> {
     std::thread::Builder::new()
         .name("capscr-llkeyboard".into())
@@ -378,39 +455,44 @@ pub fn spawn_hook_thread() -> std::io::Result<()> {
 
             use windows::core::PCWSTR;
             use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+            use windows::Win32::System::Threading::GetCurrentThreadId;
             let hinstance = GetModuleHandleW(PCWSTR::null())
                 .map(|h| windows::Win32::Foundation::HINSTANCE(h.0))
                 .unwrap_or_default();
 
-            let hook: HHOOK = match SetWindowsHookExW(WH_KEYBOARD_LL, Some(hook_proc), hinstance, 0) {
-                Ok(h) => h,
-                Err(e) => {
-                    tracing::error!("SetWindowsHookExW(WH_KEYBOARD_LL) failed: {e}");
-                    HOOK_INSTALLED.store(false, Ordering::SeqCst);
-                    return;
-                }
-            };
+            // publish our thread id so set_bindings / set_enabled / capture can
+            // wake us (WM_REAPPLY) to re-evaluate which hooks should be live
+            HOOK_THREAD_ID.store(GetCurrentThreadId(), Ordering::SeqCst);
 
-            // install mouse hook for mouse side button keybinds
-            let mouse_hook: Option<HHOOK> = SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_hook_proc), hinstance, 0).ok();
-            if mouse_hook.is_none() {
-                tracing::warn!("SetWindowsHookExW(WH_MOUSE_LL) failed - mouse side keybinds will be unavailable in background");
-            }
+            let mut kbd_hook: Option<HHOOK> = None;
+            let mut mouse_hook: Option<HHOOK> = None;
+            reapply_hooks(&mut kbd_hook, &mut mouse_hook, hinstance);
+            tracing::info!(
+                "LL hook thread ready (keyboard={}, mouse={})",
+                kbd_hook.is_some(),
+                mouse_hook.is_some()
+            );
 
-            HOOK_INSTALLED.store(true, Ordering::SeqCst);
-            tracing::info!("LL keyboard hook installed");
-
+            // GetMessageW keeps the thread pumping so any installed LL hook
+            // fires; it also delivers the WM_REAPPLY wakeups.
             let mut msg = MSG::default();
             while GetMessageW(&mut msg, None, 0, 0).as_bool() {
+                if msg.message == WM_REAPPLY {
+                    reapply_hooks(&mut kbd_hook, &mut mouse_hook, hinstance);
+                    continue;
+                }
                 let _ = TranslateMessage(&msg);
                 DispatchMessageW(&msg);
             }
 
             HOOK_INSTALLED.store(false, Ordering::SeqCst);
+            HOOK_THREAD_ID.store(0, Ordering::SeqCst);
             if let Some(mh) = mouse_hook {
                 let _ = UnhookWindowsHookEx(mh);
             }
-            let _ = UnhookWindowsHookEx(hook);
+            if let Some(kh) = kbd_hook {
+                let _ = UnhookWindowsHookEx(kh);
+            }
         })?;
     Ok(())
 }
