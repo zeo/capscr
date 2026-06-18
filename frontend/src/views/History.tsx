@@ -104,26 +104,44 @@ export function History() {
     }, 4000);
   };
 
-  const [deleteError, setDeleteError] = createSignal<string | null>(null);
-  const [uploadError, setUploadError] = createSignal<string | null>(null);
-  let uploadErrorTimer: ReturnType<typeof setTimeout>;
+  // single transient banner for tile actions: copy / reveal / re-upload all
+  // succeed without changing the grid, so without this they look dead even
+  // when they worked. errors surface here too instead of silently no-op'ing
+  const [flash, setFlash] = createSignal<{ tone: "ok" | "err"; msg: string } | null>(null);
+  let flashTimer: ReturnType<typeof setTimeout>;
+  onCleanup(() => clearTimeout(flashTimer));
+  const showFlash = (tone: "ok" | "err", msg: string) => {
+    setFlash({ tone, msg });
+    clearTimeout(flashTimer);
+    flashTimer = setTimeout(() => setFlash(null), tone === "err" ? 6000 : 2500);
+  };
   const doReupload = (path: string) => {
-    api.reuploadCapture(path).catch((e: unknown) => {
-      setUploadError(String(e));
-      clearTimeout(uploadErrorTimer);
-      uploadErrorTimer = setTimeout(() => setUploadError(null), 6000);
-    });
+    showFlash("ok", "uploading...");
+    api.reuploadCapture(path)
+      .then(() => showFlash("ok", "re-uploaded"))
+      .catch((e: unknown) => showFlash("err", `upload failed: ${e}`));
+  };
+  const doCopy = (path: string) => {
+    api.copyCaptureToClipboard(path)
+      .then(() => showFlash("ok", "copied to clipboard"))
+      .catch((e: unknown) => showFlash("err", `copy failed: ${e}`));
+  };
+  const doReveal = (path: string) => {
+    api.openInExplorer(path)
+      .then(() => showFlash("ok", "revealed in file explorer"))
+      .catch((e: unknown) => showFlash("err", `open failed: ${e}`));
+  };
+  const doEdit = (path: string) => {
+    api.openEditor(path).catch((e: unknown) => showFlash("err", `editor failed: ${e}`));
   };
   const doDelete = (path: string) => {
     api.deleteCapture(path).then(() => {
       setConfirmDelete(null);
-      setDeleteError(null);
       refetch();
+      showFlash("ok", "deleted");
     }).catch((e: unknown) => {
       setConfirmDelete(null);
-      setDeleteError(String(e));
-      clearTimeout(errorTimer);
-      errorTimer = setTimeout(() => setDeleteError(null), 6000);
+      showFlash("err", `delete failed: ${e}`);
     });
   };
 
@@ -186,14 +204,9 @@ export function History() {
         </button>
       </div>
 
-      <Show when={deleteError()}>
-        <div class="flash" data-tone="err" style="margin-bottom: 12px;">
-          delete failed: {deleteError()}
-        </div>
-      </Show>
-      <Show when={uploadError()}>
-        <div class="flash" data-tone="err" style="margin-bottom: 12px;">
-          upload failed: {uploadError()}
+      <Show when={flash()}>
+        <div class="flash" data-tone={flash()!.tone} style="margin-bottom: 12px;">
+          {flash()!.msg}
         </div>
       </Show>
 
@@ -287,7 +300,7 @@ export function History() {
                     <button
                       class="icon-btn"
                       title="edit"
-                      onClick={() => api.openEditor(e.path)}
+                      onClick={() => doEdit(e.path)}
                     >
                       <Edit3 size={12} stroke-width={1.5} />
                     </button>
@@ -302,14 +315,14 @@ export function History() {
                   <button
                     class="icon-btn"
                     title="open in os viewer"
-                    onClick={() => api.openInExplorer(e.path)}
+                    onClick={() => doReveal(e.path)}
                   >
                     <ExternalLink size={12} stroke-width={1.5} />
                   </button>
                   <button
                     class="icon-btn"
                     title="copy to clipboard"
-                    onClick={() => api.copyCaptureToClipboard(e.path)}
+                    onClick={() => doCopy(e.path)}
                   >
                     <Copy size={12} stroke-width={1.5} />
                   </button>
