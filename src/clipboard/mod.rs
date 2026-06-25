@@ -365,6 +365,25 @@ pub fn save_image<P: AsRef<Path>>(
         crate::config::ImageFormat::Bmp => {
             image.save(path)?;
         }
+        crate::config::ImageFormat::Avif => {
+            image.save(path)?;
+        }
+        crate::config::ImageFormat::Jxl => {
+            let width = image.width();
+            let height = image.height();
+            let raw_pixels = image.as_raw();
+            let bytes = if quality >= 100 {
+                jxl_encoder::LosslessConfig::new()
+                    .encode(raw_pixels, width, height, jxl_encoder::PixelLayout::Rgba8)
+                    .map_err(|e| anyhow!("JXL encoding failed: {}", e))?
+            } else {
+                let distance = ((100 - quality) as f64 / 10.0).clamp(0.0, 15.0);
+                jxl_encoder::LossyConfig::new(distance as f32)
+                    .encode(raw_pixels, width, height, jxl_encoder::PixelLayout::Rgba8)
+                    .map_err(|e| anyhow!("JXL encoding failed: {}", e))?
+            };
+            std::fs::write(path, bytes)?;
+        }
     }
 
     Ok(())

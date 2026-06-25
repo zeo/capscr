@@ -55,6 +55,7 @@ pub struct AppState {
     // task_id → live/failed status. updated by the hotkey thread after every
     // register/reload pass.
     pub hotkey_status: Mutex<HashMap<String, HotkeyStatus>>,
+    pub pinned_images: Mutex<HashMap<String, String>>,
 }
 
 #[derive(Clone, Debug)]
@@ -89,6 +90,7 @@ impl AppState {
             capture_in_progress: AtomicBool::new(false),
             hotkeys_disabled: AtomicBool::new(disabled),
             hotkey_status: Mutex::new(HashMap::new()),
+            pinned_images: Mutex::new(HashMap::new()),
         }
     }
 

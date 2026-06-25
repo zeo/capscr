@@ -10,10 +10,10 @@ export function Destinations() {
   const [status, setStatus] = createSignal<{ tone: string; msg: string } | null>(
     null,
   );
-  const [testing, setTesting] = createSignal<"Ftp" | "Sftp" | "Imgur" | "Custom" | null>(null);
+  const [testing, setTesting] = createSignal<"Ftp" | "Sftp" | "Imgur" | "Custom" | "S3" | null>(null);
   const [report, setReport] = createSignal<ConnectionTestReport | null>(null);
 
-  const test = async (destination: "Ftp" | "Sftp" | "Imgur" | "Custom") => {
+  const test = async (destination: "Ftp" | "Sftp" | "Imgur" | "Custom" | "S3") => {
     setTesting(destination);
     setReport(null);
     try {
@@ -86,6 +86,7 @@ export function Destinations() {
                     <option value="Custom">custom http</option>
                     <option value="Ftp">ftp / ftps</option>
                     <option value="Sftp">sftp (ssh)</option>
+                    <option value="S3">S3 Compatible</option>
                   </select>
                 </div>
               </div>
@@ -511,6 +512,136 @@ export function Destinations() {
                     </button>
                     <span class="field-hint">
                       connects, authenticates, lists remote dir. doesn't upload.
+                    </span>
+                  </div>
+                </div>
+              </Section>
+            </Show>
+
+            <Show when={c().upload.destination === "S3"}>
+              <Section title="S3 Compatible">
+                <div class="field">
+                  <label class="field-label">Bucket</label>
+                  <div class="field-control">
+                    <input
+                      type="text"
+                      placeholder="my-bucket"
+                      value={c().upload.s3?.bucket || ""}
+                      onInput={(e) =>
+                        patch({
+                          ...c().upload,
+                          s3: { ...(c().upload.s3 || {}), bucket: e.currentTarget.value },
+                        } as any)
+                      }
+                    />
+                  </div>
+                </div>
+                <div class="field">
+                  <label class="field-label">Region</label>
+                  <div class="field-control">
+                    <input
+                      type="text"
+                      placeholder="us-east-1"
+                      value={c().upload.s3?.region || ""}
+                      onInput={(e) =>
+                        patch({
+                          ...c().upload,
+                          s3: { ...(c().upload.s3 || {}), region: e.currentTarget.value },
+                        } as any)
+                      }
+                    />
+                  </div>
+                </div>
+                <div class="field">
+                  <label class="field-label">Endpoint</label>
+                  <div class="field-control">
+                    <input
+                      type="text"
+                      placeholder="https://s3.amazonaws.com (leave empty for default AWS)"
+                      value={c().upload.s3?.endpoint || ""}
+                      onInput={(e) =>
+                        patch({
+                          ...c().upload,
+                          s3: { ...(c().upload.s3 || {}), endpoint: e.currentTarget.value },
+                        } as any)
+                      }
+                    />
+                  </div>
+                </div>
+                <div class="field">
+                  <label class="field-label">Access Key ID</label>
+                  <div class="field-control">
+                    <input
+                      type="text"
+                      placeholder="AKIAIOSFODNN7EXAMPLE"
+                      value={c().upload.s3?.access_key_id || ""}
+                      onInput={(e) =>
+                        patch({
+                          ...c().upload,
+                          s3: { ...(c().upload.s3 || {}), access_key_id: e.currentTarget.value },
+                        } as any)
+                      }
+                    />
+                  </div>
+                </div>
+                <div class="field">
+                  <label class="field-label">Secret Access Key</label>
+                  <div class="field-control">
+                    <input
+                      type="password"
+                      placeholder={
+                        c().upload.s3?.secret_access_key_encrypted
+                          ? "•••••••••••••••• (saved)"
+                          : "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+                      }
+                      value={c().upload.s3?.secret_access_key || ""}
+                      onInput={(e) =>
+                        patch({
+                          ...c().upload,
+                          s3: { ...(c().upload.s3 || {}), secret_access_key: e.currentTarget.value },
+                        } as any)
+                      }
+                    />
+                    <Show when={c().upload.s3?.secret_access_key_encrypted}>
+                      <span class="field-hint text-live">
+                        DPAPI encrypted vault populated
+                      </span>
+                    </Show>
+                  </div>
+                </div>
+                <div class="field">
+                  <label class="field-label">Public URL Template</label>
+                  <div class="field-control">
+                    <input
+                      type="text"
+                      placeholder="https://cdn.example.com/{filename}"
+                      value={c().upload.s3?.public_url_template || ""}
+                      onInput={(e) =>
+                        patch({
+                          ...c().upload,
+                          s3: { ...(c().upload.s3 || {}), public_url_template: e.currentTarget.value },
+                        } as any)
+                      }
+                    />
+                    <span class="field-hint">
+                      {`{filename} → basename, empty = default s3 url returned`}
+                    </span>
+                  </div>
+                </div>
+                <div class="field">
+                  <label class="field-label">test</label>
+                  <div class="field-control">
+                    <button
+                      class="btn"
+                      data-variant="ghost"
+                      disabled={testing() === "S3"}
+                      onClick={() => test("S3")}
+                    >
+                      <Zap size={12} stroke-width={1.5} />
+                      {testing() === "S3" ? "probing..." : "test connection"}
+                    </button>
+                    <span class="field-hint">
+                      performs a test upload of a small file to verify permissions.
                     </span>
                   </div>
                 </div>

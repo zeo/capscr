@@ -13,6 +13,7 @@ import { Destinations } from "./views/Destinations";
 import { Tasks } from "./views/Tasks";
 import { config, refetchConfig, mutateConfig } from "./store";
 import { HotkeyInput } from "./components/HotkeyInput";
+import { PinView } from "./views/PinView";
 
 // lazy-loaded so the hub bundle doesn't ship the full canvas editor and the
 // editor window doesn't ship the hub. Editor is a named export, so adapt it to
@@ -58,6 +59,9 @@ export function App() {
         <Editor />
       </Suspense>
     );
+  }
+  if (label.startsWith("pin_")) {
+    return <PinView label={label} />;
   }
   return <Hub />;
 }

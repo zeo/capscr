@@ -25,6 +25,17 @@ pub enum UploadService {
     Custom(CustomUploader),
     Ftp(FtpTarget),
     Sftp(SftpTarget),
+    S3(S3Target),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct S3Target {
+    pub bucket: String,
+    pub region: String,
+    pub endpoint: String,
+    pub access_key_id: String,
+    pub secret_access_key: String,
+    pub public_url_template: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -332,6 +343,7 @@ impl ImageUploader {
                 UploadService::Custom(config) => self.upload_custom(data, mime, file_name, config),
                 UploadService::Ftp(target) => upload_ftp(data, file_name, target),
                 UploadService::Sftp(target) => upload_sftp(data, file_name, target),
+                UploadService::S3(target) => upload_s3(data, file_name, target),
             };
             match result {
                 Ok(r) => return Ok(r),
@@ -1489,9 +1501,236 @@ fn uniquify_remote_filename(name: &str) -> String {
     format!("{}_{}_{}.{}", stem, now, id, ext)
 }
 
+use hmac::{Hmac, Mac};
+use sha2::{Digest, Sha256};
+
+type HmacSha256 = Hmac<Sha256>;
+
+fn hmac_sha256(key: &[u8], data: &[u8]) -> Result<Vec<u8>> {
+    let mut mac = HmacSha256::new_from_slice(key)
+        .map_err(|e| anyhow!("invalid hmac key: {e}"))?;
+    mac.update(data);
+    Ok(mac.finalize().into_bytes().to_vec())
+}
+
+fn sign_s3_request(
+    method: &str,
+    request_url: &url::Url,
+    region: &str,
+    access_key_id: &str,
+    secret_access_key: &str,
+    payload_sha256: &str,
+    date_utc: chrono::DateTime<chrono::Utc>,
+) -> Result<String> {
+    let date_str = date_utc.format("%Y%m%dT%H%M%SZ").to_string();
+    let date_only = date_utc.format("%Y%m%d").to_string();
+
+    let path = request_url.path();
+    let query = request_url.query().unwrap_or("");
+    let host = request_url.host_str().ok_or_else(|| anyhow!("no host in url"))?;
+    let host_header = if let Some(port) = request_url.port() {
+        format!("{}:{}", host, port)
+    } else {
+        host.to_string()
+    };
+
+    let canonical_headers = format!(
+        "host:{}\nx-amz-content-sha256:{}\nx-amz-date:{}\n",
+        host_header, payload_sha256, date_str
+    );
+    let signed_headers = "host;x-amz-content-sha256;x-amz-date";
+
+    let canonical_request = format!(
+        "{}\n{}\n{}\n{}\n{}\n{}",
+        method,
+        path,
+        query,
+        canonical_headers,
+        signed_headers,
+        payload_sha256
+    );
+
+    let mut hasher = Sha256::new();
+    hasher.update(canonical_request.as_bytes());
+    let canonical_request_hash = hex::encode(hasher.finalize());
+
+    let credential_scope = format!("{}/{}/s3/aws4_request", date_only, region);
+    let string_to_sign = format!(
+        "AWS4-HMAC-SHA256\n{}\n{}\n{}",
+        date_str, credential_scope, canonical_request_hash
+    );
+
+    let k_secret = format!("AWS4{}", secret_access_key);
+    let k_date = hmac_sha256(k_secret.as_bytes(), date_only.as_bytes())?;
+    let k_region = hmac_sha256(&k_date, region.as_bytes())?;
+    let k_service = hmac_sha256(&k_region, b"s3")?;
+    let k_signing = hmac_sha256(&k_service, b"aws4_request")?;
+
+    let signature_bytes = hmac_sha256(&k_signing, string_to_sign.as_bytes())?;
+    let signature = hex::encode(signature_bytes);
+
+    let auth_header = format!(
+        "AWS4-HMAC-SHA256 Credential={}/{}, SignedHeaders={}, Signature={}",
+        access_key_id, credential_scope, signed_headers, signature
+    );
+
+    Ok(auth_header)
+}
+
+pub fn upload_s3(data: &[u8], file_name: &str, target: &S3Target) -> Result<UploadResult> {
+    let safe = sanitize_remote_filename(file_name);
+    let filename = uniquify_remote_filename(&safe);
+
+    let request_url_str = if target.endpoint.is_empty() {
+        format!(
+            "https://{}.s3.{}.amazonaws.com/{}",
+            target.bucket, target.region, filename
+        )
+    } else {
+        let mut ep = target.endpoint.clone();
+        if !ep.contains("://") {
+            ep = format!("https://{}", ep);
+        }
+        let mut url = url::Url::parse(&ep)
+            .map_err(|e| anyhow!("invalid custom endpoint URL: {e}"))?;
+        {
+            let mut path_segments = url.path_segments_mut().map_err(|_| anyhow!("cannot modify path of endpoint"))?;
+            path_segments.push(&target.bucket);
+            path_segments.push(&filename);
+        }
+        url.to_string()
+    };
+
+    let request_url = url::Url::parse(&request_url_str)?;
+
+    let mut hasher = Sha256::new();
+    hasher.update(data);
+    let payload_sha256 = hex::encode(hasher.finalize());
+
+    let date_utc = chrono::Utc::now();
+    let date_str = date_utc.format("%Y%m%dT%H%M%SZ").to_string();
+
+    let auth_header = sign_s3_request(
+        "PUT",
+        &request_url,
+        &target.region,
+        &target.access_key_id,
+        &target.secret_access_key,
+        &payload_sha256,
+        date_utc,
+    )?;
+
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(UPLOAD_TIMEOUT_SECS))
+        .user_agent("capscr/1.0")
+        .build()?;
+
+    let response = client
+        .put(request_url.clone())
+        .header("Authorization", auth_header)
+        .header("x-amz-date", date_str)
+        .header("x-amz-content-sha256", payload_sha256)
+        .body(data.to_vec())
+        .send()
+        .map_err(|e| anyhow!("S3 upload request failed: {e}"))?;
+
+    let status = response.status();
+    if !status.is_success() {
+        let err_body = response.text().unwrap_or_default();
+        return Err(anyhow!(
+            "S3 upload failed with status {}: {}",
+            status,
+            err_body
+        ));
+    }
+
+    let public_url = if !target.public_url_template.is_empty() {
+        target.public_url_template.replace("{filename}", &filename)
+    } else if target.endpoint.is_empty() {
+        format!(
+            "https://{}.s3.{}.amazonaws.com/{}",
+            target.bucket, target.region, filename
+        )
+    } else {
+        let mut ep = target.endpoint.clone();
+        if !ep.contains("://") {
+            ep = format!("https://{}", ep);
+        }
+        if !ep.ends_with('/') {
+            ep.push('/');
+        }
+        format!("{}{}/{}", ep, target.bucket, filename)
+    };
+
+    Ok(UploadResult {
+        url: public_url,
+        delete_url: None,
+    })
+}
+
+pub fn test_connection_s3(target: &S3Target) -> Result<Vec<TestStep>> {
+    let mut steps = Vec::new();
+
+    if target.bucket.is_empty() {
+        steps.push(TestStep::fail("config", "Bucket name is empty".into()));
+        return Ok(steps);
+    }
+    if target.access_key_id.is_empty() {
+        steps.push(TestStep::fail("config", "Access Key ID is empty".into()));
+        return Ok(steps);
+    }
+    if target.secret_access_key.is_empty() {
+        steps.push(TestStep::fail("config", "Secret Access Key is empty".into()));
+        return Ok(steps);
+    }
+    steps.push(TestStep::ok("config", "Configuration parameters valid".into()));
+
+    let test_data = b"capscr connection test";
+    let file_name = "connection_test.txt";
+    
+    match upload_s3(test_data, file_name, target) {
+        Ok(res) => {
+            steps.push(TestStep::ok("upload", format!("Uploaded test file successfully! Public URL: {}", res.url)));
+        }
+        Err(e) => {
+            steps.push(TestStep::fail("upload", format!("Upload failed: {e}")));
+        }
+    }
+
+    Ok(steps)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_sign_s3_request_validity() {
+        let method = "PUT";
+        let request_url = url::Url::parse("https://my-bucket.s3.us-east-1.amazonaws.com/test_file.png").unwrap();
+        let region = "us-east-1";
+        let access_key_id = "AKIAIOSFODNN7EXAMPLE";
+        let secret_access_key = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";
+        let payload_sha256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+        let date_utc = chrono::DateTime::parse_from_rfc3339("2013-05-24T15:00:00Z").unwrap().with_timezone(&chrono::Utc);
+
+        let result = sign_s3_request(
+            method,
+            &request_url,
+            region,
+            access_key_id,
+            secret_access_key,
+            payload_sha256,
+            date_utc,
+        );
+
+        assert!(result.is_ok());
+        let auth_header = result.unwrap();
+        assert!(auth_header.contains("AWS4-HMAC-SHA256"));
+        assert!(auth_header.contains("Credential=AKIAIOSFODNN7EXAMPLE/20130524/us-east-1/s3/aws4_request"));
+        assert!(auth_header.contains("SignedHeaders=host;x-amz-content-sha256;x-amz-date"));
+        assert!(auth_header.contains("Signature="));
+    }
 
     #[test]
     fn transient_classifier_retries_network_failures() {

@@ -235,6 +235,8 @@ function GeneralPane(props: { c: AppConfig; patch: Patch }) {
             <option value="Jpeg">jpeg</option>
             <option value="Webp">webp</option>
             <option value="Bmp">bmp</option>
+            <option value="Avif">avif</option>
+            <option value="Jxl">jpeg xl</option>
           </select>
         </div>
       </div>
@@ -341,6 +343,27 @@ function CapturePane(props: { c: AppConfig; patch: Patch }) {
               }}
             />
             <span class="field-hint">seconds, auto-stops</span>
+          </div>
+        </div>
+        <div class="field">
+          <label class="field-label">record audio</label>
+          <div class="field-control">
+            <label class="check">
+              <input
+                type="checkbox"
+                checked={c().capture.record_audio}
+                onChange={(e) =>
+                  props.patch("capture", {
+                    ...c().capture,
+                    record_audio: e.currentTarget.checked,
+                  })
+                }
+              />
+              <span class="check-label">
+                {c().capture.record_audio ? "enabled" : "disabled"}
+              </span>
+            </label>
+            <span class="field-hint">captures system loopback audio for MP4 recordings</span>
           </div>
         </div>
       </Section>

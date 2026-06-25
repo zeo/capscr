@@ -47,13 +47,16 @@ xcap = "0.0.14"
 # icon handling, and cargo unifies features additively, so the full codec set is
 # always built regardless of what we request here — default-features=false would
 # be a no-op. we just pin the formats capscr itself encodes/decodes.
-image = { version = "0.25", features = ["png", "jpeg", "gif", "webp", "bmp"] }
+image = { version = "0.25", features = ["png", "jpeg", "gif", "webp", "bmp", "avif"] }
 
 # gif encoding. 0.14 matches the version image already pulls in via its gif
 # feature, so the two collapse to one crate instead of compiling 0.13 and 0.14
 gif = "0.14"
 
 color_quant = "1.1"
+
+jxl-encoder = "0.3.1"
+hmac = "0.12"
 
 # Clipboard (native fallback)
 arboard = "3.4"
@@ -152,7 +155,10 @@ windows = { version = "0.58", features = [
     "Graphics_Imaging",
     "Foundation",
     "Foundation_Collections",
+    "Media_Ocr",
+    "Storage_Streams",
 ] }
+wasapi = "0.17"
 
 
 [build-dependencies]

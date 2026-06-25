@@ -601,6 +601,17 @@ fn run_capture_pipeline_inner(
     result.map(|_| ())
 }
 
+fn build_s3_service(config: &Config) -> UploadService {
+    UploadService::S3(crate::upload::S3Target {
+        bucket: config.upload.s3.bucket.clone(),
+        region: config.upload.s3.region.clone(),
+        endpoint: config.upload.s3.endpoint.clone(),
+        access_key_id: config.upload.s3.access_key_id.clone(),
+        secret_access_key: config.upload.s3.secret_access_key_plaintext(),
+        public_url_template: config.upload.s3.public_url_template.clone(),
+    })
+}
+
 fn build_ftp_service(config: &Config) -> UploadService {
     UploadService::Ftp(FtpTarget {
         host: config.upload.ftp.host.clone(),
@@ -657,6 +668,7 @@ fn build_upload_service_for_target(
             }),
             UploadDestination::Ftp => build_ftp_service(config),
             UploadDestination::Sftp => build_sftp_service(config),
+            UploadDestination::S3 => build_s3_service(config),
         },
         Some(TaskUploadTarget::Imgur) => build_imgur_service(config),
         Some(TaskUploadTarget::Custom) => UploadService::Custom(CustomUploader {
@@ -667,6 +679,7 @@ fn build_upload_service_for_target(
         }),
         Some(TaskUploadTarget::Ftp) => build_ftp_service(config),
         Some(TaskUploadTarget::Sftp) => build_sftp_service(config),
+        Some(TaskUploadTarget::S3) => build_s3_service(config),
     }
 }
 
@@ -1875,6 +1888,7 @@ fn start_gif_recording(
         max_duration: Duration::from_secs(cfg.capture.gif_max_duration_secs as u64),
         quality: cfg.output.quality,
         show_cursor: cfg.capture.show_cursor,
+        record_audio: cfg.capture.record_audio,
     };
 
     let mut recorder = GifRecorder::new(settings).with_region(region);
@@ -2701,6 +2715,17 @@ pub fn test_upload_connection(
             };
             crate::upload::test_connection_custom(&uploader).map_err(|e| e.to_string())?
         }
+        "S3" | "s3" => {
+            let target = crate::upload::S3Target {
+                bucket: cfg.upload.s3.bucket.clone(),
+                region: cfg.upload.s3.region.clone(),
+                endpoint: cfg.upload.s3.endpoint.clone(),
+                access_key_id: cfg.upload.s3.access_key_id.clone(),
+                secret_access_key: cfg.upload.s3.secret_access_key_plaintext(),
+                public_url_template: cfg.upload.s3.public_url_template.clone(),
+            };
+            crate::upload::test_connection_s3(&target).map_err(|e| e.to_string())?
+        }
         other => return Err(format!("'{other}' has no test-connection probe")),
     };
     let overall_ok = !steps.is_empty() && steps.iter().all(|s| s.ok);
@@ -2785,4 +2810,111 @@ pub fn set_hotkeys_disabled(
     crate::rebuild_tray_menu(&app);
     let _ = app.emit("capscr://hotkey-status", ());
     Ok(())
+}
+
+#[tauri::command]
+pub fn run_ocr(path: String) -> Result<String, String> {
+    #[cfg(windows)]
+    {
+        use windows::Media::Ocr::OcrEngine;
+        use windows::Graphics::Imaging::BitmapDecoder;
+        use windows::Storage::Streams::{DataWriter, InMemoryRandomAccessStream};
+
+        let run = || -> Result<String, anyhow::Error> {
+            let image_bytes = std::fs::read(&path)
+                .map_err(|e| anyhow::anyhow!("Failed to read file: {}", e))?;
+
+            let engine = OcrEngine::TryCreateFromUserProfileLanguages()
+                .map_err(|e| anyhow::anyhow!("Failed to create OCR engine: {:?}", e))?;
+            let stream = InMemoryRandomAccessStream::new()
+                .map_err(|e| anyhow::anyhow!("Failed to create in-memory stream: {:?}", e))?;
+            let writer = DataWriter::CreateDataWriter(&stream)
+                .map_err(|e| anyhow::anyhow!("Failed to create data writer: {:?}", e))?;
+            writer.WriteBytes(&image_bytes)
+                .map_err(|e| anyhow::anyhow!("Failed to write bytes: {:?}", e))?;
+            writer.StoreAsync()?
+                .get()
+                .map_err(|e| anyhow::anyhow!("Failed to store data: {:?}", e))?;
+            writer.FlushAsync()?
+                .get()
+                .map_err(|e| anyhow::anyhow!("Failed to flush stream: {:?}", e))?;
+            stream.Seek(0)
+                .map_err(|e| anyhow::anyhow!("Failed to seek stream: {:?}", e))?;
+
+            let decoder = BitmapDecoder::CreateAsync(&stream)?
+                .get()
+                .map_err(|e| anyhow::anyhow!("Failed to decode image: {:?}", e))?;
+            let software_bitmap = decoder.GetSoftwareBitmapAsync()?
+                .get()
+                .map_err(|e| anyhow::anyhow!("Failed to get software bitmap: {:?}", e))?;
+            let result = engine.RecognizeAsync(&software_bitmap)?
+                .get()
+                .map_err(|e| anyhow::anyhow!("Failed to run OCR: {:?}", e))?;
+            let text = result.Text()?
+                .to_string();
+            Ok(text)
+        };
+
+        run().map_err(|e| e.to_string())
+    }
+    #[cfg(not(windows))]
+    {
+        Err("OCR is only supported on Windows".to_string())
+    }
+}
+
+#[tauri::command]
+pub async fn pin_image(
+    path: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    use uuid::Uuid;
+    let label = format!("pin_{}", Uuid::new_v4());
+
+    state.pinned_images.lock().unwrap().insert(label.clone(), path);
+
+    let url = tauri::WebviewUrl::App("index.html".into());
+    let mut builder = tauri::WebviewWindowBuilder::new(&app, &label, url)
+        .title("capscr — pinned")
+        .decorations(false)
+        .resizable(true)
+        .always_on_top(true)
+        .transparent(true)
+        .visible(false);
+
+    if let Some(icon) = app.default_window_icon().cloned() {
+        builder = builder.icon(icon).map_err(|e| e.to_string())?;
+    }
+
+    let window = builder.build().map_err(|e| e.to_string())?;
+    watch_pin_navigation(&app, window);
+    Ok(())
+}
+
+fn watch_pin_navigation(app: &AppHandle, window: tauri::WebviewWindow) {
+    let app = app.clone();
+    std::thread::spawn(move || {
+        for wait_ms in [500u64, 1500, 3000] {
+            std::thread::sleep(std::time::Duration::from_millis(wait_ms));
+            let on_blank = window.url().map(|u| u.scheme() == "about").unwrap_or(false);
+            if !on_blank {
+                return;
+            }
+            tracing::warn!("pin webview stuck on about:blank; navigating explicitly");
+            let target = app
+                .get_webview_window(HUB_LABEL)
+                .and_then(|hub| hub.url().ok());
+            if let Some(url) = target {
+                if let Err(e) = window.navigate(url) {
+                    tracing::warn!("pin explicit navigation failed: {e}");
+                }
+            }
+        }
+    });
+}
+
+#[tauri::command]
+pub fn get_pinned_image_path(label: String, state: State<'_, AppState>) -> Option<String> {
+    state.pinned_images.lock().unwrap().get(&label).cloned()
 }

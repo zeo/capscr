@@ -108,6 +108,7 @@ pub enum TaskUploadTarget {
     Custom,
     Ftp,
     Sftp,
+    S3,
 }
 
 fn default_capture_tasks() -> Vec<CaptureTask> {
@@ -161,6 +162,8 @@ pub enum ImageFormat {
     Gif,
     Webp,
     Bmp,
+    Avif,
+    Jxl,
 }
 
 impl std::fmt::Display for ImageFormat {
@@ -177,6 +180,8 @@ impl ImageFormat {
             ImageFormat::Gif => "gif",
             ImageFormat::Webp => "webp",
             ImageFormat::Bmp => "bmp",
+            ImageFormat::Avif => "avif",
+            ImageFormat::Jxl => "jxl",
         }
     }
 
@@ -187,6 +192,8 @@ impl ImageFormat {
             ImageFormat::Gif,
             ImageFormat::Webp,
             ImageFormat::Bmp,
+            ImageFormat::Avif,
+            ImageFormat::Jxl,
         ]
     }
 
@@ -197,6 +204,8 @@ impl ImageFormat {
             ImageFormat::Gif => "GIF",
             ImageFormat::Webp => "WebP",
             ImageFormat::Bmp => "BMP",
+            ImageFormat::Avif => "AVIF",
+            ImageFormat::Jxl => "JPEG XL",
         }
     }
 }
@@ -210,6 +219,12 @@ pub struct CaptureConfig {
     pub gif_max_duration_secs: u32,
     #[serde(default)]
     pub hdr: HdrConfig,
+    #[serde(default = "default_record_audio")]
+    pub record_audio: bool,
+}
+
+fn default_record_audio() -> bool {
+    false
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -395,6 +410,7 @@ pub enum UploadDestination {
     Custom,
     Ftp,
     Sftp,
+    S3,
 }
 
 impl UploadDestination {
@@ -404,6 +420,7 @@ impl UploadDestination {
             UploadDestination::Custom,
             UploadDestination::Ftp,
             UploadDestination::Sftp,
+            UploadDestination::S3,
         ]
     }
 
@@ -413,6 +430,7 @@ impl UploadDestination {
             UploadDestination::Custom => "Custom HTTP",
             UploadDestination::Ftp => "FTP",
             UploadDestination::Sftp => "SFTP",
+            UploadDestination::S3 => "S3 Compatible",
         }
     }
 }
@@ -439,6 +457,8 @@ pub struct UploadConfig {
     pub ftp: FtpUploadConfig,
     #[serde(default)]
     pub sftp: SftpUploadConfig,
+    #[serde(default)]
+    pub s3: S3UploadConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -479,6 +499,7 @@ impl Default for UploadConfig {
             imgur_client_id: default_imgur_client_id(),
             ftp: FtpUploadConfig::default(),
             sftp: SftpUploadConfig::default(),
+            s3: S3UploadConfig::default(),
         }
     }
 }
@@ -594,6 +615,40 @@ impl SftpUploadConfig {
             }
         }
         self.private_key_passphrase.clone()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct S3UploadConfig {
+    #[serde(default)]
+    pub bucket: String,
+    #[serde(default)]
+    pub region: String,
+    #[serde(default)]
+    pub endpoint: String,
+    #[serde(default)]
+    pub access_key_id: String,
+    /// plaintext secret key (legacy field)
+    #[serde(default)]
+    pub secret_access_key: String,
+    /// DPAPI-wrapped secret key
+    #[serde(default)]
+    pub secret_access_key_encrypted: String,
+    #[serde(default)]
+    pub public_url_template: String,
+}
+
+impl S3UploadConfig {
+    pub fn secret_access_key_plaintext(&self) -> String {
+        if !self.secret_access_key_encrypted.is_empty() {
+            match crate::secret::decrypt(&self.secret_access_key_encrypted) {
+                Ok(p) => return p,
+                Err(e) => {
+                    tracing::warn!("S3 secret access key decrypt failed: {e}");
+                }
+            }
+        }
+        self.secret_access_key.clone()
     }
 }
 
@@ -913,6 +968,7 @@ impl Default for Config {
                 gif_fps: 15,
                 gif_max_duration_secs: 30,
                 hdr: HdrConfig::default(),
+                record_audio: false,
             },
             hotkeys: HotkeyConfig {
                 screenshot: "Ctrl+Shift+S".to_string(),
@@ -1080,6 +1136,19 @@ impl Config {
                     tracing::warn!(
                         "SFTP key passphrase DPAPI encrypt failed; leaving plaintext: {e}"
                     );
+                }
+            }
+        }
+        let s3 = &mut self.upload.s3;
+        if !s3.secret_access_key.is_empty() && s3.secret_access_key_encrypted.is_empty() {
+            match crate::secret::encrypt(&s3.secret_access_key) {
+                Ok(blob) => {
+                    s3.secret_access_key_encrypted = blob;
+                    s3.secret_access_key.clear();
+                    tracing::info!("migrated S3 secret access key into encrypted vault");
+                }
+                Err(e) => {
+                    tracing::warn!("S3 secret access key DPAPI encrypt failed; leaving plaintext: {e}");
                 }
             }
         }

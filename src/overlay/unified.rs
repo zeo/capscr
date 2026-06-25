@@ -32,17 +32,17 @@ mod windows_impl {
             },
             System::LibraryLoader::GetModuleHandleW,
             UI::{
-                Input::KeyboardAndMouse::{VK_CONTROL, VK_ESCAPE, VK_RETURN, VK_SHIFT, VK_SPACE},
+                Input::KeyboardAndMouse::{VK_CONTROL, VK_ESCAPE, VK_RETURN, VK_SHIFT, VK_SPACE, VK_LEFT, VK_RIGHT, VK_UP, VK_DOWN},
                 WindowsAndMessaging::{
                     ChildWindowFromPointEx, CreateWindowExW, DefWindowProcW, DestroyWindow,
                     DispatchMessageW, EnumWindows, GetAncestor, GetCursorPos, GetMessageW,
                     GetSystemMetrics, GetWindowLongW, GetWindowRect, IsIconic, IsWindowVisible,
-                    PostQuitMessage, RegisterClassW, SetForegroundWindow,
+                    PostQuitMessage, RegisterClassW, SetCursorPos, SetForegroundWindow,
                     SetLayeredWindowAttributes, ShowWindow, TranslateMessage, CS_HREDRAW,
                     CS_VREDRAW, CWP_SKIPINVISIBLE, CWP_SKIPTRANSPARENT, GA_ROOT, GWL_EXSTYLE,
                     GWL_STYLE, LWA_ALPHA, LWA_COLORKEY, MSG, SM_CXVIRTUALSCREEN,
                     SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SW_SHOWNORMAL,
-                    WM_DESTROY, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_PAINT,
+                    WM_DESTROY, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_PAINT,
                     WM_RBUTTONDOWN, WNDCLASSW, WS_EX_LAYERED, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
                     WS_POPUP, WS_VISIBLE,
                 },
@@ -53,7 +53,7 @@ mod windows_impl {
     const CLICK_THRESHOLD: i32 = 5;
     const MIN_SELECTION_SIZE: i32 = 5;
     const MAGNIFIER_SIZE: i32 = 120;
-    const MAGNIFIER_ZOOM: i32 = 2;
+    static MAGNIFIER_ZOOM: AtomicI32 = AtomicI32::new(8);
 
     // layered-window dim alpha (0=fully transparent, 255=fully opaque).
     // 180 = ~70% dim — matches the previous AlphaBlend SourceConstantAlpha
@@ -867,10 +867,10 @@ mod windows_impl {
                     }
                 }
 
-                let is_dragging = mouse_down
-                    && ((ex - sx).abs() > CLICK_THRESHOLD || (ey - sy).abs() > CLICK_THRESHOLD);
+                let has_selection = (sx != 0 || sy != 0) && ((ex - sx).abs() > CLICK_THRESHOLD || (ey - sy).abs() > CLICK_THRESHOLD);
+                let show_selection = mouse_down || has_selection;
 
-                if is_dragging {
+                if show_selection {
                     let left = (sx.min(ex)) - virt_x;
                     let top = (sy.min(ey)) - virt_y;
                     let right = (sx.max(ex)) - virt_x;
@@ -938,7 +938,7 @@ mod windows_impl {
 
                     let text_wide: Vec<u16> = size_text.encode_utf16().collect();
                     let _ = TextOutW(back_dc, text_x, text_y, &text_wide);
-                } else if !mouse_down {
+                } else if !mouse_down && !has_selection {
                     let hovered = HOVERED_WINDOW.load(Ordering::SeqCst);
                     if hovered != 0 {
                         let hwnd = HWND(hovered as usize as *mut _);
@@ -1051,7 +1051,8 @@ mod windows_impl {
                                 mag_y
                             };
 
-                            let src_size = MAGNIFIER_SIZE / MAGNIFIER_ZOOM;
+                            let zoom = MAGNIFIER_ZOOM.load(Ordering::Relaxed).max(1);
+                            let src_size = MAGNIFIER_SIZE / zoom;
                             let src_x = (cursor_x - src_size / 2).max(0).min(width - src_size);
                             let src_y = (cursor_y - src_size / 2).max(0).min(height - src_size);
 
@@ -1206,10 +1207,16 @@ mod windows_impl {
                         if let Some(cached) = cached_opt {
                             WINDOW_SELECTED.store(cached.hwnd as u32, Ordering::SeqCst);
                         }
+                        SELECTING.store(false, Ordering::SeqCst);
+                        PostQuitMessage(0);
+                    } else {
+                        // If Shift or Ctrl is held on mouse up, do NOT close the window immediately.
+                        // This allows the user to fine-tune the selection with arrow keys.
+                        if !shift_held() && !ctrl_held() {
+                            SELECTING.store(false, Ordering::SeqCst);
+                            PostQuitMessage(0);
+                        }
                     }
-
-                    SELECTING.store(false, Ordering::SeqCst);
-                    PostQuitMessage(0);
                 }
                 LRESULT(0)
             }
@@ -1220,10 +1227,125 @@ mod windows_impl {
                     SELECTING.store(false, Ordering::SeqCst);
                     PostQuitMessage(0);
                 } else if key == VK_RETURN.0 as i32 || key == VK_SPACE.0 as i32 {
-                    FULLSCREEN.store(true, Ordering::SeqCst);
+                    let sx = START_X.load(Ordering::SeqCst);
+                    let sy = START_Y.load(Ordering::SeqCst);
+                    let ex = END_X.load(Ordering::SeqCst);
+                    let ey = END_Y.load(Ordering::SeqCst);
+                    let has_selection = (sx != 0 || sy != 0) && ((ex - sx).abs() > CLICK_THRESHOLD || (ey - sy).abs() > CLICK_THRESHOLD);
+                    if !has_selection {
+                        FULLSCREEN.store(true, Ordering::SeqCst);
+                    }
                     SELECTING.store(false, Ordering::SeqCst);
                     PostQuitMessage(0);
+                } else if key == VK_LEFT.0 as i32 || key == VK_RIGHT.0 as i32 || key == VK_UP.0 as i32 || key == VK_DOWN.0 as i32 {
+                    let mut pt = POINT::default();
+                    let _ = GetCursorPos(&mut pt);
+                    
+                    let dx = if key == VK_LEFT.0 as i32 { -1 } else if key == VK_RIGHT.0 as i32 { 1 } else { 0 };
+                    let dy = if key == VK_UP.0 as i32 { -1 } else if key == VK_DOWN.0 as i32 { 1 } else { 0 };
+
+                    let shift = shift_held();
+                    let ctrl = ctrl_held();
+
+                    if MOUSE_DOWN.load(Ordering::SeqCst) {
+                        if ctrl && shift {
+                            // ctrl + shift adjusts start point
+                            let new_start_x = START_X.load(Ordering::SeqCst) + dx;
+                            let new_start_y = START_Y.load(Ordering::SeqCst) + dy;
+                            START_X.store(new_start_x, Ordering::SeqCst);
+                            START_Y.store(new_start_y, Ordering::SeqCst);
+                        } else if ctrl {
+                            // ctrl alone shifts the whole selection (moves start and end)
+                            let sx = START_X.load(Ordering::SeqCst);
+                            let sy = START_Y.load(Ordering::SeqCst);
+                            let ex = END_X.load(Ordering::SeqCst);
+                            let ey = END_Y.load(Ordering::SeqCst);
+                            START_X.store(sx + dx, Ordering::SeqCst);
+                            START_Y.store(sy + dy, Ordering::SeqCst);
+                            END_X.store(ex + dx, Ordering::SeqCst);
+                            END_Y.store(ey + dy, Ordering::SeqCst);
+                            let _ = SetCursorPos(ex + dx, ey + dy);
+                        } else {
+                            // shift or normal adjusts end point
+                            let new_end_x = END_X.load(Ordering::SeqCst) + dx;
+                            let new_end_y = END_Y.load(Ordering::SeqCst) + dy;
+                            END_X.store(new_end_x, Ordering::SeqCst);
+                            END_Y.store(new_end_y, Ordering::SeqCst);
+                            let _ = SetCursorPos(new_end_x, new_end_y);
+                        }
+                    } else {
+                        if ctrl && shift {
+                            // Adjust top-left (start) boundary
+                            let sx = START_X.load(Ordering::SeqCst);
+                            let sy = START_Y.load(Ordering::SeqCst);
+                            if sx != 0 || sy != 0 {
+                                START_X.store(sx + dx, Ordering::SeqCst);
+                                START_Y.store(sy + dy, Ordering::SeqCst);
+                            }
+                        } else if shift {
+                            // Adjust bottom-right (end) boundary
+                            let cur_x = CURSOR_X.load(Ordering::SeqCst);
+                            let cur_y = CURSOR_Y.load(Ordering::SeqCst);
+                            let sx = START_X.load(Ordering::SeqCst);
+                            let sy = START_Y.load(Ordering::SeqCst);
+                            if sx == 0 && sy == 0 {
+                                START_X.store(cur_x, Ordering::SeqCst);
+                                START_Y.store(cur_y, Ordering::SeqCst);
+                                END_X.store(cur_x + dx, Ordering::SeqCst);
+                                END_Y.store(cur_y + dy, Ordering::SeqCst);
+                                let _ = SetCursorPos(cur_x + dx, cur_y + dy);
+                            } else {
+                                let new_end_x = END_X.load(Ordering::SeqCst) + dx;
+                                let new_end_y = END_Y.load(Ordering::SeqCst) + dy;
+                                END_X.store(new_end_x, Ordering::SeqCst);
+                                END_Y.store(new_end_y, Ordering::SeqCst);
+                                let _ = SetCursorPos(new_end_x, new_end_y);
+                            }
+                        } else if ctrl {
+                            // Move entire selection
+                            let sx = START_X.load(Ordering::SeqCst);
+                            let sy = START_Y.load(Ordering::SeqCst);
+                            let ex = END_X.load(Ordering::SeqCst);
+                            let ey = END_Y.load(Ordering::SeqCst);
+                            if sx != 0 || sy != 0 || ex != 0 || ey != 0 {
+                                START_X.store(sx + dx, Ordering::SeqCst);
+                                START_Y.store(sy + dy, Ordering::SeqCst);
+                                END_X.store(ex + dx, Ordering::SeqCst);
+                                END_Y.store(ey + dy, Ordering::SeqCst);
+                                let mut cur_pt = POINT::default();
+                                let _ = GetCursorPos(&mut cur_pt);
+                                let _ = SetCursorPos(cur_pt.x + dx, cur_pt.y + dy);
+                            } else {
+                                // No selection: just move cursor
+                                let new_x = pt.x + dx;
+                                let new_y = pt.y + dy;
+                                let _ = SetCursorPos(new_x, new_y);
+                                CURSOR_X.store(new_x, Ordering::SeqCst);
+                                CURSOR_Y.store(new_y, Ordering::SeqCst);
+                            }
+                        } else {
+                            // Move cursor only
+                            let new_x = pt.x + dx;
+                            let new_y = pt.y + dy;
+                            let _ = SetCursorPos(new_x, new_y);
+                            CURSOR_X.store(new_x, Ordering::SeqCst);
+                            CURSOR_Y.store(new_y, Ordering::SeqCst);
+                        }
+                    }
+                    let _ = InvalidateRect(hwnd, None, false);
                 }
+                LRESULT(0)
+            }
+            WM_MOUSEWHEEL => {
+                let delta = (wparam.0 >> 16) as i16;
+                let current = MAGNIFIER_ZOOM.load(Ordering::Relaxed);
+                let new_zoom = if delta > 0 {
+                    (current + 1).min(30)
+                } else {
+                    (current - 1).max(2)
+                };
+                MAGNIFIER_ZOOM.store(new_zoom, Ordering::Relaxed);
+                let _ = InvalidateRect(hwnd, None, false);
                 LRESULT(0)
             }
             WM_RBUTTONDOWN => {

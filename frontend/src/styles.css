@@ -2007,3 +2007,82 @@ kbd {
   justify-content: flex-end;
   gap: 8px;
 }
+
+/* Pinned overlay image views */
+.pin-container {
+  position: relative;
+  width: 100vw;
+  height: 100vh;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  background: transparent;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.pin-drag-region {
+  width: 100%;
+  height: 100%;
+  cursor: move;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.pin-image {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  display: block;
+}
+
+.pin-controls {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(20, 20, 20, 0.85);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  padding: 4px 8px;
+  border-radius: 4px;
+  backdrop-filter: blur(4px);
+  z-index: 100;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+  opacity: 0;
+  transition: opacity 0.15s ease-in-out;
+}
+
+.pin-container:hover .pin-controls {
+  opacity: 1;
+}
+
+.pin-opacity-slider {
+  width: 80px;
+  height: 4px;
+  accent-color: var(--paper);
+  background: rgba(255, 255, 255, 0.2);
+  border-radius: 2px;
+  cursor: pointer;
+}
+
+.pin-close-btn {
+  background: transparent;
+  border: none;
+  color: var(--mute);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px;
+  border-radius: 2px;
+  transition: color 0.1s, background 0.1s;
+}
+
+.pin-close-btn:hover {
+  color: var(--text-1);
+  background: rgba(255, 255, 255, 0.1);
+}

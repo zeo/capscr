@@ -57,6 +57,8 @@ pub struct GifRecorder {
     frames: Arc<Mutex<Vec<CapturedFrame>>>,
     stop_signal: Option<Sender<()>>,
     region: Option<Rectangle>,
+    audio_temp_path: Option<std::path::PathBuf>,
+    audio_stop_tx: Option<Sender<()>>,
 }
 
 struct CapturedFrame {
@@ -141,6 +143,8 @@ impl GifRecorder {
             frames: Arc::new(Mutex::new(Vec::new())),
             stop_signal: None,
             region: None,
+            audio_temp_path: None,
+            audio_stop_tx: None,
         }
     }
 
@@ -169,6 +173,22 @@ impl GifRecorder {
 
         let (tx, rx): (Sender<()>, Receiver<()>) = channel();
         self.stop_signal = Some(tx);
+
+        if self.settings.record_audio {
+            let temp_dir = std::env::temp_dir();
+            let audio_filename = format!("capscr_audio_{}.wav", uuid::Uuid::new_v4().as_simple());
+            let audio_path = temp_dir.join(audio_filename);
+            self.audio_temp_path = Some(audio_path.clone());
+            
+            let (audio_tx, audio_rx) = channel();
+            self.audio_stop_tx = Some(audio_tx);
+
+            thread::spawn(move || {
+                if let Err(e) = record_loopback_audio(&audio_path, audio_rx) {
+                    tracing::error!("WASAPI Audio loopback record error: {e}");
+                }
+            });
+        }
 
         let state = Arc::clone(&self.state);
         let frames = Arc::clone(&self.frames);
@@ -360,6 +380,9 @@ impl GifRecorder {
         if let Some(tx) = self.stop_signal.take() {
             let _ = tx.send(());
         }
+        if let Some(tx) = self.audio_stop_tx.take() {
+            let _ = tx.send(());
+        }
     }
 
     #[allow(dead_code)]
@@ -522,6 +545,10 @@ impl GifRecorder {
             }
         }
 
+        if let Some(ref wav_path) = self.audio_temp_path {
+            let _ = std::fs::remove_file(wav_path);
+        }
+
         Ok(())
     }
 
@@ -569,28 +596,54 @@ impl GifRecorder {
             image::imageops::FilterType::Nearest
         };
 
+        let audio_exists = self.audio_temp_path.as_ref()
+            .map(|p| p.exists() && std::fs::metadata(p).map(|m| m.len() > 44).unwrap_or(false))
+            .unwrap_or(false);
+
+        let mut args = vec![
+            "-f".to_string(),
+            "rawvideo".to_string(),
+            "-pix_fmt".to_string(),
+            "rgba".to_string(),
+            "-s".to_string(),
+            format!("{}x{}", orig_width, orig_height),
+            "-r".to_string(),
+            fps.to_string(),
+            "-i".to_string(),
+            "-".to_string(),
+        ];
+
+        if audio_exists {
+            let wav_path_str = self.audio_temp_path.as_ref().unwrap().to_string_lossy().to_string();
+            args.push("-i".to_string());
+            args.push(wav_path_str);
+        }
+
+        args.extend([
+            "-c:v".to_string(),
+            "libx264".to_string(),
+        ]);
+
+        if audio_exists {
+            args.extend([
+                "-c:a".to_string(),
+                "aac".to_string(),
+                "-shortest".to_string(),
+            ]);
+        }
+
+        args.extend([
+            "-pix_fmt".to_string(),
+            "yuv420p".to_string(),
+            "-crf".to_string(),
+            "23".to_string(),
+            "-y".to_string(),
+            path.to_string_lossy().to_string(),
+        ]);
+
         // spawn ffmpeg child process and write raw rgba video frames to stdin
         let mut child = std::process::Command::new(find_ffmpeg())
-            .args([
-                "-f",
-                "rawvideo",
-                "-pix_fmt",
-                "rgba",
-                "-s",
-                &format!("{}x{}", orig_width, orig_height),
-                "-r",
-                &fps.to_string(),
-                "-i",
-                "-",
-                "-c:v",
-                "libx264",
-                "-pix_fmt",
-                "yuv420p",
-                "-crf",
-                "23",
-                "-y",
-                &path.to_string_lossy(),
-            ])
+            .args(&args)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
@@ -632,6 +685,12 @@ impl GifRecorder {
             return Err(anyhow!("ffmpeg exited with error status: {}", status));
         }
 
+        if audio_exists {
+            if let Some(ref wav_path) = self.audio_temp_path {
+                let _ = std::fs::remove_file(wav_path);
+            }
+        }
+
         Ok(())
     }
 
@@ -643,6 +702,11 @@ impl GifRecorder {
         if let Ok(mut state) = self.state.lock() {
             *state = RecordingState::Idle;
         }
+        if let Some(ref wav_path) = self.audio_temp_path {
+            let _ = std::fs::remove_file(wav_path);
+        }
+        self.audio_temp_path = None;
+        self.audio_stop_tx = None;
     }
 }
 
@@ -689,6 +753,111 @@ pub fn is_ffmpeg_available() -> bool {
         .unwrap_or(false)
 }
 
+#[cfg(windows)]
+fn write_wav_header(
+    writer: &mut std::fs::File,
+    data_size: u32,
+    sample_rate: u32,
+    channels: u16,
+    bits_per_sample: u16,
+) -> std::io::Result<()> {
+    use std::io::Write;
+    writer.write_all(b"RIFF")?;
+    writer.write_all(&(data_size + 36).to_le_bytes())?;
+    writer.write_all(b"WAVE")?;
+    writer.write_all(b"fmt ")?;
+    writer.write_all(&16u32.to_le_bytes())?;
+    let audio_format: u16 = if bits_per_sample == 32 { 3 } else { 1 };
+    writer.write_all(&audio_format.to_le_bytes())?;
+    writer.write_all(&channels.to_le_bytes())?;
+    writer.write_all(&sample_rate.to_le_bytes())?;
+    let block_align = channels * (bits_per_sample / 8);
+    let byte_rate = sample_rate * block_align as u32;
+    writer.write_all(&byte_rate.to_le_bytes())?;
+    writer.write_all(&block_align.to_le_bytes())?;
+    writer.write_all(&bits_per_sample.to_le_bytes())?;
+    writer.write_all(b"data")?;
+    writer.write_all(&data_size.to_le_bytes())?;
+    Ok(())
+}
+
+#[cfg(windows)]
+pub fn record_loopback_audio(
+    wav_path: &Path,
+    stop_rx: Receiver<()>,
+) -> Result<()> {
+    use std::io::{Seek, Write};
+    
+    let _ = wasapi::initialize_mta();
+
+    let device = wasapi::get_default_device(&wasapi::Direction::Render)
+        .map_err(|e| anyhow!("failed to get default render device: {e:?}"))?;
+
+    let mut client = device.get_iaudioclient()
+        .map_err(|e| anyhow!("failed to get audio client: {e:?}"))?;
+
+    let format = client.get_mixformat()
+        .map_err(|e| anyhow!("failed to get mix format: {e:?}"))?;
+
+    let sample_rate = format.get_samplespersec();
+    let channels = format.get_nchannels() as u16;
+    let bits_per_sample = format.get_bitspersample() as u16;
+    let block_align = format.get_blockalign() as usize;
+
+    let mode = wasapi::StreamMode::PollingShared {
+        autoconvert: true,
+        buffer_duration_hns: 100_000,
+    };
+    client.initialize_client(&format, &wasapi::Direction::Capture, &mode)
+        .map_err(|e| anyhow!("failed to initialize audio client: {e:?}"))?;
+
+    let capture_client = client.get_audiocaptureclient()
+        .map_err(|e| anyhow!("failed to get audio capture client: {e:?}"))?;
+
+    let mut temp_file = std::fs::File::create(wav_path)?;
+    temp_file.write_all(&[0u8; 44])?;
+
+    let mut bytes_written: u32 = 0;
+
+    client.start_stream()
+        .map_err(|e| anyhow!("failed to start audio stream: {e:?}"))?;
+
+    while stop_rx.try_recv().is_err() {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+
+        while let Ok(Some(packet_size)) = capture_client.get_next_packet_size() {
+            if packet_size == 0 {
+                break;
+            }
+            let mut chunk = vec![0u8; packet_size as usize * block_align];
+            if let Ok((frames, _info)) = capture_client.read_from_device(&mut chunk) {
+                if frames > 0 {
+                    let size = frames as usize * block_align;
+                    temp_file.write_all(&chunk[..size])?;
+                    bytes_written = bytes_written.saturating_add(size as u32);
+                }
+            } else {
+                break;
+            }
+        }
+    }
+
+    let _ = client.stop_stream();
+
+    temp_file.seek(std::io::SeekFrom::Start(0))?;
+    write_wav_header(&mut temp_file, bytes_written, sample_rate, channels, bits_per_sample)?;
+
+    Ok(())
+}
+
+#[cfg(not(windows))]
+pub fn record_loopback_audio(
+    _wav_path: &Path,
+    _stop_rx: Receiver<()>,
+) -> Result<()> {
+    Err(anyhow!("WASAPI loopback audio is only supported on Windows"))
+}
+
 impl Default for GifRecorder {
     fn default() -> Self {
         Self::new(RecordingSettings::default())
@@ -698,6 +867,33 @@ impl Default for GifRecorder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[cfg(windows)]
+    fn test_write_wav_header_structure() {
+        let mut buffer = tempfile::tempfile().unwrap();
+        let res = write_wav_header(&mut buffer, 1000, 44100, 2, 16);
+        assert!(res.is_ok());
+        
+        use std::io::{Seek, Read};
+        buffer.seek(std::io::SeekFrom::Start(0)).unwrap();
+        let mut header = [0u8; 44];
+        buffer.read_exact(&mut header).unwrap();
+        
+        assert_eq!(&header[0..4], b"RIFF");
+        assert_eq!(u32::from_le_bytes(header[4..8].try_into().unwrap()), 1036);
+        assert_eq!(&header[8..12], b"WAVE");
+        assert_eq!(&header[12..16], b"fmt ");
+        assert_eq!(u32::from_le_bytes(header[16..20].try_into().unwrap()), 16);
+        assert_eq!(u16::from_le_bytes(header[20..22].try_into().unwrap()), 1);
+        assert_eq!(u16::from_le_bytes(header[22..24].try_into().unwrap()), 2);
+        assert_eq!(u32::from_le_bytes(header[24..28].try_into().unwrap()), 44100);
+        assert_eq!(u32::from_le_bytes(header[28..32].try_into().unwrap()), 176400);
+        assert_eq!(u16::from_le_bytes(header[32..34].try_into().unwrap()), 4);
+        assert_eq!(u16::from_le_bytes(header[34..36].try_into().unwrap()), 16);
+        assert_eq!(&header[36..40], b"data");
+        assert_eq!(u32::from_le_bytes(header[40..44].try_into().unwrap()), 1000);
+    }
 
     #[test]
     fn frame_durations_use_real_gaps() {

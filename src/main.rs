@@ -245,6 +245,9 @@ fn main() {
             commands::sftp_forget_host,
             commands::test_upload_connection,
             commands::fire_task,
+            commands::run_ocr,
+            commands::pin_image,
+            commands::get_pinned_image_path,
         ])
         .build(tauri::generate_context!())
         .expect("error while building capscr")

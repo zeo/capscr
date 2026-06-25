@@ -19,7 +19,7 @@ export interface HdrConfig {
 
 export interface OutputConfig {
   directory: string;
-  format: "Png" | "Jpeg" | "Gif" | "Webp" | "Bmp";
+  format: "Png" | "Jpeg" | "Gif" | "Webp" | "Bmp" | "Avif" | "Jxl";
   quality: number;
   filename_template: string;
   preserve_hdr: boolean;
@@ -31,6 +31,7 @@ export interface CaptureConfig {
   gif_fps: number;
   gif_max_duration_secs: number;
   hdr: HdrConfig;
+  record_audio: boolean;
 }
 
 export interface FtpConfig {
@@ -68,8 +69,18 @@ export interface SftpConfig {
   private_key_passphrase_encrypted: string;
 }
 
+export interface S3Config {
+  bucket: string;
+  region: string;
+  endpoint: string;
+  access_key_id: string;
+  secret_access_key: string;
+  secret_access_key_encrypted: string;
+  public_url_template: string;
+}
+
 export interface UploadConfig {
-  destination: "Imgur" | "Custom" | "Ftp" | "Sftp";
+  destination: "Imgur" | "Custom" | "Ftp" | "Sftp" | "S3";
   copy_url_to_clipboard: boolean;
   custom_url: string;
   custom_form_name: string;
@@ -77,6 +88,7 @@ export interface UploadConfig {
   imgur_client_id: string;
   ftp: FtpConfig;
   sftp: SftpConfig;
+  s3: S3Config;
 }
 
 export interface UiConfig {
@@ -103,7 +115,7 @@ export interface CaptureTask {
     | "open-editor"
     | "prompt"
     | "do-nothing";
-  target_destination?: "imgur" | "custom" | "ftp" | "sftp" | null;
+  target_destination?: "imgur" | "custom" | "ftp" | "sftp" | "s3" | null;
 }
 
 export interface AppConfig {
@@ -244,7 +256,10 @@ export const api = {
   sftpKnownHosts: () => invoke<SftpKnownHost[]>("sftp_known_hosts"),
   sftpForgetHost: (hostPort: string) =>
     invoke<boolean>("sftp_forget_host", { hostPort }),
-  testUploadConnection: (destination: "Ftp" | "Sftp" | "Imgur" | "Custom") =>
+  testUploadConnection: (destination: "Ftp" | "Sftp" | "Imgur" | "Custom" | "S3") =>
     invoke<ConnectionTestReport>("test_upload_connection", { destination }),
   fireTask: (taskId: string) => invoke<void>("fire_task", { taskId }),
+  runOcr: (path: string) => invoke<string>("run_ocr", { path }),
+  pinImage: (path: string) => invoke<void>("pin_image", { path }),
+  getPinnedImagePath: (label: string) => invoke<string | null>("get_pinned_image_path", { label }),
 };

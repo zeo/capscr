@@ -19,6 +19,8 @@ import {
   Search,
   Scissors,
   X,
+  Type,
+  Pin,
 } from "lucide-solid";
 import { api } from "../api";
 import { TrimModal } from "../components/TrimModal";
@@ -137,6 +139,24 @@ export function History() {
   };
   const doEdit = (path: string) => {
     api.openEditor(path).catch((e: unknown) => showFlash("err", `editor failed: ${e}`));
+  };
+  const doOcr = (path: string) => {
+    showFlash("ok", "extracting text...");
+    api.runOcr(path)
+      .then((text: string) => {
+        if (!text || text.trim() === "") {
+          showFlash("err", "no text found in image");
+        } else {
+          navigator.clipboard.writeText(text)
+            .then(() => showFlash("ok", `OCR: text copied (${text.length} chars)`))
+            .catch(() => showFlash("err", "failed to copy to clipboard"));
+        }
+      })
+      .catch((e: unknown) => showFlash("err", `OCR failed: ${e}`));
+  };
+  const doPin = (path: string) => {
+    api.pinImage(path)
+      .catch((e: unknown) => showFlash("err", `pin failed: ${e}`));
   };
   const doDelete = (path: string) => {
     api.deleteCapture(path).then(() => {
@@ -309,13 +329,27 @@ export function History() {
                       <Scissors size={12} stroke-width={1.5} />
                     </button>
                   </Show>
-                  <Show when={!e.is_gif && !e.is_mp4}>
+                   <Show when={!e.is_gif && !e.is_mp4}>
                     <button
                       class="icon-btn"
                       title="edit"
                       onClick={() => doEdit(e.path)}
                     >
                       <Edit3 size={12} stroke-width={1.5} />
+                    </button>
+                    <button
+                      class="icon-btn"
+                      title="extract text (OCR)"
+                      onClick={() => doOcr(e.path)}
+                    >
+                      <Type size={12} stroke-width={1.5} />
+                    </button>
+                    <button
+                      class="icon-btn"
+                      title="pin to screen"
+                      onClick={() => doPin(e.path)}
+                    >
+                      <Pin size={12} stroke-width={1.5} />
                     </button>
                   </Show>
                   <button

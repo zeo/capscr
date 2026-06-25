@@ -21,6 +21,7 @@ pub struct RecordingSettings {
     // composite the live system cursor into each frame, mirroring the
     // capture.show_cursor toggle used by still captures
     pub show_cursor: bool,
+    pub record_audio: bool,
 }
 
 impl Default for RecordingSettings {
@@ -30,6 +31,7 @@ impl Default for RecordingSettings {
             max_duration: Duration::from_secs(30),
             quality: 80,
             show_cursor: false,
+            record_audio: false,
         }
     }
 }
@@ -45,6 +47,7 @@ mod tests {
             max_duration: Duration::from_secs(10),
             quality: 90,
             show_cursor: false,
+            record_audio: false,
         };
         assert_eq!(settings.quality, 90);
         assert_eq!(settings.fps, 30);
