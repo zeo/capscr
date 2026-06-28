@@ -107,6 +107,7 @@ mod windows_impl {
     use windows::Win32::Graphics::Gdi::{
         CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetDC, ReleaseDC,
         SelectObject, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HBITMAP, HDC,
+        GetPixel,
     };
     use windows::Win32::UI::WindowsAndMessaging::{
         CopyIcon, DestroyIcon, DrawIconEx, GetCursorInfo, GetIconInfo, CURSORINFO, CURSOR_SHOWING,
@@ -289,9 +290,28 @@ mod windows_impl {
             // invisible cursor.
             let any_alpha = rgba.chunks_exact(4).any(|p| p[3] != 0);
             if !any_alpha {
-                for p in rgba.chunks_exact_mut(4) {
-                    if p[0] != 0 || p[1] != 0 || p[2] != 0 {
-                        p[3] = 255;
+                let old_bmp = SelectObject(mem_dc, icon_info.hbmMask);
+                let mut fallback = true;
+                if !old_bmp.is_invalid() {
+                    for y in 0..height {
+                        for x in 0..width {
+                            let color = GetPixel(mem_dc, x as i32, y as i32);
+                            let idx = ((y * width + x) * 4) as usize;
+                            if color.0 & 0x00FFFFFF == 0 {
+                                rgba[idx + 3] = 255;
+                            } else {
+                                rgba[idx + 3] = 0;
+                            }
+                        }
+                    }
+                    SelectObject(mem_dc, old_bmp);
+                    fallback = false;
+                }
+                if fallback {
+                    for p in rgba.chunks_exact_mut(4) {
+                        if p[0] != 0 || p[1] != 0 || p[2] != 0 {
+                            p[3] = 255;
+                        }
                     }
                 }
             }
