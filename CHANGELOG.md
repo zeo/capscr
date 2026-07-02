@@ -4,7 +4,8 @@ format follows [keep-a-changelog](https://keepachangelog.com/en/1.1.0/) loosely.
 
 ## [unreleased]
 
-nothing pending. drop ideas in github issues.
+### added
+- a native installer: `capscr-x.x.x-setup.exe` replaces the bare MSI as the download — a single small window in capscr's own greyscale style (no wizard), wrapping the same signed MSI the in-app updater consumes, so the update chain is untouched. supports `/S` for silent installs and `/uninstall`; the MSI stays attached for scripted deployment
 
 ## [0.5.40] — 2026-06-28
 

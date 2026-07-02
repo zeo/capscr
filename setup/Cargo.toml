@@ -1,0 +1,38 @@
+[package]
+name = "capscr-setup"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "capscr's installer"
+publish = false
+
+[[bin]]
+name = "capscr-setup"
+path = "src/main.rs"
+
+[dependencies]
+miniz_oxide = "0.8"
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_Graphics_Dwm",
+    "Win32_Security",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Registry",
+    "Win32_System_Threading",
+    "Win32_UI_HiDpi",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[build-dependencies]
+miniz_oxide = "0.8"
+embed-manifest = "1.5.0"
+embed-resource = "2.5"
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"

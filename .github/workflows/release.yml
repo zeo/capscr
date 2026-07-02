@@ -75,3 +75,34 @@ jobs:
           releaseDraft: false
           prerelease: false
           includeUpdaterJson: true
+
+      # the branded first-install experience: a native window wrapped around the
+      # very MSI tauri just built (and signed), so the in-app updater's chain is
+      # untouched. signed with the same cert, attached beside the MSI
+      - name: Build capscr-setup (native installer)
+        shell: powershell
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          $ver = $env:TAG_NAME -replace '^v',''
+          $msi = Get-ChildItem target\release\bundle\msi\*.msi | Select-Object -First 1
+          if (-not $msi) { throw "no MSI found under target\release\bundle\msi" }
+          $env:CAPSCR_MSI_PATH = $msi.FullName
+          $env:CAPSCR_APP_VERSION = $ver
+          cargo build --release --manifest-path setup/Cargo.toml
+          if ($LASTEXITCODE -ne 0) { throw "setup build failed" }
+          $out = "capscr-$ver-setup.exe"
+          Copy-Item setup\target\release\capscr-setup.exe $out
+          # sign with the machine cert tauri already uses; warn-only if signtool
+          # is missing so the release still completes
+          $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" -ErrorAction SilentlyContinue |
+            Sort-Object FullName -Descending | Select-Object -First 1
+          if ($signtool) {
+            & $signtool.FullName sign /sha1 6EC3EDE3956F6F4B7423C723397AF66BC9D596BA /fd sha256 /tr http://timestamp.digicert.com /td sha256 $out
+            if ($LASTEXITCODE -ne 0) { Write-Warning "signing failed; uploading unsigned" }
+          } else {
+            Write-Warning "signtool not found; uploading unsigned"
+          }
+          gh release upload $env:TAG_NAME $out --clobber
+          if ($LASTEXITCODE -ne 0) { throw "release upload failed" }

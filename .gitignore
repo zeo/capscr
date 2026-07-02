@@ -18,3 +18,6 @@ build-*.log
 !/icons/icon.icns
 !/icons/installer-header.bmp
 !/icons/installer-sidebar.bmp
+
+# the native installer wrapper builds independently of the app crate
+/setup/target

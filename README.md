@@ -33,7 +33,8 @@ Download from the [releases page](https://github.com/lintowe/capscr/releases/lat
 
 | file | use |
 |---|---|
-| `capscr_x.x.x_x64_en-US.msi` | MSI installer |
+| `capscr-x.x.x-setup.exe` | **the installer** — one small window in capscr's own style, wrapping the signed MSI below (`/S` for silent installs) |
+| `capscr_x.x.x_x64_en-US.msi` | the raw MSI, for Group Policy / scripted deployment |
 | `capscr_x.x.x_x64_en-US.msi.sig` | updater signature — keep alongside the MSI if running the updater manually |
 | `latest.json` | auto-updater manifest, not for manual install |
 
