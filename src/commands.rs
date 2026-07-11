@@ -1889,6 +1889,11 @@ fn start_gif_recording(
         quality: cfg.output.quality,
         show_cursor: cfg.capture.show_cursor,
         record_audio: cfg.capture.record_audio,
+        format: if matches!(task.capture_mode, TaskCaptureMode::RegionMp4) {
+            crate::recording::RecordingFormat::Mp4
+        } else {
+            crate::recording::RecordingFormat::Gif
+        },
     };
 
     let mut recorder = GifRecorder::new(settings).with_region(region);

@@ -43,31 +43,33 @@ fn find_best_monitor(rect: Rectangle) -> Option<MonitorInfo> {
     best_monitor
 }
 
-use super::{RecordingSettings, RecordingState};
+use super::mp4_stream::{ffmpeg_command, Mp4Streamer};
+use super::spool::FrameSpool;
+use super::{RecordingFormat, RecordingSettings, RecordingState, StopReason};
 
-const MAX_FRAMES: usize = 18000;
+// insanity backstop above the theoretical max of 300s * 60fps
+const MAX_FRAMES: usize = 21600;
 const MAX_GIF_DIMENSION: u32 = 4096;
-const MAX_FRAME_MEMORY_MB: usize = 1024;
 const MAX_GIF_FILE_SIZE: u64 = 500 * 1024 * 1024;
 const MIN_FRAME_INTERVAL_MS: u64 = 16;
+
+// where kept frames go during capture. RAM stays flat either way: gif frames
+// spool to a temp file for the post-stop encode, mp4 frames stream into a
+// live ffmpeg child as they arrive
+enum FrameSink {
+    Gif(FrameSpool),
+    Mp4(Mp4Streamer),
+}
 
 pub struct GifRecorder {
     state: Arc<Mutex<RecordingState>>,
     settings: RecordingSettings,
-    frames: Arc<Mutex<Vec<CapturedFrame>>>,
+    sink: Arc<Mutex<Option<FrameSink>>>,
+    stop_reason: Arc<Mutex<Option<StopReason>>>,
     stop_signal: Option<Sender<()>>,
     region: Option<Rectangle>,
     audio_temp_path: Option<std::path::PathBuf>,
     audio_stop_tx: Option<Sender<()>>,
-}
-
-struct CapturedFrame {
-    image: RgbaImage,
-    #[allow(dead_code)]
-    fingerprint: u64,
-    // capture time relative to recording start; encoding uses the real gaps
-    // between frames so dedup-skipped and slow captures don't speed playback
-    at: Duration,
 }
 
 // map each frame's real end time (next frame's capture time; the last frame
@@ -175,7 +177,8 @@ impl GifRecorder {
         Self {
             state: Arc::new(Mutex::new(RecordingState::Idle)),
             settings,
-            frames: Arc::new(Mutex::new(Vec::new())),
+            sink: Arc::new(Mutex::new(None)),
+            stop_reason: Arc::new(Mutex::new(None)),
             stop_signal: None,
             region: None,
             audio_temp_path: None,
@@ -193,6 +196,11 @@ impl GifRecorder {
         *self.state.lock().unwrap_or_else(|e| e.into_inner())
     }
 
+    /// why the capture loop ended; None while it is still running
+    pub fn stop_reason(&self) -> Option<StopReason> {
+        *self.stop_reason.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     pub fn start(&mut self) -> Result<()> {
         {
             let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
@@ -202,14 +210,24 @@ impl GifRecorder {
             *state = RecordingState::Recording;
         }
 
-        if let Ok(mut frames) = self.frames.lock() {
-            frames.clear();
-        }
+        let new_sink = match self.settings.format {
+            RecordingFormat::Gif => match FrameSpool::create() {
+                Ok(spool) => FrameSink::Gif(spool),
+                Err(e) => {
+                    *self.state.lock().unwrap_or_else(|p| p.into_inner()) = RecordingState::Idle;
+                    return Err(e);
+                }
+            },
+            RecordingFormat::Mp4 => FrameSink::Mp4(Mp4Streamer::new(self.settings.fps)),
+        };
+        *self.sink.lock().unwrap_or_else(|e| e.into_inner()) = Some(new_sink);
+        *self.stop_reason.lock().unwrap_or_else(|e| e.into_inner()) = None;
 
         let (tx, rx): (Sender<()>, Receiver<()>) = channel();
         self.stop_signal = Some(tx);
 
-        if self.settings.record_audio {
+        // gifs have no audio track; only mp4 recordings pay for the wasapi tap
+        if self.settings.record_audio && self.settings.format == RecordingFormat::Mp4 {
             let temp_dir = std::env::temp_dir();
             let audio_filename = format!("capscr_audio_{}.wav", uuid::Uuid::new_v4().as_simple());
             let audio_path = temp_dir.join(audio_filename);
@@ -226,7 +244,8 @@ impl GifRecorder {
         }
 
         let state = Arc::clone(&self.state);
-        let frames = Arc::clone(&self.frames);
+        let sink = Arc::clone(&self.sink);
+        let stop_reason = Arc::clone(&self.stop_reason);
         let fps = self.settings.fps.max(1);
         let max_duration = self.settings.max_duration;
         let region = self.region;
@@ -253,18 +272,17 @@ impl GifRecorder {
             let min_frame_duration = Duration::from_millis(MIN_FRAME_INTERVAL_MS);
             let frame_duration = Duration::from_secs_f64(1.0 / fps as f64).max(min_frame_duration);
             let start_time = Instant::now();
-            let mut total_memory: usize = 0;
-            let max_memory = MAX_FRAME_MEMORY_MB * 1024 * 1024;
+            let mut frames_kept: usize = 0;
             let mut last_fingerprint: u64 = 0;
             let mut consecutive_dupes: u32 = 0;
 
-            loop {
+            let reason = loop {
                 if rx.try_recv().is_ok() {
-                    break;
+                    break StopReason::Requested;
                 }
 
                 if start_time.elapsed() >= max_duration {
-                    break;
+                    break StopReason::MaxDuration;
                 }
 
                 let frame_start = Instant::now();
@@ -376,23 +394,30 @@ impl GifRecorder {
                             );
                         }
 
-                        let frame_size = (image.width() as usize)
-                            .saturating_mul(image.height() as usize)
-                            .saturating_mul(4);
+                        if frames_kept >= MAX_FRAMES {
+                            break StopReason::FrameCap;
+                        }
 
-                        if let Ok(mut frames_lock) = frames.lock() {
-                            if frames_lock.len() >= MAX_FRAMES {
-                                break;
+                        let at = frame_start.duration_since(start_time);
+                        let mut sink_guard = sink.lock().unwrap_or_else(|e| e.into_inner());
+                        match sink_guard.as_mut() {
+                            Some(FrameSink::Gif(spool)) => match spool.push(&image, at) {
+                                Ok(true) => frames_kept += 1,
+                                Ok(false) => break StopReason::DiskFull,
+                                Err(e) => {
+                                    tracing::error!("frame spool write failed: {e}");
+                                    break StopReason::EncoderFailed;
+                                }
+                            },
+                            Some(FrameSink::Mp4(streamer)) => {
+                                if let Err(e) = streamer.push(image, at) {
+                                    tracing::error!("mp4 stream write failed: {e}");
+                                    break StopReason::EncoderFailed;
+                                }
+                                frames_kept += 1;
                             }
-                            if total_memory.saturating_add(frame_size) > max_memory {
-                                break;
-                            }
-                            total_memory = total_memory.saturating_add(frame_size);
-                            frames_lock.push(CapturedFrame {
-                                image,
-                                fingerprint,
-                                at: frame_start.duration_since(start_time),
-                            });
+                            // reset() cleared the sink under us — just end
+                            None => break StopReason::Requested,
                         }
                     }
                 }
@@ -401,8 +426,9 @@ impl GifRecorder {
                 if elapsed < frame_duration {
                     thread::sleep(frame_duration - elapsed);
                 }
-            }
+            };
 
+            *stop_reason.lock().unwrap_or_else(|e| e.into_inner()) = Some(reason);
             if let Ok(mut state_lock) = state.lock() {
                 *state_lock = RecordingState::Processing;
             }
@@ -422,7 +448,11 @@ impl GifRecorder {
 
     #[allow(dead_code)]
     pub fn frame_count(&self) -> usize {
-        self.frames.lock().unwrap_or_else(|e| e.into_inner()).len()
+        match self.sink.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+            Some(FrameSink::Gif(spool)) => spool.len(),
+            Some(FrameSink::Mp4(streamer)) => streamer.frames_pushed() as usize,
+            None => 0,
+        }
     }
 
     pub fn save<P: AsRef<Path>>(&self, path: P) -> Result<()> {
@@ -437,15 +467,18 @@ impl GifRecorder {
             return Err(anyhow!("Network paths not allowed"));
         }
 
-        let frames = self.frames.lock().unwrap_or_else(|e| e.into_inner());
+        let mut sink_guard = self.sink.lock().unwrap_or_else(|e| e.into_inner());
+        let spool = match sink_guard.as_mut() {
+            Some(FrameSink::Gif(spool)) => spool,
+            _ => return Err(anyhow!("No frames captured")),
+        };
 
-        if frames.is_empty() {
+        if spool.is_empty() {
             return Err(anyhow!("No frames captured"));
         }
 
-        let first_frame = &frames[0].image;
-        let orig_width = first_frame.width();
-        let orig_height = first_frame.height();
+        let orig_width = spool.metas()[0].width;
+        let orig_height = spool.metas()[0].height;
 
         if orig_width > MAX_GIF_DIMENSION || orig_height > MAX_GIF_DIMENSION {
             return Err(anyhow!("Image dimensions exceed GIF safety limit"));
@@ -468,7 +501,7 @@ impl GifRecorder {
 
         let fps = self.settings.fps.clamp(1, 60);
         let nominal = Duration::from_secs_f64(1.0 / fps as f64);
-        let times: Vec<Duration> = frames.iter().map(|f| f.at).collect();
+        let times: Vec<Duration> = spool.metas().iter().map(|m| m.at).collect();
         let delays = gif_delay_schedule(&times, nominal);
 
         let filter = if self.settings.quality >= 80 {
@@ -479,18 +512,17 @@ impl GifRecorder {
             image::imageops::FilterType::Nearest
         };
 
-        let num_frames = frames.len();
+        let num_frames = spool.len();
         let sample_step = (num_frames / 15).max(1);
         let mut sample_pixels = Vec::new();
 
         for i in (0..num_frames).step_by(sample_step) {
-            let captured = &frames[i];
-            let resized =
-                if captured.image.width() != orig_width || captured.image.height() != orig_height {
-                    image::imageops::resize(&captured.image, orig_width, orig_height, filter)
-                } else {
-                    captured.image.clone()
-                };
+            let frame = spool.read_frame(i)?;
+            let resized = if frame.width() != orig_width || frame.height() != orig_height {
+                image::imageops::resize(&frame, orig_width, orig_height, filter)
+            } else {
+                frame
+            };
 
             let rgba = resized.as_raw();
             let total_pixels = resized.width() * resized.height();
@@ -523,18 +555,17 @@ impl GifRecorder {
             let mut encoder = Encoder::new(file, width, height, &global_palette)?;
             encoder.set_repeat(Repeat::Infinite)?;
 
-            for (frame_idx, captured) in frames.iter().enumerate() {
+            for frame_idx in 0..num_frames {
                 // 0-delay frames were folded into a neighbour by the schedule;
-                // skipping them here also skips their resize + quantize cost
+                // skipping them here also skips their disk read + quantize cost
                 if delays[frame_idx] == 0 {
                     continue;
                 }
-                let resized = if captured.image.width() != orig_width
-                    || captured.image.height() != orig_height
-                {
-                    image::imageops::resize(&captured.image, orig_width, orig_height, filter)
+                let frame = spool.read_frame(frame_idx)?;
+                let resized = if frame.width() != orig_width || frame.height() != orig_height {
+                    image::imageops::resize(&frame, orig_width, orig_height, filter)
                 } else {
-                    captured.image.clone()
+                    frame
                 };
 
                 let rgba_data = resized.as_raw();
@@ -604,19 +635,20 @@ impl GifRecorder {
             return Err(anyhow!("Network paths not allowed"));
         }
 
-        let frames = self.frames.lock().unwrap_or_else(|e| e.into_inner());
-
-        if frames.is_empty() {
-            return Err(anyhow!("No frames captured"));
-        }
-
-        let first_frame = &frames[0].image;
-        let orig_width = first_frame.width();
-        let orig_height = first_frame.height();
-
-        if orig_width == 0 || orig_height == 0 {
-            return Err(anyhow!("Image has zero dimension"));
-        }
+        // frames were encoded live during capture; all that's left is closing
+        // the stream and muxing in the audio track (or moving the file)
+        let temp_video = {
+            let mut sink_guard = self.sink.lock().unwrap_or_else(|e| e.into_inner());
+            match sink_guard.as_mut() {
+                Some(FrameSink::Mp4(streamer)) => {
+                    if streamer.frames_pushed() == 0 {
+                        return Err(anyhow!("No frames captured"));
+                    }
+                    streamer.finish()?
+                }
+                _ => return Err(anyhow!("No frames captured")),
+            }
+        };
 
         if let Some(parent) = path.parent() {
             if !parent.as_os_str().is_empty() {
@@ -624,115 +656,47 @@ impl GifRecorder {
             }
         }
 
-        let fps = self.settings.fps.clamp(1, 60);
-        let nominal = Duration::from_secs_f64(1.0 / fps as f64);
-        let times: Vec<Duration> = frames.iter().map(|f| f.at).collect();
-        let repeats = mp4_repeat_schedule(&times, nominal, fps);
-        let filter = if self.settings.quality >= 80 {
-            image::imageops::FilterType::Lanczos3
-        } else if self.settings.quality >= 50 {
-            image::imageops::FilterType::Triangle
-        } else {
-            image::imageops::FilterType::Nearest
-        };
-
         let audio_exists = self.audio_temp_path.as_ref()
             .map(|p| p.exists() && std::fs::metadata(p).map(|m| m.len() > 44).unwrap_or(false))
             .unwrap_or(false);
 
-        let mut args = vec![
-            "-f".to_string(),
-            "rawvideo".to_string(),
-            "-pix_fmt".to_string(),
-            "rgba".to_string(),
-            "-s".to_string(),
-            format!("{}x{}", orig_width, orig_height),
-            "-r".to_string(),
-            fps.to_string(),
-            "-i".to_string(),
-            "-".to_string(),
-        ];
-
         if audio_exists {
-            let wav_path_str = self.audio_temp_path.as_ref().unwrap().to_string_lossy().to_string();
-            args.push("-i".to_string());
-            args.push(wav_path_str);
-        }
-
-        args.extend([
-            "-c:v".to_string(),
-            "libx264".to_string(),
-        ]);
-
-        if audio_exists {
-            args.extend([
-                "-c:a".to_string(),
-                "aac".to_string(),
-                "-shortest".to_string(),
-            ]);
-        }
-
-        args.extend([
-            "-pix_fmt".to_string(),
-            "yuv420p".to_string(),
-            "-crf".to_string(),
-            "23".to_string(),
-            "-y".to_string(),
-            path.to_string_lossy().to_string(),
-        ]);
-
-        // spawn ffmpeg child process and write raw rgba video frames to stdin
-        let mut child = std::process::Command::new(find_ffmpeg())
-            .args(&args)
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .map_err(|e| anyhow!("Failed to spawn ffmpeg: {}", e))?;
-
-        {
-            use std::io::Write;
-            let mut stdin = child
-                .stdin
-                .take()
-                .ok_or_else(|| anyhow!("Failed to open ffmpeg stdin"))?;
-
-            for (frame_idx, captured) in frames.iter().enumerate() {
-                // the rawvideo input is constant-rate: each frame is written
-                // once per tick of its scheduled slot so dedup-skipped and
-                // slow captures keep wall-clock timing. 0 = folded into a
-                // neighbour, skip the resize too
-                if repeats[frame_idx] == 0 {
-                    continue;
-                }
-                let resized = if captured.image.width() != orig_width
-                    || captured.image.height() != orig_height
-                {
-                    image::imageops::resize(&captured.image, orig_width, orig_height, filter)
-                } else {
-                    captured.image.clone()
-                };
-
-                let rgba_data = resized.as_raw();
-                for _ in 0..repeats[frame_idx] {
-                    stdin
-                        .write_all(rgba_data)
-                        .map_err(|e| anyhow!("Failed to write to ffmpeg stdin: {}", e))?;
-                }
+            let wav_path = self.audio_temp_path.as_ref().unwrap();
+            let mux_ok = ffmpeg_command()
+                .args([
+                    "-i",
+                    &temp_video.to_string_lossy(),
+                    "-i",
+                    &wav_path.to_string_lossy(),
+                    "-c:v",
+                    "copy",
+                    "-c:a",
+                    "aac",
+                    "-shortest",
+                    "-y",
+                    &path.to_string_lossy(),
+                ])
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false);
+            let _ = std::fs::remove_file(wav_path);
+            if mux_ok {
+                let _ = std::fs::remove_file(&temp_video);
+                return Ok(());
             }
-        } // stdin is closed here, signaling eof to ffmpeg
-
-        let status = child
-            .wait()
-            .map_err(|e| anyhow!("Failed to wait for ffmpeg: {}", e))?;
-        if !status.success() {
-            return Err(anyhow!("ffmpeg exited with error status: {}", status));
+            // a broken wav must not cost the user their video — fall through
+            // and keep the silent recording
+            tracing::warn!("audio mux failed; saving recording without audio");
         }
 
-        if audio_exists {
-            if let Some(ref wav_path) = self.audio_temp_path {
-                let _ = std::fs::remove_file(wav_path);
-            }
+        if std::fs::rename(&temp_video, path).is_err() {
+            // temp dir and output dir may sit on different volumes
+            std::fs::copy(&temp_video, path)
+                .map_err(|e| anyhow!("Failed to move recording into place: {}", e))?;
+            let _ = std::fs::remove_file(&temp_video);
         }
 
         Ok(())
@@ -740,9 +704,9 @@ impl GifRecorder {
 
     pub fn reset(&mut self) {
         self.stop();
-        if let Ok(mut frames) = self.frames.lock() {
-            frames.clear();
-        }
+        // dropping the sink removes spool/stream temp files and reaps any
+        // live ffmpeg child; a mid-capture thread sees None and ends
+        *self.sink.lock().unwrap_or_else(|e| e.into_inner()) = None;
         if let Ok(mut state) = self.state.lock() {
             *state = RecordingState::Idle;
         }
