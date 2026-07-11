@@ -1284,7 +1284,8 @@ pub fn exit_app(app: AppHandle) {
         if let Err(e) = std::fs::create_dir_all(&cfg.output.directory) {
             tracing::warn!("failed to create output dir on exit: {e}");
         }
-        let save_result = if is_mp4 { rec.save_mp4(&path) } else { rec.save(&path) };
+        let save_result =
+            if is_mp4 { rec.save_mp4(&path).map(|_| ()) } else { rec.save(&path) };
         match save_result {
             Ok(()) => {
                 notify_capture_saved(&app, &path);
@@ -2016,16 +2017,24 @@ fn finalize_gif_recording(task: &CaptureTask, app: &AppHandle) {
         let save_result = if is_mp4 {
             rec.save_mp4(&path)
         } else {
-            rec.save(&path)
+            rec.save(&path).map(|_| false)
         };
 
         match save_result {
-            Ok(()) => {
+            Ok(audio_dropped) => {
                 *state.last_save.lock().unwrap() = Some(path.clone());
                 Sound::Screenshot.play_if_enabled(cfg.post_capture.play_sound);
                 if cfg.ui.show_notifications {
                     let title = if is_mp4 { "Video saved" } else { "GIF saved" };
                     let _ = show_notification(title, &path.to_string_lossy());
+                }
+                // the user asked for system audio but the track was lost
+                if audio_dropped {
+                    emit_error(
+                        app,
+                        "recording",
+                        "saved without audio — the system-audio track couldn't be captured or muxed",
+                    );
                 }
                 // a stop the user didn't ask for deserves an explanation
                 let early_stop_note = match rec.stop_reason() {

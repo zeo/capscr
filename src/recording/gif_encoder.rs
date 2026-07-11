@@ -627,7 +627,10 @@ impl GifRecorder {
         Ok(())
     }
 
-    pub fn save_mp4<P: AsRef<Path>>(&self, path: P) -> Result<()> {
+    /// Ok(true) means the recording saved but the system-audio track the user
+    /// asked for is missing (capture produced nothing usable, or the mux
+    /// failed) — the caller should tell them it saved without audio.
+    pub fn save_mp4<P: AsRef<Path>>(&self, path: P) -> Result<bool> {
         let path = path.as_ref();
 
         let path_str = path.to_string_lossy();
@@ -689,7 +692,7 @@ impl GifRecorder {
             let _ = std::fs::remove_file(wav_path);
             if mux_ok {
                 let _ = std::fs::remove_file(&temp_video);
-                return Ok(());
+                return Ok(false);
             }
             // a broken wav must not cost the user their video — fall through
             // and keep the silent recording
@@ -703,7 +706,9 @@ impl GifRecorder {
             let _ = std::fs::remove_file(&temp_video);
         }
 
-        Ok(())
+        // reaching here with audio requested means the track was lost (no usable
+        // wav, or the mux above failed and we fell through)
+        Ok(self.settings.record_audio)
     }
 
     pub fn reset(&mut self) {
