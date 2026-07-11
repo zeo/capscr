@@ -78,7 +78,7 @@ function Hub() {
   // settings is buried behind a tab click.
   const historyTab = TABS.find((t) => t.id === "history") ?? TABS[0];
   const [tab, setTab] = createSignal<Tab>(historyTab);
-  const [captures] = createResource(api.listCaptures);
+  const [captures, { refetch: refetchCaptures }] = createResource(api.listCaptures);
   const [toasts, setToasts] = createSignal<Toast[]>([]);
   const [uploads, setUploads] = createSignal<UploadCard[]>([]);
   const [recording, setRecording] = createSignal(false);
@@ -178,6 +178,12 @@ function Hub() {
         setRecording(false);
         setRecordingSince(null);
         stopTick();
+      }),
+      // the hub window is reused for the whole process, so this resource loads
+      // once at first mount; refetch it when a capture lands so the statusbar
+      // count actually tracks new screenshots and recordings
+      await listen("capscr://capture-saved", () => {
+        refetchCaptures();
       }),
       // tray "Open hub → <Tab>" fires this so the hub lands on the chosen tab
       await listen<string>("capscr://goto-tab", (e) => {
