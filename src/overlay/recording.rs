@@ -27,10 +27,11 @@ mod windows_impl {
             UI::WindowsAndMessaging::{
                 CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetClientRect,
                 GetCursorPos, GetMessageW, KillTimer, LoadCursorW, PostMessageW, RegisterClassW,
-                SetCursor, SetLayeredWindowAttributes, SetTimer, ShowWindow, TranslateMessage,
-                CS_HREDRAW, CS_VREDRAW, IDC_ARROW, IDC_HAND, LWA_COLORKEY, MSG, SW_HIDE, SW_SHOWNA,
-                WM_DESTROY, WM_LBUTTONUP, WM_PAINT, WM_SETCURSOR, WM_TIMER, WM_USER, WNDCLASSW,
-                WS_EX_LAYERED, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
+                SetCursor, SetLayeredWindowAttributes, SetTimer, SetWindowDisplayAffinity,
+                ShowWindow, TranslateMessage, CS_HREDRAW, CS_VREDRAW, IDC_ARROW, IDC_HAND,
+                LWA_COLORKEY, MSG, SW_HIDE, SW_SHOWNA, WDA_EXCLUDEFROMCAPTURE, WM_DESTROY,
+                WM_LBUTTONUP, WM_PAINT, WM_SETCURSOR, WM_TIMER, WM_USER, WNDCLASSW, WS_EX_LAYERED,
+                WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
             },
         },
     };
@@ -263,6 +264,12 @@ mod windows_impl {
 
             if let Some(bar) = bar_hwnd {
                 *CONTROL_HWND.lock().unwrap() = Some(bar.0 as isize);
+                // keep the timer/stop bar out of the recorded frames: on a
+                // full-height region there's no room to place it clear of the
+                // capture rect, so exclude it from capture outright. no-ops on
+                // pre-2004 builds, where bar_placement's positioning still tries
+                // to keep it outside the region
+                let _ = SetWindowDisplayAffinity(bar, WDA_EXCLUDEFROMCAPTURE);
                 let _ = ShowWindow(bar, SW_SHOWNA);
                 let _ = SetTimer(bar, BAR_TIMER_ID, BAR_REFRESH_MS, None);
             }
