@@ -260,8 +260,9 @@ export function Marketplace() {
                     <span class="stick" />
                     empty registry
                     <p>
-                      there are no plugins to install yet — the plugin
-                      runtime (event hooks, wasm host) is live as of v0.4.
+                      there are no plugins to install yet — drop a plugin dir
+                      into the plugins folder, or check back once the registry
+                      has entries.
                     </p>
                   </div>
                 }
