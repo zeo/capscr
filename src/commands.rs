@@ -7,7 +7,7 @@ use crate::config::{
 };
 use crate::overlay::{RecordingOverlay, SelectionResult, UnifiedSelector};
 use crate::plugin::{CaptureType, PluginEvent, PluginResponse};
-use crate::recording::{GifRecorder, RecordingSettings, RecordingState};
+use crate::recording::{GifRecorder, RecordingSettings, RecordingState, StopReason};
 use crate::sound::Sound;
 use crate::state::{AppState, HotkeyStatus, UploadRecord};
 use crate::upload::{CustomUploader, FtpTarget, UploadService};
@@ -2005,6 +2005,23 @@ fn finalize_gif_recording(task: &CaptureTask, app: &AppHandle) {
                 if cfg.ui.show_notifications {
                     let title = if is_mp4 { "Video saved" } else { "GIF saved" };
                     let _ = show_notification(title, &path.to_string_lossy());
+                }
+                // a stop the user didn't ask for deserves an explanation
+                let early_stop_note = match rec.stop_reason() {
+                    Some(StopReason::MaxDuration) => Some(format!(
+                        "hit the {}s max duration — raise it under settings → capture",
+                        cfg.capture.gif_max_duration_secs
+                    )),
+                    Some(StopReason::FrameCap) => {
+                        Some("hit the frame-count safety limit — recording saved".to_string())
+                    }
+                    Some(StopReason::DiskFull) => Some(
+                        "stopped early: the disk is nearly full — recording saved".to_string(),
+                    ),
+                    _ => None,
+                };
+                if let Some(note) = early_stop_note {
+                    emit_error(app, "recording", &note);
                 }
                 notify_capture_saved(app, &path);
                 apply_gif_post_action(task, app, &path, &cfg);
