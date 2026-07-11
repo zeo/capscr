@@ -1017,6 +1017,45 @@ mod tests {
     }
 
     #[test]
+    fn gif_save_preserves_wall_clock_duration() {
+        // 45 frames arriving every 222ms — slower than the 15fps nominal,
+        // the exact shape that used to compress playback time
+        let recorder = GifRecorder::new(RecordingSettings::default());
+        {
+            let mut spool = FrameSpool::create().unwrap();
+            for i in 0..45u32 {
+                let shade = (i * 5) as u8;
+                let img = RgbaImage::from_pixel(32, 24, image::Rgba([shade, 0, 255 - shade, 255]));
+                spool
+                    .push(&img, Duration::from_millis(i as u64 * 222))
+                    .unwrap();
+            }
+            *recorder.sink.lock().unwrap() = Some(FrameSink::Gif(spool));
+        }
+
+        let path = std::env::temp_dir().join(format!(
+            "capscr_test_{}.gif",
+            uuid::Uuid::new_v4().as_simple()
+        ));
+        recorder.save(&path).unwrap();
+
+        let mut options = gif::DecodeOptions::new();
+        options.set_color_output(gif::ColorOutput::Indexed);
+        let mut decoder = options.read_info(std::fs::File::open(&path).unwrap()).unwrap();
+        let mut total_cs: u64 = 0;
+        let mut frames = 0;
+        while let Some(frame) = decoder.read_next_frame().unwrap() {
+            total_cs += frame.delay as u64;
+            frames += 1;
+        }
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(frames, 45);
+        // 44 gaps * 222ms + one nominal 66.7ms hold = 9834.7ms
+        assert!((982..=985).contains(&total_cs), "total {total_cs}cs, want ~983");
+    }
+
+    #[test]
     fn test_find_best_monitor_overlap() {
         if let Ok(monitors) = crate::capture::fast_list_monitors() {
             if let Some(m) = monitors.first() {

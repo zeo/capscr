@@ -228,4 +228,47 @@ mod tests {
         }
         assert!(!path.exists());
     }
+
+    // duration from the mvhd box: version byte decides 32- vs 64-bit fields
+    fn mp4_duration_secs(bytes: &[u8]) -> Option<f64> {
+        let pos = bytes.windows(4).position(|w| w == b"mvhd")?;
+        let body = &bytes[pos + 4..];
+        let (timescale, duration) = if body.first()? == &1 {
+            (
+                u32::from_be_bytes(body.get(20..24)?.try_into().ok()?),
+                u64::from_be_bytes(body.get(24..32)?.try_into().ok()?),
+            )
+        } else {
+            (
+                u32::from_be_bytes(body.get(12..16)?.try_into().ok()?),
+                u32::from_be_bytes(body.get(16..20)?.try_into().ok()?) as u64,
+            )
+        };
+        if timescale == 0 {
+            return None;
+        }
+        Some(duration as f64 / timescale as f64)
+    }
+
+    #[test]
+    fn stream_preserves_wall_clock_duration() {
+        if !super::super::is_ffmpeg_available() {
+            return;
+        }
+        // 40 frames every 100ms: per-frame rounding at 15fps used to stretch
+        // this to 5.3s; the cumulative schedule must land on 4.0s
+        let mut streamer = Mp4Streamer::new(15);
+        for i in 0..40u32 {
+            let shade = (i * 6) as u8;
+            let img = RgbaImage::from_pixel(64, 48, image::Rgba([shade, 30, 60, 255]));
+            streamer
+                .push(img, Duration::from_millis(i as u64 * 100))
+                .unwrap();
+        }
+        let path = streamer.finish().unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+        let secs = mp4_duration_secs(&bytes).expect("mvhd box present");
+        assert!((3.8..=4.2).contains(&secs), "duration {secs}s, want ~4.0");
+    }
 }
