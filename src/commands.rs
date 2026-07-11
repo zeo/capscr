@@ -2039,6 +2039,10 @@ fn finalize_gif_recording(task: &CaptureTask, app: &AppHandle) {
                     Some(StopReason::DiskFull) => Some(
                         "stopped early: the disk is nearly full — recording saved".to_string(),
                     ),
+                    Some(StopReason::EncoderFailed) => Some(
+                        "stopped early: couldn't write frames to disk — saved what was captured"
+                            .to_string(),
+                    ),
                     _ => None,
                 };
                 if let Some(note) = early_stop_note {
