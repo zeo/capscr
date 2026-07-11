@@ -201,6 +201,10 @@ impl GifRecorder {
         *self.stop_reason.lock().unwrap_or_else(|e| e.into_inner())
     }
 
+    pub fn format(&self) -> RecordingFormat {
+        self.settings.format
+    }
+
     pub fn start(&mut self) -> Result<()> {
         {
             let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
@@ -926,6 +930,19 @@ mod tests {
         assert_eq!(u16::from_le_bytes(header[34..36].try_into().unwrap()), 16);
         assert_eq!(&header[36..40], b"data");
         assert_eq!(u32::from_le_bytes(header[40..44].try_into().unwrap()), 1000);
+    }
+
+    #[test]
+    fn format_reports_configured_sink() {
+        // exit_app and finalize branch save() vs save_mp4() on this; if it ever
+        // stops reflecting the configured format, mp4 recordings get lost on quit
+        let gif = GifRecorder::new(RecordingSettings::default());
+        assert_eq!(gif.format(), RecordingFormat::Gif);
+        let mp4 = GifRecorder::new(RecordingSettings {
+            format: RecordingFormat::Mp4,
+            ..Default::default()
+        });
+        assert_eq!(mp4.format(), RecordingFormat::Mp4);
     }
 
     fn times_at_interval(count: usize, interval_ms: f64) -> Vec<Duration> {

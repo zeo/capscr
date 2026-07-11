@@ -1261,26 +1261,43 @@ pub fn open_in_explorer(path: String, state: State<AppState>) -> Result<(), Stri
 
 #[tauri::command]
 pub fn exit_app(app: AppHandle) {
-    // save any active gif recording before exiting so the user doesn't lose frames
+    // save any active recording before exiting so the user doesn't lose frames
     let state = app.state::<AppState>();
     let cfg = state.config.lock().unwrap().clone();
     let mut recorder = state.gif_recorder.lock().unwrap().take();
     if let Some(ref mut rec) = recorder {
         rec.stop();
+        // let the capture thread drain its last frames before we save, the same
+        // way finalize_gif_recording does, so we don't clip the tail
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while !matches!(rec.state(), crate::recording::RecordingState::Processing) {
+            if std::time::Instant::now() >= deadline {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+
+        let is_mp4 = rec.format() == crate::recording::RecordingFormat::Mp4;
         let mut path = cfg.output_path();
-        path.set_extension("gif");
+        path.set_extension(if is_mp4 { "mp4" } else { "gif" });
         let path = get_unique_filepath(&path);
         if let Err(e) = std::fs::create_dir_all(&cfg.output.directory) {
             tracing::warn!("failed to create output dir on exit: {e}");
         }
-        match rec.save(&path) {
+        let save_result = if is_mp4 { rec.save_mp4(&path) } else { rec.save(&path) };
+        match save_result {
             Ok(()) => {
                 notify_capture_saved(&app, &path);
                 if cfg.ui.show_notifications {
-                    let _ = show_notification("GIF saved", &path.to_string_lossy());
+                    let title = if is_mp4 { "Video saved" } else { "GIF saved" };
+                    let _ = show_notification(title, &path.to_string_lossy());
                 }
             }
-            Err(e) => tracing::warn!("gif save on exit failed: {e}"),
+            Err(e) => {
+                tracing::warn!("recording save on exit failed: {e}");
+                let err_type = if is_mp4 { "mp4-save" } else { "gif-save" };
+                emit_error(&app, err_type, &e.to_string());
+            }
         }
     }
     app.exit(0);
