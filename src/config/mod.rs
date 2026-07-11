@@ -939,6 +939,57 @@ impl Config {
             .performance
             .tick_interval_ms
             .clamp(MIN_TICK_INTERVAL_MS, MAX_TICK_INTERVAL_MS);
+
+        // repair everything validate() would reject so a parseable config is
+        // always salvageable in place: without this, one bad hdr value or one
+        // duplicate task hotkey made load() throw away every setting (theme,
+        // output dir, upload destination, in-memory secrets) for the session.
+        if !self.capture.hdr.brightness_nits.is_finite() || self.capture.hdr.brightness_nits < 0.0 {
+            self.capture.hdr.brightness_nits = 0.0;
+        } else if self.capture.hdr.brightness_nits > 10000.0 {
+            self.capture.hdr.brightness_nits = 10000.0;
+        }
+        if !self.capture.hdr.user_brightness_scale.is_finite()
+            || self.capture.hdr.user_brightness_scale <= 0.0
+        {
+            self.capture.hdr.user_brightness_scale = 1.0;
+        } else if self.capture.hdr.user_brightness_scale > 100.0 {
+            self.capture.hdr.user_brightness_scale = 100.0;
+        }
+
+        let hotkey_chars_ok =
+            |s: &str| s.chars().all(|c| c.is_alphanumeric() || c == '+' || c == ' ');
+        for hk in [&mut self.hotkeys.screenshot, &mut self.hotkeys.record_gif] {
+            if hk.len() > MAX_HOTKEY_LEN || !hotkey_chars_ok(hk) {
+                hk.clear();
+            }
+        }
+
+        let mut seen_ids = std::collections::HashSet::new();
+        let mut seen_hotkeys = std::collections::HashSet::new();
+        self.capture_tasks.retain_mut(|task| {
+            // an empty/malformed id or name can't be repaired meaningfully; drop
+            // the task rather than nuke the whole config
+            let id_ok = !task.id.is_empty()
+                && task.id.len() <= 64
+                && task
+                    .id
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
+            let name_ok = !task.name.is_empty() && task.name.len() <= 128;
+            if !id_ok || !name_ok || !seen_ids.insert(task.id.clone()) {
+                return false;
+            }
+            // a malformed or already-taken hotkey just unbinds the task, keeping
+            // the rest of it intact
+            if task.hotkey.len() > MAX_HOTKEY_LEN || !hotkey_chars_ok(&task.hotkey) {
+                task.hotkey.clear();
+            }
+            if !task.hotkey.is_empty() && !seen_hotkeys.insert(task.hotkey.clone()) {
+                task.hotkey.clear();
+            }
+            true
+        });
     }
 }
 
@@ -1225,5 +1276,46 @@ mod tests {
         assert!(config.validate().is_err());
         config.performance.tick_interval_ms = 700;
         assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn sanitize_repairs_instead_of_discarding_config() {
+        let mut config = Config::default();
+        // an unrelated setting that must survive the repair
+        config.output.quality = 55;
+        // values validate() rejects that sanitize() must now clamp
+        config.capture.hdr.brightness_nits = f32::NAN;
+        config.capture.hdr.user_brightness_scale = -3.0;
+        // make the screenshot task collide with gif-save's hotkey
+        config.capture_tasks[0].hotkey = "Ctrl+Shift+G".to_string();
+        // a structurally broken task that can't be repaired
+        config.capture_tasks.push(CaptureTask {
+            id: "Bad ID!".to_string(),
+            name: "x".to_string(),
+            hotkey: String::new(),
+            capture_mode: TaskCaptureMode::Region,
+            post_action: TaskPostAction::SaveFile,
+            target_destination: None,
+        });
+
+        config.sanitize();
+
+        assert!(
+            config.validate().is_ok(),
+            "a parseable config must always sanitize to a valid one"
+        );
+        assert_eq!(config.output.quality, 55, "unrelated settings must survive");
+        assert!(config.capture.hdr.brightness_nits.is_finite());
+        assert!(config.capture.hdr.user_brightness_scale > 0.0);
+        assert!(
+            config.capture_tasks.iter().all(|t| t.id != "Bad ID!"),
+            "the malformed-id task should be dropped"
+        );
+        let bound = config
+            .capture_tasks
+            .iter()
+            .filter(|t| t.hotkey == "Ctrl+Shift+G")
+            .count();
+        assert_eq!(bound, 1, "the duplicate hotkey should be unbound on one task");
     }
 }
