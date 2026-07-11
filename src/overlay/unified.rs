@@ -603,6 +603,14 @@ mod windows_impl {
                     if let Some(bmp) = SCREEN_BITMAP.lock().unwrap().take() {
                         let _ = DeleteObject(HBITMAP(bmp as *mut _));
                     }
+                    // the dim layer was built before this early return; WM_DESTROY
+                    // never runs without a window, so free it here too
+                    if let Some(dc) = DIM_DC.lock().unwrap().take() {
+                        let _ = DeleteDC(HDC(dc as *mut _));
+                    }
+                    if let Some(bmp) = DIM_BITMAP.lock().unwrap().take() {
+                        let _ = DeleteObject(HBITMAP(bmp as *mut _));
+                    }
                     SELECTING.store(false, Ordering::SeqCst);
                     return SelectionResult::Cancelled;
                 }
@@ -626,6 +634,14 @@ mod windows_impl {
                             let _ = DeleteDC(HDC(dc as *mut _));
                         }
                         if let Some(bmp) = SCREEN_BITMAP.lock().unwrap().take() {
+                            let _ = DeleteObject(HBITMAP(bmp as *mut _));
+                        }
+                        // the dim layer was built before this early return;
+                        // WM_DESTROY never runs without a window, so free it here
+                        if let Some(dc) = DIM_DC.lock().unwrap().take() {
+                            let _ = DeleteDC(HDC(dc as *mut _));
+                        }
+                        if let Some(bmp) = DIM_BITMAP.lock().unwrap().take() {
                             let _ = DeleteObject(HBITMAP(bmp as *mut _));
                         }
                         SELECTING.store(false, Ordering::SeqCst);
@@ -657,6 +673,14 @@ mod windows_impl {
                         let _ = DeleteDC(HDC(dc as *mut _));
                     }
                     if let Some(bmp) = SCREEN_BITMAP.lock().unwrap().take() {
+                        let _ = DeleteObject(HBITMAP(bmp as *mut _));
+                    }
+                    // the dim layer was built before this early return; WM_DESTROY
+                    // never runs without a window, so free it here too
+                    if let Some(dc) = DIM_DC.lock().unwrap().take() {
+                        let _ = DeleteDC(HDC(dc as *mut _));
+                    }
+                    if let Some(bmp) = DIM_BITMAP.lock().unwrap().take() {
                         let _ = DeleteObject(HBITMAP(bmp as *mut _));
                     }
                     SELECTING.store(false, Ordering::SeqCst);
