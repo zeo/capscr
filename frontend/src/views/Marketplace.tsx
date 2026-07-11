@@ -200,6 +200,14 @@ export function Marketplace() {
                           {p.description}
                         </div>
                       </Show>
+                      <Show when={p.capabilities.length > 0}>
+                        <div class="perm-row">
+                          <span class="perm-label">grants</span>
+                          <For each={p.capabilities}>
+                            {(cap) => <span class="perm-tag">{cap}</span>}
+                          </For>
+                        </div>
+                      </Show>
                     </div>
                     <div class="list-item-actions">
                       <button

@@ -148,6 +148,7 @@ export interface InstalledPlugin {
   version: string;
   description: string;
   enabled: boolean;
+  capabilities: string[];
 }
 
 export interface RegistryEntry {

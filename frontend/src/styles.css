@@ -1243,6 +1243,30 @@ button.btn,
   color: var(--rule-2);
 }
 
+.perm-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+  margin-top: 7px;
+}
+
+.perm-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--mute);
+}
+
+.perm-tag {
+  padding: 1px 6px;
+  border: 1px solid var(--rule-2);
+  border-radius: 2px;
+  font-size: 10px;
+  font-family: var(--mono, monospace);
+  color: var(--text-2);
+}
+
 .flash {
   font-size: 11px;
   color: var(--mute);

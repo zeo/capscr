@@ -2401,6 +2401,9 @@ pub struct InstalledPlugin {
     pub version: String,
     pub description: String,
     pub enabled: bool,
+    // human-readable "area:grant" strings (e.g. "image:read", "fetch:api.x.com")
+    // so the plugins tab can show what a plugin was granted at install time
+    pub capabilities: Vec<String>,
 }
 
 // legacy flat plugin.toml (the metadata-only era: top-level name/version/...).
@@ -2420,22 +2423,48 @@ fn default_true() -> bool {
     true
 }
 
-/// extract (name, version, description, enabled) for the plugins list from a
-/// plugin.toml body. tries the sectioned runtime schema first — what real WASM
-/// plugins use — then falls back to the legacy flat schema. None if neither
-/// parses. without the sectioned attempt, installed WASM plugins (whose name
-/// lives under `[plugin]`) silently fail to parse and never appear in the list.
-fn read_plugin_listing(body: &str) -> Option<(String, String, String, bool)> {
+struct PluginListing {
+    name: String,
+    version: String,
+    description: String,
+    enabled: bool,
+    capabilities: Vec<String>,
+}
+
+/// flatten a plugin's `[capabilities]` table into sorted "area:grant" labels
+/// (e.g. "clipboard:write", "fetch:https://api.x.com/*") for display
+fn flatten_capabilities(caps: &std::collections::HashMap<String, Vec<String>>) -> Vec<String> {
+    let mut out: Vec<String> = caps
+        .iter()
+        .flat_map(|(k, vs)| vs.iter().map(move |v| format!("{k}:{v}")))
+        .collect();
+    out.sort();
+    out
+}
+
+/// read the plugins-list fields from a plugin.toml body. tries the sectioned
+/// runtime schema first — what real WASM plugins use — then falls back to the
+/// legacy flat schema. None if neither parses. without the sectioned attempt,
+/// installed WASM plugins (whose name lives under `[plugin]`) silently fail to
+/// parse and never appear in the list.
+fn read_plugin_listing(body: &str) -> Option<PluginListing> {
     if let Ok(m) = toml::from_str::<crate::plugin::PluginManifest>(body) {
-        return Some((
-            m.plugin.name,
-            m.plugin.version,
-            m.plugin.description.unwrap_or_default(),
-            m.enabled,
-        ));
+        return Some(PluginListing {
+            name: m.plugin.name,
+            version: m.plugin.version,
+            description: m.plugin.description.unwrap_or_default(),
+            enabled: m.enabled,
+            capabilities: flatten_capabilities(&m.capabilities),
+        });
     }
     if let Ok(m) = toml::from_str::<LegacyFlatManifest>(body) {
-        return Some((m.name, m.version, m.description, m.enabled));
+        return Some(PluginListing {
+            name: m.name,
+            version: m.version,
+            description: m.description,
+            enabled: m.enabled,
+            capabilities: Vec::new(),
+        });
     }
     None
 }
@@ -2449,22 +2478,28 @@ mod plugin_listing_tests {
         let body = "enabled = false\n\
             [plugin]\nid = \"grayscale\"\nname = \"Grayscale\"\nversion = \"0.1.0\"\ndescription = \"gray\"\n\
             [runtime]\ntype = \"wasm\"\nfile = \"plugin.wasm\"\n\
-            [hooks]\non_capture = \"capscr_on_capture\"\n";
-        let (name, version, desc, enabled) = read_plugin_listing(body).expect("sectioned parses");
-        assert_eq!(name, "Grayscale");
-        assert_eq!(version, "0.1.0");
-        assert_eq!(desc, "gray");
-        assert!(!enabled);
+            [hooks]\non_capture = \"capscr_on_capture\"\n\
+            [capabilities]\nimage = [\"read\"]\nfetch = [\"https://api.example.com/*\"]\n";
+        let listing = read_plugin_listing(body).expect("sectioned parses");
+        assert_eq!(listing.name, "Grayscale");
+        assert_eq!(listing.version, "0.1.0");
+        assert_eq!(listing.description, "gray");
+        assert!(!listing.enabled);
+        assert_eq!(
+            listing.capabilities,
+            vec!["fetch:https://api.example.com/*", "image:read"]
+        );
     }
 
     #[test]
     fn reads_legacy_flat_manifest() {
         let body =
             "name = \"Sounds\"\nversion = \"0.1.0\"\ndescription = \"sfx\"\nenabled = true\n";
-        let (name, version, _desc, enabled) = read_plugin_listing(body).expect("flat parses");
-        assert_eq!(name, "Sounds");
-        assert_eq!(version, "0.1.0");
-        assert!(enabled);
+        let listing = read_plugin_listing(body).expect("flat parses");
+        assert_eq!(listing.name, "Sounds");
+        assert_eq!(listing.version, "0.1.0");
+        assert!(listing.enabled);
+        assert!(listing.capabilities.is_empty());
     }
 
     #[test]
@@ -2500,7 +2535,7 @@ pub fn list_installed_plugins() -> Result<Vec<InstalledPlugin>, String> {
             Ok(s) => s,
             Err(_) => continue,
         };
-        let (name, version, description, enabled) = match read_plugin_listing(&body) {
+        let listing = match read_plugin_listing(&body) {
             Some(t) => t,
             None => {
                 tracing::warn!("plugin {:?}: unparseable manifest", path.file_name());
@@ -2509,10 +2544,11 @@ pub fn list_installed_plugins() -> Result<Vec<InstalledPlugin>, String> {
         };
         out.push(InstalledPlugin {
             id: entry.file_name().to_string_lossy().to_string(),
-            name,
-            version,
-            description,
-            enabled,
+            name: listing.name,
+            version: listing.version,
+            description: listing.description,
+            enabled: listing.enabled,
+            capabilities: listing.capabilities,
         });
     }
     out.sort_by(|a, b| a.name.cmp(&b.name));
