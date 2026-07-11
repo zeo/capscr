@@ -107,6 +107,16 @@ impl PluginManager {
             if !path.is_dir() {
                 continue;
             }
+            // skip dotfiles: the marketplace stages installs into `.staging-<id>`
+            // dirs, and a crash mid-install could leave one behind — loading it
+            // as a real plugin would surface a phantom half-installed entry
+            if path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with('.'))
+            {
+                continue;
+            }
             if let Err(e) = self.load_one(&path) {
                 errors.push(format!(
                     "{}: {}",
