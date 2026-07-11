@@ -212,24 +212,32 @@ pub fn install_plugin(plugins_dir: &Path, entry: &RegistryEntry) -> Result<()> {
             std::fs::create_dir_all(&out_path)?;
             continue;
         }
-        let file_size = file.size();
-        if file_size > MAX_PLUGIN_FILE_BYTES {
+        // a cheap early reject on the declared size, then the real enforcement:
+        // stream through a byte-limited reader and count what was actually
+        // written. size() is the archive's uncompressed_size — attacker
+        // controlled — so a deflate bomb can declare a tiny size and expand to
+        // gigabytes; only the actual byte count can stop that.
+        if file.size() > MAX_PLUGIN_FILE_BYTES {
             let _ = std::fs::remove_dir_all(&staging);
-            bail!("zip entry too large: {:?} ({} bytes)", raw_name, file_size);
-        }
-        total_extracted += file_size;
-        if total_extracted > MAX_PLUGIN_TOTAL_BYTES {
-            let _ = std::fs::remove_dir_all(&staging);
-            bail!(
-                "plugin zip total extracted size exceeds cap ({} bytes)",
-                MAX_PLUGIN_TOTAL_BYTES
-            );
+            bail!("zip entry too large: {:?} ({} bytes)", raw_name, file.size());
         }
         if let Some(parent) = out_path.parent() {
             std::fs::create_dir_all(parent)?;
         }
+        let limit =
+            MAX_PLUGIN_FILE_BYTES.min(MAX_PLUGIN_TOTAL_BYTES.saturating_sub(total_extracted));
         let mut out = std::fs::File::create(&out_path)?;
-        std::io::copy(&mut file, &mut out)?;
+        // copy at most limit+1 bytes; crossing limit means the entry (or the
+        // running total) blew the cap regardless of the declared size
+        let written = std::io::copy(&mut std::io::Read::take(&mut file, limit + 1), &mut out)?;
+        if written > limit {
+            let _ = std::fs::remove_dir_all(&staging);
+            bail!(
+                "plugin zip decompresses past the {}-byte cap",
+                MAX_PLUGIN_TOTAL_BYTES
+            );
+        }
+        total_extracted += written;
     }
 
     // manifest must exist. Without it the listing path won't see the plugin
