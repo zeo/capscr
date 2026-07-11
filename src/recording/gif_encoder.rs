@@ -70,31 +70,66 @@ struct CapturedFrame {
     at: Duration,
 }
 
-// display duration of each frame: frame i is on screen until frame i+1 was
-// captured; the last frame holds for one nominal interval
-fn frame_durations(times: &[Duration], nominal: Duration) -> Vec<Duration> {
-    times
+// map each frame's real end time (next frame's capture time; the last frame
+// holds one nominal interval) onto a discrete output clock. Rounding every
+// frame independently drifts by up to one unit per frame — a 15fps gif loses
+// 6.7ms each frame and plays ~11% fast — so the schedule tracks the cumulative
+// target instead, keeping total drift under one unit for any length. A frame
+// whose slot lands below `min_units` gets 0 (the caller drops it and its time
+// folds into the next frame); a hold beyond `max_units` is cut there and the
+// clock resyncs, so one bad gap can't freeze playback
+fn schedule_frames(
+    times: &[Duration],
+    nominal: Duration,
+    units_per_sec: f64,
+    min_units: u64,
+    max_units: u64,
+) -> Vec<u64> {
+    let mut emitted: u64 = 0;
+    let mut schedule: Vec<u64> = times
         .iter()
         .enumerate()
-        .map(|(i, t)| match times.get(i + 1) {
-            Some(next) => next.saturating_sub(*t),
-            None => nominal,
+        .map(|(i, t)| {
+            let end = match times.get(i + 1) {
+                Some(next) => *next.max(t),
+                None => t.saturating_add(nominal),
+            };
+            let target = (end.as_secs_f64() * units_per_sec).round() as u64;
+            let slot = target.saturating_sub(emitted);
+            if slot < min_units {
+                0
+            } else if slot > max_units {
+                emitted = target;
+                max_units
+            } else {
+                emitted += slot;
+                slot
+            }
         })
-        .collect()
+        .collect();
+
+    // never emit an empty recording: if every frame rounded away, keep the
+    // last one for the minimum visible hold
+    if !schedule.is_empty() && schedule.iter().all(|&u| u == 0) {
+        *schedule.last_mut().unwrap() = min_units;
+    }
+    schedule
 }
 
 // gif delays count in hundredths of a second; players treat <2cs as a slow
-// 10cs default, so floor there. Cap a single frame's hold at 60s so one bad
-// gap can't freeze the loop
-fn gif_delay_cs(d: Duration) -> u16 {
-    (d.as_millis() / 10).clamp(2, 6000) as u16
+// 10cs default, so that's the drop threshold. 6000cs caps a single hold at 60s
+fn gif_delay_schedule(times: &[Duration], nominal: Duration) -> Vec<u16> {
+    schedule_frames(times, nominal, 100.0, 2, 6000)
+        .into_iter()
+        .map(|u| u as u16)
+        .collect()
 }
 
-// ffmpeg consumes rawvideo at a constant input rate; holding a frame for
-// round(duration * fps) ticks preserves wall-clock timing through dedup
-fn mp4_frame_repeats(d: Duration, fps: u32) -> u64 {
-    let capped = d.min(Duration::from_secs(60));
-    ((capped.as_secs_f64() * fps as f64).round() as u64).max(1)
+// ffmpeg consumes rawvideo at a constant input rate; each frame is written
+// once per tick of its slot so wall-clock timing survives dedup and slow
+// captures. 0 means the frame is skipped entirely
+fn mp4_repeat_schedule(times: &[Duration], nominal: Duration, fps: u32) -> Vec<u64> {
+    schedule_frames(times, nominal, fps as f64, 1, 60 * fps.max(1) as u64)
 }
 
 fn compute_frame_fingerprint(image: &RgbaImage) -> u64 {
@@ -434,7 +469,7 @@ impl GifRecorder {
         let fps = self.settings.fps.clamp(1, 60);
         let nominal = Duration::from_secs_f64(1.0 / fps as f64);
         let times: Vec<Duration> = frames.iter().map(|f| f.at).collect();
-        let durations = frame_durations(&times, nominal);
+        let delays = gif_delay_schedule(&times, nominal);
 
         let filter = if self.settings.quality >= 80 {
             image::imageops::FilterType::Lanczos3
@@ -489,6 +524,11 @@ impl GifRecorder {
             encoder.set_repeat(Repeat::Infinite)?;
 
             for (frame_idx, captured) in frames.iter().enumerate() {
+                // 0-delay frames were folded into a neighbour by the schedule;
+                // skipping them here also skips their resize + quantize cost
+                if delays[frame_idx] == 0 {
+                    continue;
+                }
                 let resized = if captured.image.width() != orig_width
                     || captured.image.height() != orig_height
                 {
@@ -529,7 +569,7 @@ impl GifRecorder {
                 let frame = Frame {
                     width,
                     height,
-                    delay: gif_delay_cs(durations[frame_idx]),
+                    delay: delays[frame_idx],
                     buffer: std::borrow::Cow::Owned(indexed_pixels),
                     ..Default::default()
                 };
@@ -587,7 +627,7 @@ impl GifRecorder {
         let fps = self.settings.fps.clamp(1, 60);
         let nominal = Duration::from_secs_f64(1.0 / fps as f64);
         let times: Vec<Duration> = frames.iter().map(|f| f.at).collect();
-        let durations = frame_durations(&times, nominal);
+        let repeats = mp4_repeat_schedule(&times, nominal, fps);
         let filter = if self.settings.quality >= 80 {
             image::imageops::FilterType::Lanczos3
         } else if self.settings.quality >= 50 {
@@ -658,6 +698,13 @@ impl GifRecorder {
                 .ok_or_else(|| anyhow!("Failed to open ffmpeg stdin"))?;
 
             for (frame_idx, captured) in frames.iter().enumerate() {
+                // the rawvideo input is constant-rate: each frame is written
+                // once per tick of its scheduled slot so dedup-skipped and
+                // slow captures keep wall-clock timing. 0 = folded into a
+                // neighbour, skip the resize too
+                if repeats[frame_idx] == 0 {
+                    continue;
+                }
                 let resized = if captured.image.width() != orig_width
                     || captured.image.height() != orig_height
                 {
@@ -667,10 +714,7 @@ impl GifRecorder {
                 };
 
                 let rgba_data = resized.as_raw();
-                // the rawvideo input is constant-rate: repeat each frame to
-                // cover its real on-screen duration, otherwise dedup-skipped
-                // and slow captures compress time and the video plays sped up
-                for _ in 0..mp4_frame_repeats(durations[frame_idx], fps) {
+                for _ in 0..repeats[frame_idx] {
                     stdin
                         .write_all(rgba_data)
                         .map_err(|e| anyhow!("Failed to write to ffmpeg stdin: {}", e))?;
@@ -895,35 +939,92 @@ mod tests {
         assert_eq!(u32::from_le_bytes(header[40..44].try_into().unwrap()), 1000);
     }
 
+    fn times_at_interval(count: usize, interval_ms: f64) -> Vec<Duration> {
+        (0..count)
+            .map(|i| Duration::from_secs_f64(i as f64 * interval_ms / 1000.0))
+            .collect()
+    }
+
     #[test]
-    fn frame_durations_use_real_gaps() {
+    fn gif_schedule_uses_real_gaps() {
         let times = vec![
             Duration::from_millis(0),
             Duration::from_millis(100),
             Duration::from_millis(600),
         ];
         let nominal = Duration::from_millis(66);
-        let durations = frame_durations(&times, nominal);
-        assert_eq!(durations[0], Duration::from_millis(100));
-        assert_eq!(durations[1], Duration::from_millis(500));
-        assert_eq!(durations[2], nominal);
+        let delays = gif_delay_schedule(&times, nominal);
+        assert_eq!(delays, vec![10, 50, 7]);
     }
 
     #[test]
-    fn gif_delay_floors_and_caps() {
-        assert_eq!(gif_delay_cs(Duration::from_millis(5)), 2);
-        assert_eq!(gif_delay_cs(Duration::from_millis(500)), 50);
-        assert_eq!(gif_delay_cs(Duration::from_secs(120)), 6000);
+    fn gif_schedule_total_matches_wall_clock_at_15fps() {
+        // 15fps captures are 66.7ms apart; per-frame truncation used to emit
+        // 6cs each (10% fast). the cumulative schedule must land on ~667cs
+        let times = times_at_interval(100, 1000.0 / 15.0);
+        let delays = gif_delay_schedule(&times, Duration::from_secs_f64(1.0 / 15.0));
+        let total: u64 = delays.iter().map(|&d| d as u64).sum();
+        assert!((666..=668).contains(&total), "total {total}cs, want ~667");
+        assert!(delays.iter().all(|&d| d == 0 || d >= 2));
     }
 
     #[test]
-    fn mp4_repeats_preserve_wall_clock() {
-        // a 500ms gap at 15fps must hold the frame ~7-8 ticks, not 1
-        assert_eq!(mp4_frame_repeats(Duration::from_millis(500), 15), 8);
-        // fast frames still emit at least one tick
-        assert_eq!(mp4_frame_repeats(Duration::from_millis(1), 15), 1);
-        // a 10s static span keeps its duration
-        assert_eq!(mp4_frame_repeats(Duration::from_secs(10), 15), 150);
+    fn gif_schedule_drops_frames_below_player_floor() {
+        // 60fps capture: 16.7ms/frame is under the 2cs player floor, so some
+        // frames must be dropped rather than padding the gif 20% slower
+        let times = times_at_interval(120, 1000.0 / 60.0);
+        let delays = gif_delay_schedule(&times, Duration::from_secs_f64(1.0 / 60.0));
+        let total: u64 = delays.iter().map(|&d| d as u64).sum();
+        assert!((199..=201).contains(&total), "total {total}cs, want ~200");
+        assert!(delays.iter().any(|&d| d == 0), "expected dropped frames");
+        assert!(delays.iter().all(|&d| d == 0 || d >= 2));
+    }
+
+    #[test]
+    fn gif_schedule_caps_single_hold() {
+        let times = vec![Duration::from_millis(0), Duration::from_secs(120)];
+        let delays = gif_delay_schedule(&times, Duration::from_millis(66));
+        assert_eq!(delays[0], 6000);
+    }
+
+    #[test]
+    fn gif_schedule_keeps_at_least_one_frame() {
+        let times = vec![Duration::from_millis(0), Duration::from_millis(5)];
+        let delays = gif_delay_schedule(&times, Duration::from_millis(5));
+        assert_eq!(delays.iter().filter(|&&d| d > 0).count(), 1);
+        assert!(delays.iter().all(|&d| d == 0 || d >= 2));
+    }
+
+    #[test]
+    fn mp4_schedule_preserves_wall_clock() {
+        // 100ms captures at a 15fps output used to round to 2 ticks each
+        // (33% slow); cumulative mapping alternates 1 and 2 for 1.5 average
+        let times = times_at_interval(100, 100.0);
+        let repeats = mp4_repeat_schedule(&times, Duration::from_millis(100), 15);
+        let total: u64 = repeats.iter().sum();
+        assert!((149..=151).contains(&total), "total {total} ticks, want ~150");
+    }
+
+    #[test]
+    fn mp4_schedule_holds_through_gaps() {
+        // a 10s static span keeps its duration through dedup
+        let times = vec![Duration::from_millis(0), Duration::from_secs(10)];
+        let repeats = mp4_repeat_schedule(&times, Duration::from_secs_f64(1.0 / 15.0), 15);
+        assert_eq!(repeats[0], 150);
+    }
+
+    #[test]
+    fn mp4_schedule_skips_subtick_frames() {
+        // two frames inside one tick: only one may be written
+        let times = vec![
+            Duration::from_millis(0),
+            Duration::from_millis(10),
+            Duration::from_millis(1000),
+        ];
+        let repeats = mp4_repeat_schedule(&times, Duration::from_millis(66), 15);
+        let total: u64 = repeats.iter().sum();
+        assert!(repeats.contains(&0), "expected a skipped frame");
+        assert!((15..=17).contains(&total), "total {total} ticks");
     }
 
     #[test]
