@@ -845,6 +845,21 @@ impl Config {
                 "filename_template contains invalid path characters"
             ));
         }
+        // reject a bad output directory at save time, before set_config widens
+        // the asset-protocol scope to it (same checks ensure_output_dir applies
+        // at capture time). sanitize() repairs these in a loaded config, so this
+        // only rejects a fresh bad value the UI tries to save.
+        if self.output.directory.as_os_str().is_empty() {
+            return Err(anyhow!("output directory path is empty"));
+        }
+        let out_dir = self.output.directory.to_string_lossy();
+        if out_dir.contains("..") {
+            return Err(anyhow!("output directory contains path traversal"));
+        }
+        #[cfg(windows)]
+        if out_dir.starts_with("\\\\") {
+            return Err(anyhow!("network output paths are not allowed"));
+        }
         for hotkey in [&self.hotkeys.screenshot, &self.hotkeys.record_gif] {
             if hotkey.len() > MAX_HOTKEY_LEN {
                 return Err(anyhow!("hotkey string too long"));
@@ -1011,6 +1026,20 @@ impl Config {
                 && !self.upload.custom_url.starts_with("https://"))
         {
             self.upload.custom_url = String::new();
+        }
+
+        // repair a bad output directory in place so validate() doesn't fail the
+        // whole config: keep any real path the user set, but reset an empty,
+        // traversal, or UNC path to the default captures dir
+        {
+            let out_dir = self.output.directory.to_string_lossy();
+            if self.output.directory.as_os_str().is_empty()
+                || out_dir.contains("..")
+                || out_dir.starts_with("\\\\")
+            {
+                drop(out_dir);
+                self.output.directory = default_output_dir();
+            }
         }
 
         self.performance.tick_interval_ms = self
@@ -1390,5 +1419,22 @@ mod tests {
             Config::default().capture_tasks.len(),
             "the user's tasks must survive a missing/unknown field"
         );
+    }
+
+    #[test]
+    fn sanitize_repairs_a_bad_output_directory() {
+        let mut config = Config::default();
+        config.output.directory = PathBuf::from("../../secrets");
+        config.sanitize();
+        assert!(
+            config.validate().is_ok(),
+            "a traversal output dir must be repaired, not fail the whole config"
+        );
+        assert!(!config.output.directory.to_string_lossy().contains(".."));
+
+        let mut empty = Config::default();
+        empty.output.directory = PathBuf::new();
+        empty.sanitize();
+        assert!(!empty.output.directory.as_os_str().is_empty());
     }
 }
