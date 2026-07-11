@@ -195,7 +195,24 @@ function Hub() {
       // refetch replaces the whole store, so mid-edit it would silently drop
       // the user's pending changes. their next save wins instead.
       await listen("capscr://config-updated", async () => {
-        if (configDirty()) return;
+        if (configDirty()) {
+          // don't clobber unsaved edits, but still pick up the one field the
+          // tray can change out from under the user — the upload destination —
+          // so their next save doesn't silently revert the tray switch
+          try {
+            const fresh = await api.getConfig();
+            const cur = config();
+            if (cur) {
+              mutateConfig({
+                ...cur,
+                upload: { ...cur.upload, destination: fresh.upload.destination },
+              });
+            }
+          } catch {
+            /* best-effort reconcile */
+          }
+          return;
+        }
         try {
           await refetchConfig();
         } catch {
