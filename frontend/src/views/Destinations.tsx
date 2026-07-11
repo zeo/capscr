@@ -84,7 +84,7 @@ export function Destinations() {
                   >
                     <option value="Imgur">imgur (anonymous)</option>
                     <option value="Custom">custom http</option>
-                    <option value="Ftp">ftp / ftps</option>
+                    <option value="Ftp">ftp</option>
                     <option value="Sftp">sftp (ssh)</option>
                     <option value="S3">S3 Compatible</option>
                   </select>
@@ -158,7 +158,7 @@ export function Destinations() {
             </Show>
 
             <Show when={c().upload.destination === "Ftp"}>
-              <Section title="ftp / ftps">
+              <Section title="ftp">
                 <div class="field">
                   <label class="field-label">host</label>
                   <div class="field-control">
@@ -268,7 +268,7 @@ export function Destinations() {
                           })
                         }
                       />
-                      <span class="check-label">plain ftp only — ftps planned for v0.4</span>
+                      <span class="check-label">plain ftp only — use sftp for an encrypted transfer</span>
                     </label>
                   </div>
                 </div>
@@ -648,6 +648,7 @@ export function Destinations() {
               </Section>
             </Show>
 
+            <Show when={c().upload.destination === "Custom"}>
             <Section title="custom http">
               <div class="field">
                 <label class="field-label">post url</label>
@@ -702,26 +703,25 @@ export function Destinations() {
                   </span>
                 </div>
               </div>
-              <Show when={c().upload.destination === "Custom"}>
-                <div class="field">
-                  <label class="field-label">test</label>
-                  <div class="field-control">
-                    <button
-                      class="btn"
-                      data-variant="ghost"
-                      disabled={testing() === "Custom"}
-                      onClick={() => test("Custom")}
-                    >
-                      <Zap size={12} stroke-width={1.5} />
-                      {testing() === "Custom" ? "probing..." : "test connection"}
-                    </button>
-                    <span class="field-hint">
-                      sends OPTIONS to the post url. 2xx/3xx/405 = reachable.
-                    </span>
-                  </div>
+              <div class="field">
+                <label class="field-label">test</label>
+                <div class="field-control">
+                  <button
+                    class="btn"
+                    data-variant="ghost"
+                    disabled={testing() === "Custom"}
+                    onClick={() => test("Custom")}
+                  >
+                    <Zap size={12} stroke-width={1.5} />
+                    {testing() === "Custom" ? "probing..." : "test connection"}
+                  </button>
+                  <span class="field-hint">
+                    sends OPTIONS to the post url. 2xx/3xx/405 = reachable.
+                  </span>
                 </div>
-              </Show>
+              </div>
             </Section>
+            </Show>
 
             <hr class="rule" />
             <div class="btn-row right">
