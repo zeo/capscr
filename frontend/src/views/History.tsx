@@ -46,15 +46,21 @@ function formatDate(unix: number): string {
 export function History() {
   const [entries, { refetch }] = createResource(api.listCaptures);
   const [outputDir, setOutputDir] = createSignal<string>("");
-  const [screenshotHotkey, setScreenshotHotkey] = createSignal<string>("PrintScreen");
+  const [screenshotHotkey, setScreenshotHotkey] = createSignal<string>("your screenshot key");
   const [recordGifHotkey, setRecordGifHotkey] = createSignal<string>("Ctrl+Shift+G");
   onMount(() => {
     api.getConfig().then((c) => {
       setOutputDir(c.output.directory);
-      if (c.hotkeys) {
-        if (c.hotkeys.screenshot) setScreenshotHotkey(c.hotkeys.screenshot);
-        if (c.hotkeys.record_gif) setRecordGifHotkey(c.hotkeys.record_gif);
-      }
+      // read the live bindings from the tasks, not the legacy hotkeys.* fields
+      // that nothing registers, so the hint shows the key that actually fires
+      const shot =
+        c.capture_tasks?.find((t) => t.id === "screenshot-save-clipboard") ??
+        c.capture_tasks?.find((t) => t.capture_mode === "region" && t.hotkey);
+      const gif =
+        c.capture_tasks?.find((t) => t.id === "gif-save") ??
+        c.capture_tasks?.find((t) => t.capture_mode === "region-gif" && t.hotkey);
+      if (shot?.hotkey) setScreenshotHotkey(shot.hotkey);
+      if (gif?.hotkey) setRecordGifHotkey(gif.hotkey);
     }).catch(() => {});
   });
   // track which path is in the "confirm delete" state. Second click on the
