@@ -24,11 +24,12 @@ mod windows_impl {
             Graphics::Gdi::{
                 AlphaBlend, BeginPaint, BitBlt, CreateCompatibleDC, CreateDIBSection, CreatePen,
                 CreateSolidBrush, DeleteDC, DeleteObject, EndPaint, FillRect, GetDC,
-                GetStockObject, InvalidateRect, Rectangle as GdiRectangle, ReleaseDC,
-                ScreenToClient, SelectObject, SetBkColor, SetBkMode, SetTextColor, StretchBlt,
-                TextOutW, AC_SRC_OVER, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, BLENDFUNCTION,
-                CAPTUREBLT, DIB_RGB_COLORS, HBITMAP, HDC, HOLLOW_BRUSH, OPAQUE, PAINTSTRUCT,
-                PS_SOLID, SRCCOPY, TRANSPARENT,
+                GetMonitorInfoW, GetStockObject, InvalidateRect, MonitorFromPoint,
+                Rectangle as GdiRectangle, ReleaseDC, ScreenToClient, SelectObject, SetBkColor,
+                SetBkMode, SetTextColor, StretchBlt, TextOutW, AC_SRC_OVER, BITMAPINFO,
+                BITMAPINFOHEADER, BI_RGB, BLENDFUNCTION, CAPTUREBLT, DIB_RGB_COLORS, HBITMAP, HDC,
+                HOLLOW_BRUSH, MONITORINFO, MONITOR_DEFAULTTONEAREST, OPAQUE, PAINTSTRUCT, PS_SOLID,
+                SRCCOPY, TRANSPARENT,
             },
             System::{
                 LibraryLoader::GetModuleHandleW,
@@ -1093,13 +1094,38 @@ mod windows_impl {
 
                             let mag_x = cursor_x + 30;
                             let mag_y = cursor_y + 30;
-                            let mag_x = if mag_x + MAGNIFIER_SIZE > width {
-                                cursor_x - MAGNIFIER_SIZE - 30
+                            // flip against the bounds of the monitor the cursor is
+                            // on, not the whole virtual desktop, so the loupe never
+                            // straddles a bezel onto a neighbouring monitor when
+                            // the cursor nears a non-outermost monitor edge
+                            let (mon_right, mon_bottom, mon_left, mon_top) = {
+                                let cursor_pt = POINT {
+                                    x: CURSOR_X.load(Ordering::SeqCst),
+                                    y: CURSOR_Y.load(Ordering::SeqCst),
+                                };
+                                let hmon = MonitorFromPoint(cursor_pt, MONITOR_DEFAULTTONEAREST);
+                                let mut mi = MONITORINFO {
+                                    cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+                                    ..Default::default()
+                                };
+                                if GetMonitorInfoW(hmon, &mut mi).as_bool() {
+                                    (
+                                        mi.rcMonitor.right - virt_x,
+                                        mi.rcMonitor.bottom - virt_y,
+                                        mi.rcMonitor.left - virt_x,
+                                        mi.rcMonitor.top - virt_y,
+                                    )
+                                } else {
+                                    (width, height, 0, 0)
+                                }
+                            };
+                            let mag_x = if mag_x + MAGNIFIER_SIZE > mon_right {
+                                (cursor_x - MAGNIFIER_SIZE - 30).max(mon_left)
                             } else {
                                 mag_x
                             };
-                            let mag_y = if mag_y + MAGNIFIER_SIZE > height {
-                                cursor_y - MAGNIFIER_SIZE - 30
+                            let mag_y = if mag_y + MAGNIFIER_SIZE > mon_bottom {
+                                (cursor_y - MAGNIFIER_SIZE - 30).max(mon_top)
                             } else {
                                 mag_y
                             };
