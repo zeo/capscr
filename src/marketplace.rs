@@ -114,7 +114,9 @@ pub fn fetch_registry(registry_url: &str) -> Result<Registry> {
     Ok(registry)
 }
 
-pub fn install_plugin(plugins_dir: &Path, entry: &RegistryEntry) -> Result<()> {
+/// installs the plugin and returns true if it was left disabled pending the
+/// user's review of its declared capabilities
+pub fn install_plugin(plugins_dir: &Path, entry: &RegistryEntry) -> Result<bool> {
     validate_id(&entry.id)?;
     if !entry.download_url.starts_with("https://") {
         bail!("plugin download_url must be https");
@@ -242,15 +244,54 @@ pub fn install_plugin(plugins_dir: &Path, entry: &RegistryEntry) -> Result<()> {
 
     // manifest must exist. Without it the listing path won't see the plugin
     // and we'd have a silently broken install.
-    if !staging.join("plugin.toml").exists() {
+    let manifest_path = staging.join("plugin.toml");
+    if !manifest_path.exists() {
         let _ = std::fs::remove_dir_all(&staging);
         bail!("plugin zip missing plugin.toml at the root");
+    }
+
+    // consent gate: a plugin that declares capabilities (image read, network
+    // fetch, clipboard, notifications) is installed disabled, so its code never
+    // runs until the user has seen those capabilities in the plugins tab and
+    // enabled it. capability-free plugins install ready to go.
+    let needs_review = manifest_declares_capabilities(&manifest_path);
+    if needs_review {
+        if let Err(e) = force_manifest_disabled(&manifest_path) {
+            let _ = std::fs::remove_dir_all(&staging);
+            return Err(e);
+        }
     }
 
     if final_dir.exists() {
         std::fs::remove_dir_all(&final_dir)?;
     }
     std::fs::rename(&staging, &final_dir)?;
+    Ok(needs_review)
+}
+
+/// true if the plugin's manifest declares a non-empty `[capabilities]` table
+fn manifest_declares_capabilities(manifest_path: &Path) -> bool {
+    let Ok(body) = std::fs::read_to_string(manifest_path) else {
+        return false;
+    };
+    let Ok(table) = toml::from_str::<toml::Table>(&body) else {
+        return false;
+    };
+    table
+        .get("capabilities")
+        .and_then(|c| c.as_table())
+        .map(|t| !t.is_empty())
+        .unwrap_or(false)
+}
+
+/// rewrite the manifest with enabled=false so the plugin stays inert until the
+/// user reviews its capabilities and enables it
+fn force_manifest_disabled(manifest_path: &Path) -> Result<()> {
+    let body = std::fs::read_to_string(manifest_path)?;
+    let mut table: toml::Table = toml::from_str(&body)?;
+    table.insert("enabled".to_string(), toml::Value::Boolean(false));
+    let new_body = toml::to_string(&table)?;
+    std::fs::write(manifest_path, new_body)?;
     Ok(())
 }
 

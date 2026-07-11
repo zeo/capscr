@@ -2640,7 +2640,7 @@ pub async fn marketplace_browse(
 }
 
 #[tauri::command]
-pub async fn marketplace_install(id: String, state: State<'_, AppState>) -> Result<(), String> {
+pub async fn marketplace_install(id: String, state: State<'_, AppState>) -> Result<bool, String> {
     let url = state
         .config
         .lock()
@@ -2649,7 +2649,7 @@ pub async fn marketplace_install(id: String, state: State<'_, AppState>) -> Resu
         .registry_url
         .clone();
     let plugins = plugins_dir()?;
-    tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+    tokio::task::spawn_blocking(move || -> anyhow::Result<bool> {
         let registry = crate::marketplace::fetch_registry(&url)?;
         let entry = registry
             .plugins

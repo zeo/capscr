@@ -62,8 +62,15 @@ export function Marketplace() {
     setBusyId(entry.id);
     setStatus({ tone: "", msg: `installing ${entry.name}...` });
     try {
-      await api.marketplaceInstall(entry.id);
-      setStatus({ tone: "ok", msg: `installed ${entry.name} v${entry.version}.` });
+      const needsReview = await api.marketplaceInstall(entry.id);
+      setStatus(
+        needsReview
+          ? {
+              tone: "ok",
+              msg: `installed ${entry.name} v${entry.version} — disabled until you review its permissions below and enable it.`,
+            }
+          : { tone: "ok", msg: `installed ${entry.name} v${entry.version}.` },
+      );
       await refetchInstalled();
     } catch (e) {
       setStatus({ tone: "err", msg: `install failed: ${e}` });

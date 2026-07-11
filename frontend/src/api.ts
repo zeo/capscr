@@ -244,7 +244,9 @@ export const api = {
   installUpdate: () => invoke<void>("install_update"),
   isHdrCapture: (path: string) => invoke<boolean>("is_hdr_capture", { path }),
   marketplaceBrowse: () => invoke<RegistryEntry[]>("marketplace_browse"),
-  marketplaceInstall: (id: string) => invoke<void>("marketplace_install", { id }),
+  // resolves true when the plugin was installed disabled pending the user's
+  // review of its declared capabilities
+  marketplaceInstall: (id: string) => invoke<boolean>("marketplace_install", { id }),
   marketplaceUninstall: (id: string) => invoke<void>("marketplace_uninstall", { id }),
   togglePluginEnabled: (id: string, enabled: boolean) =>
     invoke<void>("toggle_plugin_enabled", { id, enabled }),
