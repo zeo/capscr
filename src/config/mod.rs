@@ -20,7 +20,12 @@ const MIN_TICK_INTERVAL_MS: u32 = 16;
 const MAX_TICK_INTERVAL_MS: u32 = 500;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+// container-level default: any field absent from config.toml is filled from
+// Config::default() rather than failing the whole parse. combined with dropping
+// deny_unknown_fields, this keeps one stale, forward-versioned, or partial field
+// from wiping every task and stored credential (the sanitize/validate repair
+// pass only runs *after* a successful parse, so it never saw this).
+#[serde(default)]
 pub struct Config {
     pub output: OutputConfig,
     pub capture: CaptureConfig,
@@ -40,7 +45,7 @@ pub struct Config {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
+#[serde(default)]
 pub struct CaptureTask {
     pub id: String,
     pub name: String,
@@ -49,6 +54,22 @@ pub struct CaptureTask {
     pub post_action: TaskPostAction,
     #[serde(default)]
     pub target_destination: Option<TaskUploadTarget>,
+}
+
+impl Default for CaptureTask {
+    fn default() -> Self {
+        // only reached when a task entry in config.toml is missing fields; a
+        // blank id makes sanitize()/validate() drop it rather than the parser
+        // discarding the whole task list
+        Self {
+            id: String::new(),
+            name: String::new(),
+            hotkey: String::new(),
+            capture_mode: TaskCaptureMode::Region,
+            post_action: TaskPostAction::SaveAndClipboard,
+            target_destination: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -143,7 +164,7 @@ fn default_capture_tasks() -> Vec<CaptureTask> {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(default)]
 pub struct OutputConfig {
     pub directory: PathBuf,
     pub format: ImageFormat,
@@ -155,6 +176,31 @@ pub struct OutputConfig {
     /// `cICP` chunk so HDR-aware viewers display it as real HDR.
     #[serde(default)]
     pub preserve_hdr: bool,
+}
+
+/// the default captures directory: <Pictures>/capscr, falling back to the home
+/// dir then the current dir when neither is resolvable
+fn default_output_dir() -> PathBuf {
+    let pictures_dir = directories::UserDirs::new()
+        .and_then(|d| d.picture_dir().map(|p| p.to_path_buf()))
+        .unwrap_or_else(|| {
+            directories::BaseDirs::new()
+                .map(|b| b.home_dir().to_path_buf())
+                .unwrap_or_else(|| PathBuf::from("."))
+        });
+    pictures_dir.join("capscr")
+}
+
+impl Default for OutputConfig {
+    fn default() -> Self {
+        Self {
+            directory: default_output_dir(),
+            format: ImageFormat::Png,
+            quality: 90,
+            filename_template: "capture_%Y%m%d_%H%M%S".to_string(),
+            preserve_hdr: false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -213,7 +259,7 @@ impl ImageFormat {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(default)]
 pub struct CaptureConfig {
     pub show_cursor: bool,
     pub delay_ms: u32,
@@ -227,6 +273,19 @@ pub struct CaptureConfig {
 
 fn default_record_audio() -> bool {
     false
+}
+
+impl Default for CaptureConfig {
+    fn default() -> Self {
+        Self {
+            show_cursor: true,
+            delay_ms: 0,
+            gif_fps: 15,
+            gif_max_duration_secs: 30,
+            hdr: HdrConfig::default(),
+            record_audio: false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -262,6 +321,7 @@ impl std::fmt::Display for HdrOutputFormat {
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(default)]
 pub struct HdrConfig {
     /// manual override for the display's SDR white level in nits. 0.0 means
     /// auto-detect via DISPLAYCONFIG_SDR_WHITE_LEVEL (with a DXGI fallback).
@@ -287,7 +347,7 @@ impl Default for HdrConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(deny_unknown_fields)]
+#[serde(default)]
 pub struct HotkeyConfig {
     #[serde(default)]
     pub screenshot: String,
@@ -327,7 +387,7 @@ impl CloseBehavior {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(default)]
 pub struct UiConfig {
     pub theme: Theme,
     pub show_notifications: bool,
@@ -345,6 +405,21 @@ pub struct UiConfig {
 
 fn default_true() -> bool {
     true
+}
+
+impl Default for UiConfig {
+    fn default() -> Self {
+        Self {
+            theme: Theme::Dark,
+            show_notifications: true,
+            copy_to_clipboard: true,
+            minimize_to_tray: true,
+            close_behavior: CloseBehavior::MinimizeToTray,
+            auto_start: true,
+            check_updates_on_launch: true,
+            save_clipboard_to_history: true,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -389,6 +464,7 @@ impl std::fmt::Display for PostCaptureAction {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct PostCaptureConfig {
     pub action: PostCaptureAction,
     pub open_file_after_save: bool,
@@ -447,6 +523,7 @@ impl std::fmt::Display for UploadDestination {
 // stale `[upload.sftp]` blocks from 0.3.0 configs deserialize without error
 // and get pruned the next time the user saves their settings.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct UploadConfig {
     pub destination: UploadDestination,
     pub copy_url_to_clipboard: bool,
@@ -464,6 +541,7 @@ pub struct UploadConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct MarketplaceConfig {
     /// JSON endpoint the marketplace browser queries. Defaults to capscr's
     /// canonical registry on rot.lt. Power users can point at their own
@@ -718,7 +796,7 @@ impl std::fmt::Display for RendererBackend {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(default)]
 pub struct PerformanceConfig {
     pub tick_interval_ms: u32,
     pub renderer: RendererBackend,
@@ -997,47 +1075,15 @@ impl Config {
 
 impl Default for Config {
     fn default() -> Self {
-        let pictures_dir = directories::UserDirs::new()
-            .and_then(|d| d.picture_dir().map(|p| p.to_path_buf()))
-            .unwrap_or_else(|| {
-                directories::BaseDirs::new()
-                    .map(|b| b.home_dir().to_path_buf())
-                    .unwrap_or_else(|| PathBuf::from("."))
-            });
-
-        let output_dir = pictures_dir.join("capscr");
-
         Self {
-            output: OutputConfig {
-                directory: output_dir,
-                format: ImageFormat::Png,
-                quality: 90,
-                filename_template: "capture_%Y%m%d_%H%M%S".to_string(),
-                preserve_hdr: false,
-            },
-            capture: CaptureConfig {
-                show_cursor: true,
-                delay_ms: 0,
-                gif_fps: 15,
-                gif_max_duration_secs: 30,
-                hdr: HdrConfig::default(),
-                record_audio: false,
-            },
+            output: OutputConfig::default(),
+            capture: CaptureConfig::default(),
             hotkeys: HotkeyConfig {
                 screenshot: "Ctrl+Shift+S".to_string(),
                 record_gif: "Ctrl+Shift+G".to_string(),
                 disabled_globally: false,
             },
-            ui: UiConfig {
-                theme: Theme::Dark,
-                show_notifications: true,
-                copy_to_clipboard: true,
-                minimize_to_tray: true,
-                close_behavior: CloseBehavior::MinimizeToTray,
-                auto_start: true,
-                check_updates_on_launch: true,
-                save_clipboard_to_history: true,
-            },
+            ui: UiConfig::default(),
             post_capture: PostCaptureConfig::default(),
             upload: UploadConfig::default(),
             performance: PerformanceConfig::default(),
@@ -1319,5 +1365,32 @@ mod tests {
             .filter(|t| t.hotkey == "Ctrl+Shift+G")
             .count();
         assert_eq!(bound, 1, "the duplicate hotkey should be unbound on one task");
+    }
+
+    #[test]
+    fn load_tolerates_missing_field_and_unknown_key() {
+        // regression: a config that predates use_p99_max_cll and also carries a
+        // top-level key from a newer build must still parse — never wipe every
+        // task and stored credential the way deny_unknown_fields + a required
+        // field once did
+        let full = toml::to_string(&Config::default()).unwrap();
+        assert!(full.contains("use_p99_max_cll"));
+        let trimmed = full
+            .lines()
+            .filter(|l| !l.contains("use_p99_max_cll"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let doctored = format!("future_only_key = \"ignored\"\n{trimmed}");
+        let parsed: Config =
+            toml::from_str(&doctored).expect("partial + forward-versioned config must still parse");
+        assert!(
+            parsed.capture.hdr.use_p99_max_cll,
+            "a missing field falls back to its default, not a wiped config"
+        );
+        assert_eq!(
+            parsed.capture_tasks.len(),
+            Config::default().capture_tasks.len(),
+            "the user's tasks must survive a missing/unknown field"
+        );
     }
 }
