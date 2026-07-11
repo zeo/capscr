@@ -160,8 +160,11 @@ function Hub() {
         if (target) tryChangeTab(target);
       }),
       // tray destination switcher mutates config — refetch so any visible
-      // dropdown stays in sync
+      // dropdown stays in sync, but never over the top of unsaved edits: a
+      // refetch replaces the whole store, so mid-edit it would silently drop
+      // the user's pending changes. their next save wins instead.
       await listen("capscr://config-updated", async () => {
+        if (configDirty()) return;
         try {
           await refetchConfig();
         } catch {
