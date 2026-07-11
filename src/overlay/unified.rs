@@ -78,6 +78,10 @@ mod windows_impl {
     static MOUSE_DOWN: AtomicBool = AtomicBool::new(false);
     static CANCELLED: AtomicBool = AtomicBool::new(false);
     static FULLSCREEN: AtomicBool = AtomicBool::new(false);
+    // whether Shift (aspect-snap) was held at the moment the selection was
+    // finalized. captured at commit so the saved rect matches the last painted
+    // one even if Shift is released between finalizing and reading the rect.
+    static SHIFT_AT_COMMIT: AtomicBool = AtomicBool::new(false);
     static WINDOW_SELECTED: AtomicU32 = AtomicU32::new(0);
     static PICKED_COLOR_SET: AtomicBool = AtomicBool::new(false);
     static PICKED_R: AtomicU32 = AtomicU32::new(0);
@@ -787,7 +791,7 @@ mod windows_impl {
             let ex = END_X.load(Ordering::SeqCst);
             let mut ey = END_Y.load(Ordering::SeqCst);
 
-            if shift_held() {
+            if SHIFT_AT_COMMIT.load(Ordering::SeqCst) {
                 let dx = ex - sx;
                 let dy = ey - sy;
                 let w = dx.abs() as f64;
@@ -1238,6 +1242,9 @@ mod windows_impl {
                     END_X.store(pt.x, Ordering::SeqCst);
                     END_Y.store(pt.y, Ordering::SeqCst);
                     MOUSE_DOWN.store(false, Ordering::SeqCst);
+                    // remember the aspect-snap modifier at release time so the
+                    // committed rect matches the last painted (snapped) one
+                    SHIFT_AT_COMMIT.store(shift_held(), Ordering::SeqCst);
 
                     let sx = START_X.load(Ordering::SeqCst);
                     let sy = START_Y.load(Ordering::SeqCst);
@@ -1259,9 +1266,11 @@ mod windows_impl {
                         SELECTING.store(false, Ordering::SeqCst);
                         PostQuitMessage(0);
                     } else {
-                        // If Shift or Ctrl is held on mouse up, do NOT close the window immediately.
-                        // This allows the user to fine-tune the selection with arrow keys.
-                        if !shift_held() && !ctrl_held() {
+                        // Ctrl is the fine-tune modifier: holding it on release
+                        // keeps the overlay open for arrow adjustment. Shift is
+                        // only aspect-snap, so releasing with Shift held commits
+                        // the snapped selection instead of leaving it uncommitted.
+                        if !ctrl_held() {
                             SELECTING.store(false, Ordering::SeqCst);
                             PostQuitMessage(0);
                         }
@@ -1284,6 +1293,8 @@ mod windows_impl {
                     if !has_selection {
                         FULLSCREEN.store(true, Ordering::SeqCst);
                     }
+                    // capture aspect-snap at the moment of the Enter commit too
+                    SHIFT_AT_COMMIT.store(shift_held(), Ordering::SeqCst);
                     SELECTING.store(false, Ordering::SeqCst);
                     PostQuitMessage(0);
                 } else if key == VK_LEFT.0 as i32 || key == VK_RIGHT.0 as i32 || key == VK_UP.0 as i32 || key == VK_DOWN.0 as i32 {
