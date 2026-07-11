@@ -1609,10 +1609,10 @@ kbd {
 /* ---------------- update banner ---------------- */
 
 .update-banner {
-  position: fixed;
-  top: var(--titlebar-h);
-  left: var(--sidebar-w);
-  right: 0;
+  /* in normal flow, bled to the content edges via negative margins that cancel
+     .content's padding, so it sits flush at the top and pushes the view down
+     rather than overlaying the title */
+  margin: -26px -36px 18px;
   display: flex;
   align-items: center;
   gap: 12px;
@@ -1621,7 +1621,6 @@ kbd {
   border-bottom: 1px solid var(--rule-2);
   font-size: 12px;
   color: var(--text-1);
-  z-index: 50;
 }
 
 .update-banner-glyph {

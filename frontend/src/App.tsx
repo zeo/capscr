@@ -445,40 +445,41 @@ function Hub() {
         </div>
       </Show>
 
-      <Show when={updateInfo() && !updateDismissed()}>
-        <div class="update-banner">
-          <span class="update-banner-glyph">▮</span>
-          <div class="update-banner-text">
-            <span class="update-banner-title">
-              update available · v{updateInfo()!.version}
-            </span>
-            <span class="update-banner-meta">
-              you're on v{updateInfo()!.current_version}
-            </span>
-          </div>
-          <button
-            type="button"
-            class="btn"
-            data-size="xs"
-            onClick={runUpdate}
-            disabled={updating()}
-          >
-            <Download size={11} stroke-width={1.5} />
-            {updating() ? "installing..." : "install + restart"}
-          </button>
-          <button
-            type="button"
-            class="btn"
-            data-variant="ghost"
-            data-size="xs"
-            onClick={() => setUpdateDismissed(true)}
-          >
-            later
-          </button>
-        </div>
-      </Show>
-
       <main class="content">
+        {/* in normal flow at the top of the content area so it pushes the view
+            down instead of overlaying the view title */}
+        <Show when={updateInfo() && !updateDismissed()}>
+          <div class="update-banner">
+            <span class="update-banner-glyph">▮</span>
+            <div class="update-banner-text">
+              <span class="update-banner-title">
+                update available · v{updateInfo()!.version}
+              </span>
+              <span class="update-banner-meta">
+                you're on v{updateInfo()!.current_version}
+              </span>
+            </div>
+            <button
+              type="button"
+              class="btn"
+              data-size="xs"
+              onClick={runUpdate}
+              disabled={updating()}
+            >
+              <Download size={11} stroke-width={1.5} />
+              {updating() ? "installing..." : "install + restart"}
+            </button>
+            <button
+              type="button"
+              class="btn"
+              data-variant="ghost"
+              data-size="xs"
+              onClick={() => setUpdateDismissed(true)}
+            >
+              later
+            </button>
+          </div>
+        </Show>
         {/* keyed on the active tab so switching remounts the wrapper and
             re-runs the brief enter animation (matches the existing toast/drop
             motion vocabulary); same-tab clicks are guarded upstream */}
