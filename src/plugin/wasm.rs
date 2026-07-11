@@ -818,6 +818,12 @@ fn host_request(
     let client = reqwest::blocking::Client::builder()
         .timeout(timeout)
         .redirect(reqwest::redirect::Policy::none())
+        // validate_resolved_host only vets a resolution taken a moment ago;
+        // reqwest re-resolves at connect time, so without this the guard is a
+        // TOCTOU window a rebinding dns answer walks through. pin the same
+        // validating resolver the uploader and marketplace use so the address
+        // actually dialed is the one that was vetted
+        .dns_resolver(crate::upload::ssrf_validating_resolver())
         .build()?;
     let mut req = match method {
         HttpMethod::Get => client.get(url),
