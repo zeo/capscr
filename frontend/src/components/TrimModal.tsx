@@ -1,4 +1,4 @@
-import { createSignal, Show } from "solid-js";
+import { createSignal, onCleanup, onMount, Show } from "solid-js";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { Scissors, X } from "lucide-solid";
 import { api } from "../api";
@@ -26,6 +26,19 @@ export function TrimModal(props: {
   const [fast, setFast] = createSignal(false);
   const [busy, setBusy] = createSignal(false);
   const [err, setErr] = createSignal<string | null>(null);
+
+  // Escape closes the modal (unless a trim is in progress), matching the editor
+  // and shortcuts overlay
+  onMount(() => {
+    const onKey = (ev: KeyboardEvent) => {
+      if (ev.key === "Escape" && !busy()) {
+        ev.preventDefault();
+        props.onClose();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    onCleanup(() => window.removeEventListener("keydown", onKey));
+  });
 
   const onMeta = () => {
     const d = video?.duration ?? 0;

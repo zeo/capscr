@@ -1,4 +1,4 @@
-import { createSignal, onMount, Show } from "solid-js";
+import { createSignal, onCleanup, onMount, Show } from "solid-js";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { LogicalSize } from "@tauri-apps/api/dpi";
 import { convertFileSrc } from "@tauri-apps/api/core";
@@ -64,6 +64,16 @@ export function PinView(props: { label: string }) {
   const closePin = () => {
     getCurrentWindow().close();
   };
+
+  // Escape closes the pin while it's focused, so a pin whose controls are out of
+  // reach (mouse away from its corner) still has a keyboard way out
+  onMount(() => {
+    const onKey = (ev: KeyboardEvent) => {
+      if (ev.key === "Escape") closePin();
+    };
+    window.addEventListener("keydown", onKey);
+    onCleanup(() => window.removeEventListener("keydown", onKey));
+  });
 
   return (
     <div
