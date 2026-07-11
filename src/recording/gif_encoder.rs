@@ -812,9 +812,11 @@ pub fn record_loopback_audio(
     let bits_per_sample = format.get_bitspersample() as u16;
     let block_align = format.get_blockalign() as usize;
 
+    // 200ms of device buffer: the polling thread shares a core with capture
+    // and encoding, and a 10ms buffer overruns whenever it gets descheduled
     let mode = wasapi::StreamMode::PollingShared {
         autoconvert: true,
-        buffer_duration_hns: 100_000,
+        buffer_duration_hns: 2_000_000,
     };
     client.initialize_client(&format, &wasapi::Direction::Capture, &mode)
         .map_err(|e| anyhow!("failed to initialize audio client: {e:?}"))?;
@@ -830,6 +832,14 @@ pub fn record_loopback_audio(
     client.start_stream()
         .map_err(|e| anyhow!("failed to start audio stream: {e:?}"))?;
 
+    let started = std::time::Instant::now();
+    // half a wall-clock second of slack before padding first kicks in: real
+    // packets lag the clock by device latency, and padding must never race a
+    // stream that is merely delayed. once a silent stretch is confirmed the
+    // pad tracks the clock every poll so resumed audio lands on time
+    let pad_threshold_frames = sample_rate as u64 / 2;
+    let mut padding_active = false;
+
     while stop_rx.try_recv().is_err() {
         std::thread::sleep(std::time::Duration::from_millis(10));
 
@@ -843,10 +853,25 @@ pub fn record_loopback_audio(
                     let size = frames as usize * block_align;
                     temp_file.write_all(&chunk[..size])?;
                     bytes_written = bytes_written.saturating_add(size as u32);
+                    padding_active = false;
                 }
             } else {
                 break;
             }
+        }
+
+        // wasapi loopback stops delivering packets while the system is silent;
+        // without zero-fill the gaps collapse, the wav runs short, the
+        // -shortest mux truncates the video, and audio after the gap plays
+        // early. zeros keep the track wall-clock aligned
+        let expected_frames = (started.elapsed().as_secs_f64() * sample_rate as f64) as u64;
+        let written_frames = bytes_written as u64 / block_align as u64;
+        let gap = expected_frames.saturating_sub(written_frames);
+        if gap > 0 && (padding_active || gap > pad_threshold_frames) {
+            padding_active = true;
+            let silence = vec![0u8; gap as usize * block_align];
+            temp_file.write_all(&silence)?;
+            bytes_written = bytes_written.saturating_add(silence.len() as u32);
         }
     }
 
