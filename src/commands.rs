@@ -801,16 +801,20 @@ fn run_post_action(
 ) -> anyhow::Result<Option<PathBuf>> {
     let config = state.config.lock().unwrap().clone();
 
+    // the encode runs on a worker thread; on_saved fires there once the write
+    // actually succeeds, so callers announce "saved" only when it's true. a
+    // failed write removes the 0-byte placeholder and toasts instead of leaving
+    // the earlier "capture saved" claim standing.
     let do_save_async = |img: Arc<RgbaImage>,
                          hdr: Option<crate::capture::HdrBitmap>,
-                         app_handle: AppHandle|
+                         app_handle: AppHandle,
+                         on_saved: Box<dyn FnOnce(&std::path::Path) + Send>|
      -> anyhow::Result<PathBuf> {
         let base = config.output_path();
         let path = get_unique_filepath(&base);
         if let Err(e) = std::fs::create_dir_all(&config.output.directory) {
             tracing::warn!("failed to create output dir: {e}");
         }
-        *state.last_save.lock().unwrap() = Some(path.clone());
 
         let path_clone = path.clone();
         let format = config.output.format;
@@ -818,15 +822,29 @@ fn run_post_action(
         let config_clone = config.clone();
         std::thread::spawn(move || {
             let t0 = std::time::Instant::now();
-            if let Err(e) = save_image(&img, &path_clone, format, quality) {
-                tracing::error!("Background save_image failed: {e:#}");
-            } else {
-                maybe_write_hdr_sidecar(&path_clone, &hdr, &config_clone);
-                tracing::info!(
-                    "Background save completed in {}ms",
-                    t0.elapsed().as_millis()
-                );
-                notify_capture_saved(&app_handle, &path_clone);
+            match save_image(&img, &path_clone, format, quality) {
+                Ok(()) => {
+                    maybe_write_hdr_sidecar(&path_clone, &hdr, &config_clone);
+                    *app_handle.state::<AppState>().last_save.lock().unwrap() =
+                        Some(path_clone.clone());
+                    tracing::info!(
+                        "Background save completed in {}ms",
+                        t0.elapsed().as_millis()
+                    );
+                    notify_capture_saved(&app_handle, &path_clone);
+                    on_saved(&path_clone);
+                }
+                Err(e) => {
+                    tracing::error!("Background save_image failed: {e:#}");
+                    let _ = std::fs::remove_file(&path_clone);
+                    emit_error(&app_handle, "save", "couldn't write the capture to disk");
+                    if config_clone.ui.show_notifications {
+                        let _ = show_notification(
+                            "Capture failed",
+                            "couldn't write the capture to disk",
+                        );
+                    }
+                }
             }
         });
         Ok(path)
@@ -895,11 +913,19 @@ fn run_post_action(
 
     match action {
         PostCaptureAction::SaveToFile => {
-            let path = do_save_async(image.clone(), hdr_bitmap.clone(), app.clone())?;
-            Sound::Screenshot.play_if_enabled(config.post_capture.play_sound);
-            if config.ui.show_notifications {
-                let _ = show_notification("Capture saved", &path.to_string_lossy());
-            }
+            let play = config.post_capture.play_sound;
+            let show = config.ui.show_notifications;
+            let path = do_save_async(
+                image.clone(),
+                hdr_bitmap.clone(),
+                app.clone(),
+                Box::new(move |path| {
+                    Sound::Screenshot.play_if_enabled(play);
+                    if show {
+                        let _ = show_notification("Capture saved", &path.to_string_lossy());
+                    }
+                }),
+            )?;
             Ok(Some(path))
         }
         PostCaptureAction::CopyToClipboard => {
@@ -923,17 +949,25 @@ fn run_post_action(
             Ok(history_path)
         }
         PostCaptureAction::SaveAndCopy => {
-            let path = do_save_async(image.clone(), hdr_bitmap.clone(), app.clone())?;
             let clipboard_ok = do_clipboard().is_ok();
-            Sound::Screenshot.play_if_enabled(config.post_capture.play_sound);
-            if config.ui.show_notifications {
-                let title = if clipboard_ok {
-                    "Capture saved + copied"
-                } else {
-                    "Capture saved (clipboard busy)"
-                };
-                let _ = show_notification(title, &path.to_string_lossy());
-            }
+            let play = config.post_capture.play_sound;
+            let show = config.ui.show_notifications;
+            let path = do_save_async(
+                image.clone(),
+                hdr_bitmap.clone(),
+                app.clone(),
+                Box::new(move |path| {
+                    Sound::Screenshot.play_if_enabled(play);
+                    if show {
+                        let title = if clipboard_ok {
+                            "Capture saved + copied"
+                        } else {
+                            "Capture saved (clipboard busy)"
+                        };
+                        let _ = show_notification(title, &path.to_string_lossy());
+                    }
+                }),
+            )?;
             Ok(Some(path))
         }
         PostCaptureAction::Upload => {
@@ -948,17 +982,25 @@ fn run_post_action(
             Ok(history_path)
         }
         PostCaptureAction::PromptUser => {
-            let path = do_save_async(image.clone(), hdr_bitmap.clone(), app.clone())?;
             let clipboard_ok = do_clipboard().is_ok();
-            Sound::Screenshot.play_if_enabled(config.post_capture.play_sound);
-            if config.ui.show_notifications {
-                let title = if clipboard_ok {
-                    "Capture saved + copied"
-                } else {
-                    "Capture saved (clipboard busy)"
-                };
-                let _ = show_notification(title, &path.to_string_lossy());
-            }
+            let play = config.post_capture.play_sound;
+            let show = config.ui.show_notifications;
+            let path = do_save_async(
+                image.clone(),
+                hdr_bitmap.clone(),
+                app.clone(),
+                Box::new(move |path| {
+                    Sound::Screenshot.play_if_enabled(play);
+                    if show {
+                        let title = if clipboard_ok {
+                            "Capture saved + copied"
+                        } else {
+                            "Capture saved (clipboard busy)"
+                        };
+                        let _ = show_notification(title, &path.to_string_lossy());
+                    }
+                }),
+            )?;
             Ok(Some(path))
         }
         PostCaptureAction::DoNothing => {
