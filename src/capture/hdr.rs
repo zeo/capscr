@@ -110,12 +110,20 @@ impl HdrCapture {
     }
 
     pub fn get_display_hdr_info() -> Result<HdrDisplayInfo> {
+        Self::get_display_hdr_info_at(None)
+    }
+
+    // like get_display_hdr_info, but resolves the SDR white level / luminance for
+    // the monitor that contains `target` rather than the first HDR output, so a
+    // capture on a secondary HDR monitor tonemaps against its own brightness
+    pub fn get_display_hdr_info_at(target: Option<(i32, i32)>) -> Result<HdrDisplayInfo> {
         #[cfg(target_os = "windows")]
         {
-            windows_hdr::get_hdr_display_info()
+            windows_hdr::get_hdr_display_info_at(target)
         }
         #[cfg(not(target_os = "windows"))]
         {
+            let _ = target;
             Ok(HdrDisplayInfo::default())
         }
     }
@@ -160,7 +168,10 @@ impl HdrCapture {
     ) -> Result<(RgbaImage, Option<crate::capture::HdrBitmap>)> {
         #[cfg(target_os = "windows")]
         {
-            let hdr_info = Self::get_display_hdr_info()?;
+            // resolve HDR info for the monitor being captured, not just the
+            // first HDR output, so a multi-HDR desktop tonemaps each panel
+            // against its own SDR white level
+            let hdr_info = Self::get_display_hdr_info_at(target)?;
 
             if !hdr_info.is_hdr_enabled {
                 tracing::debug!("capture_with_hdr_at: hdr not enabled, falling back to SDR");
@@ -370,61 +381,84 @@ mod windows_hdr {
         CreateDXGIFactory1, IDXGIAdapter1, IDXGIFactory1, IDXGIOutput, IDXGIOutput6,
     };
 
+    // build HdrDisplayInfo for one output if it is HDR, else None. prefers the
+    // OS-reported SDR white level (DISPLAYCONFIG_SDR_WHITE_LEVEL — the value
+    // driven by the SDR-content brightness slider in Windows Settings). DXGI's
+    // MaxFullFrameLuminance is a panel capability figure typically much higher
+    // than what the user wants SDR rendered at, so it blew out SDR-on-HDR
+    // captures.
+    unsafe fn hdr_info_from_output(output: &IDXGIOutput) -> Option<HdrDisplayInfo> {
+        let output6 = output.cast::<IDXGIOutput6>().ok()?;
+        let desc1 = output6.GetDesc1().ok()?;
+        let cs = desc1.ColorSpace.0;
+        if !(cs == 12 || cs == 13 || cs == 14) {
+            return None;
+        }
+        let sdr_white_level = query_displayconfig_sdr_white(&desc1.DeviceName)
+            .unwrap_or(200.0)
+            .max(80.0);
+        tracing::debug!(
+            "hdr display info: colorspace={} sdr_white={:.0}nits max_lum={:.0}nits dxgi_max_full_frame={:.0}nits",
+            cs,
+            sdr_white_level,
+            desc1.MaxLuminance,
+            desc1.MaxFullFrameLuminance,
+        );
+        Some(HdrDisplayInfo {
+            is_hdr_enabled: true,
+            format: match cs {
+                12 => HdrFormat::Hdr10,
+                13 => HdrFormat::Hlg,
+                _ => HdrFormat::ScRgb,
+            },
+            max_luminance: desc1.MaxLuminance,
+            min_luminance: desc1.MinLuminance,
+            sdr_white_level,
+        })
+    }
+
     pub fn get_hdr_display_info() -> Result<HdrDisplayInfo> {
+        get_hdr_display_info_at(None)
+    }
+
+    // resolve HDR info for the output that contains `target`, not just the first
+    // HDR output. on a multi-HDR-monitor desktop each panel can have a different
+    // SDR-content brightness, so tonemapping the secondary monitor against the
+    // primary's SDR white level came out too bright or too dim. falls back to the
+    // first HDR output when the target is None or lands on no enumerated output.
+    pub fn get_hdr_display_info_at(target: Option<(i32, i32)>) -> Result<HdrDisplayInfo> {
         unsafe {
             let factory: IDXGIFactory1 = CreateDXGIFactory1()?;
 
-            let mut adapter_idx = 0u32;
-            while let Ok(adapter) = factory.EnumAdapters1(adapter_idx) {
-                let adapter: IDXGIAdapter1 = adapter;
-                let mut output_idx = 0u32;
-
-                while let Ok(output) = adapter.EnumOutputs(output_idx) {
-                    let output: IDXGIOutput = output;
-
-                    if let Ok(output6) = output.cast::<IDXGIOutput6>() {
-                        if let Ok(desc1) = output6.GetDesc1() {
-                            let color_space = desc1.ColorSpace;
-                            let is_hdr =
-                                color_space.0 == 12 || color_space.0 == 13 || color_space.0 == 14;
-
-                            if is_hdr {
-                                // prefer the OS-reported SDR white level
-                                // (DISPLAYCONFIG_SDR_WHITE_LEVEL — the actual
-                                // value driven by the SDR-content brightness
-                                // slider in Windows Settings). DXGI's
-                                // MaxFullFrameLuminance is a panel capability
-                                // figure that's typically much higher than
-                                // what the user actually wants SDR to render
-                                // at, so it was systematically blowing out
-                                // SDR-on-HDR captures.
-                                let sdr_white_level =
-                                    query_displayconfig_sdr_white(&desc1.DeviceName)
-                                        .unwrap_or(200.0)
-                                        .max(80.0);
-
-                                tracing::debug!(
-                                    "hdr display info: colorspace={} sdr_white={:.0}nits max_lum={:.0}nits dxgi_max_full_frame={:.0}nits",
-                                    color_space.0,
-                                    sdr_white_level,
-                                    desc1.MaxLuminance,
-                                    desc1.MaxFullFrameLuminance,
-                                );
-                                return Ok(HdrDisplayInfo {
-                                    is_hdr_enabled: true,
-                                    format: match color_space.0 {
-                                        12 => HdrFormat::Hdr10,
-                                        13 => HdrFormat::Hlg,
-                                        _ => HdrFormat::ScRgb,
-                                    },
-                                    max_luminance: desc1.MaxLuminance,
-                                    min_luminance: desc1.MinLuminance,
-                                    sdr_white_level,
-                                });
+            if let Some((tx, ty)) = target {
+                let mut adapter_idx = 0u32;
+                while let Ok(adapter) = factory.EnumAdapters1(adapter_idx) {
+                    let mut output_idx = 0u32;
+                    while let Ok(output) = adapter.EnumOutputs(output_idx) {
+                        let output: IDXGIOutput = output;
+                        if let Ok(desc) = output.GetDesc() {
+                            let r = desc.DesktopCoordinates;
+                            if tx >= r.left && tx < r.right && ty >= r.top && ty < r.bottom {
+                                if let Some(info) = hdr_info_from_output(&output) {
+                                    return Ok(info);
+                                }
                             }
                         }
+                        output_idx += 1;
                     }
+                    adapter_idx += 1;
+                }
+            }
 
+            // no target, or target not on an HDR output: first HDR output wins
+            let mut adapter_idx = 0u32;
+            while let Ok(adapter) = factory.EnumAdapters1(adapter_idx) {
+                let mut output_idx = 0u32;
+                while let Ok(output) = adapter.EnumOutputs(output_idx) {
+                    let output: IDXGIOutput = output;
+                    if let Some(info) = hdr_info_from_output(&output) {
+                        return Ok(info);
+                    }
                     output_idx += 1;
                 }
                 adapter_idx += 1;
@@ -633,7 +667,9 @@ mod windows_hdr {
 
             let cache_mutex = DEVICE_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
             let (mut device, mut context) = {
-                let mut cache = cache_mutex.lock().unwrap();
+                // recover a poisoned lock rather than panicking: a single panic
+                // under this lock must not brick every future HDR capture
+                let mut cache = cache_mutex.lock().unwrap_or_else(|e| e.into_inner());
                 if let Some((cached_dev, cached_ctx)) = cache.get(&luid) {
                     (cached_dev.clone(), cached_ctx.clone())
                 } else {
@@ -1016,7 +1052,7 @@ mod windows_hdr {
                         high: desc.AdapterLuid.HighPart,
                     };
                     let cache_mutex = DEVICE_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-                    let mut cache = cache_mutex.lock().unwrap();
+                    let mut cache = cache_mutex.lock().unwrap_or_else(|e| e.into_inner());
                     if let std::collections::hash_map::Entry::Vacant(e) = cache.entry(luid) {
                         let mut device: Option<ID3D11Device> = None;
                         let mut context: Option<ID3D11DeviceContext> = None;
