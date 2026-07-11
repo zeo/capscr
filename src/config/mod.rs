@@ -413,7 +413,10 @@ impl Default for UiConfig {
             show_notifications: true,
             copy_to_clipboard: true,
             close_behavior: CloseBehavior::MinimizeToTray,
-            auto_start: true,
+            // opt-in: a fresh install must not add itself to Windows startup
+            // before the user has chosen to, and with no persisted config the
+            // launch-time reconcile would otherwise re-add it every boot
+            auto_start: false,
             check_updates_on_launch: true,
             save_clipboard_to_history: true,
         }
