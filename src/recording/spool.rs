@@ -61,7 +61,7 @@ impl FrameSpool {
         if self.bytes_written.saturating_add(len) > self.byte_budget {
             return Ok(false);
         }
-        if self.metas.len() % REPROBE_INTERVAL == 0 {
+        if self.metas.len().is_multiple_of(REPROBE_INTERVAL) {
             let live = spool_budget(free_disk_space(&self.path).map(|f| f + self.bytes_written));
             self.byte_budget = self.byte_budget.min(live);
             if self.bytes_written.saturating_add(len) > self.byte_budget {

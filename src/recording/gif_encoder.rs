@@ -555,10 +555,10 @@ impl GifRecorder {
             let mut encoder = Encoder::new(file, width, height, &global_palette)?;
             encoder.set_repeat(Repeat::Infinite)?;
 
-            for frame_idx in 0..num_frames {
+            for (frame_idx, &delay) in delays.iter().enumerate() {
                 // 0-delay frames were folded into a neighbour by the schedule;
                 // skipping them here also skips their disk read + quantize cost
-                if delays[frame_idx] == 0 {
+                if delay == 0 {
                     continue;
                 }
                 let frame = spool.read_frame(frame_idx)?;

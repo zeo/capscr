@@ -1273,64 +1273,62 @@ mod windows_impl {
                             END_Y.store(new_end_y, Ordering::SeqCst);
                             let _ = SetCursorPos(new_end_x, new_end_y);
                         }
-                    } else {
-                        if ctrl && shift {
-                            // Adjust top-left (start) boundary
-                            let sx = START_X.load(Ordering::SeqCst);
-                            let sy = START_Y.load(Ordering::SeqCst);
-                            if sx != 0 || sy != 0 {
-                                START_X.store(sx + dx, Ordering::SeqCst);
-                                START_Y.store(sy + dy, Ordering::SeqCst);
-                            }
-                        } else if shift {
-                            // Adjust bottom-right (end) boundary
-                            let cur_x = CURSOR_X.load(Ordering::SeqCst);
-                            let cur_y = CURSOR_Y.load(Ordering::SeqCst);
-                            let sx = START_X.load(Ordering::SeqCst);
-                            let sy = START_Y.load(Ordering::SeqCst);
-                            if sx == 0 && sy == 0 {
-                                START_X.store(cur_x, Ordering::SeqCst);
-                                START_Y.store(cur_y, Ordering::SeqCst);
-                                END_X.store(cur_x + dx, Ordering::SeqCst);
-                                END_Y.store(cur_y + dy, Ordering::SeqCst);
-                                let _ = SetCursorPos(cur_x + dx, cur_y + dy);
-                            } else {
-                                let new_end_x = END_X.load(Ordering::SeqCst) + dx;
-                                let new_end_y = END_Y.load(Ordering::SeqCst) + dy;
-                                END_X.store(new_end_x, Ordering::SeqCst);
-                                END_Y.store(new_end_y, Ordering::SeqCst);
-                                let _ = SetCursorPos(new_end_x, new_end_y);
-                            }
-                        } else if ctrl {
-                            // Move entire selection
-                            let sx = START_X.load(Ordering::SeqCst);
-                            let sy = START_Y.load(Ordering::SeqCst);
-                            let ex = END_X.load(Ordering::SeqCst);
-                            let ey = END_Y.load(Ordering::SeqCst);
-                            if sx != 0 || sy != 0 || ex != 0 || ey != 0 {
-                                START_X.store(sx + dx, Ordering::SeqCst);
-                                START_Y.store(sy + dy, Ordering::SeqCst);
-                                END_X.store(ex + dx, Ordering::SeqCst);
-                                END_Y.store(ey + dy, Ordering::SeqCst);
-                                let mut cur_pt = POINT::default();
-                                let _ = GetCursorPos(&mut cur_pt);
-                                let _ = SetCursorPos(cur_pt.x + dx, cur_pt.y + dy);
-                            } else {
-                                // No selection: just move cursor
-                                let new_x = pt.x + dx;
-                                let new_y = pt.y + dy;
-                                let _ = SetCursorPos(new_x, new_y);
-                                CURSOR_X.store(new_x, Ordering::SeqCst);
-                                CURSOR_Y.store(new_y, Ordering::SeqCst);
-                            }
+                    } else if ctrl && shift {
+                        // Adjust top-left (start) boundary
+                        let sx = START_X.load(Ordering::SeqCst);
+                        let sy = START_Y.load(Ordering::SeqCst);
+                        if sx != 0 || sy != 0 {
+                            START_X.store(sx + dx, Ordering::SeqCst);
+                            START_Y.store(sy + dy, Ordering::SeqCst);
+                        }
+                    } else if shift {
+                        // Adjust bottom-right (end) boundary
+                        let cur_x = CURSOR_X.load(Ordering::SeqCst);
+                        let cur_y = CURSOR_Y.load(Ordering::SeqCst);
+                        let sx = START_X.load(Ordering::SeqCst);
+                        let sy = START_Y.load(Ordering::SeqCst);
+                        if sx == 0 && sy == 0 {
+                            START_X.store(cur_x, Ordering::SeqCst);
+                            START_Y.store(cur_y, Ordering::SeqCst);
+                            END_X.store(cur_x + dx, Ordering::SeqCst);
+                            END_Y.store(cur_y + dy, Ordering::SeqCst);
+                            let _ = SetCursorPos(cur_x + dx, cur_y + dy);
                         } else {
-                            // Move cursor only
+                            let new_end_x = END_X.load(Ordering::SeqCst) + dx;
+                            let new_end_y = END_Y.load(Ordering::SeqCst) + dy;
+                            END_X.store(new_end_x, Ordering::SeqCst);
+                            END_Y.store(new_end_y, Ordering::SeqCst);
+                            let _ = SetCursorPos(new_end_x, new_end_y);
+                        }
+                    } else if ctrl {
+                        // Move entire selection
+                        let sx = START_X.load(Ordering::SeqCst);
+                        let sy = START_Y.load(Ordering::SeqCst);
+                        let ex = END_X.load(Ordering::SeqCst);
+                        let ey = END_Y.load(Ordering::SeqCst);
+                        if sx != 0 || sy != 0 || ex != 0 || ey != 0 {
+                            START_X.store(sx + dx, Ordering::SeqCst);
+                            START_Y.store(sy + dy, Ordering::SeqCst);
+                            END_X.store(ex + dx, Ordering::SeqCst);
+                            END_Y.store(ey + dy, Ordering::SeqCst);
+                            let mut cur_pt = POINT::default();
+                            let _ = GetCursorPos(&mut cur_pt);
+                            let _ = SetCursorPos(cur_pt.x + dx, cur_pt.y + dy);
+                        } else {
+                            // No selection: just move cursor
                             let new_x = pt.x + dx;
                             let new_y = pt.y + dy;
                             let _ = SetCursorPos(new_x, new_y);
                             CURSOR_X.store(new_x, Ordering::SeqCst);
                             CURSOR_Y.store(new_y, Ordering::SeqCst);
                         }
+                    } else {
+                        // Move cursor only
+                        let new_x = pt.x + dx;
+                        let new_y = pt.y + dy;
+                        let _ = SetCursorPos(new_x, new_y);
+                        CURSOR_X.store(new_x, Ordering::SeqCst);
+                        CURSOR_Y.store(new_y, Ordering::SeqCst);
                     }
                     let _ = InvalidateRect(hwnd, None, false);
                 }
