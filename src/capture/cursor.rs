@@ -90,9 +90,14 @@ fn composite_at(dst: &mut RgbaImage, src: &RgbaImage, x: i32, y: i32) -> bool {
             }
             let dp = dst.get_pixel(dx as u32, dy as u32).0;
             let inv = 255 - sa;
-            let r = ((sp[0] as u16 * sa + dp[0] as u16 * inv) / 255) as u8;
-            let g = ((sp[1] as u16 * sa + dp[1] as u16 * inv) / 255) as u8;
-            let b = ((sp[2] as u16 * sa + dp[2] as u16 * inv) / 255) as u8;
+            // DrawIconEx renders the cursor over a black background, so its color
+            // is already premultiplied by alpha. composite premultiplied
+            // (src + dst*(1-a)); a straight-alpha blend would apply the cursor
+            // alpha a second time and darken anti-aliased edges and drop shadows
+            // into a visible fringe
+            let r = (sp[0] as u16 + dp[0] as u16 * inv / 255).min(255) as u8;
+            let g = (sp[1] as u16 + dp[1] as u16 * inv / 255).min(255) as u8;
+            let b = (sp[2] as u16 + dp[2] as u16 * inv / 255).min(255) as u8;
             let a = dp[3].max(sp[3]);
             dst.put_pixel(dx as u32, dy as u32, image::Rgba([r, g, b, a]));
         }
@@ -323,5 +328,36 @@ mod windows_impl {
             let screen_y = info.ptScreenPos.y - icon_info.yHotspot as i32;
             Some((img, screen_x, screen_y))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use image::Rgba;
+
+    #[test]
+    fn composite_blends_premultiplied_cursor() {
+        // a 50%-alpha fully-red cursor pixel, premultiplied (color already * a),
+        // over a white background must land on (255, 127, 127). the old
+        // straight-alpha blend darkened the red channel to ~191.
+        let mut dst = RgbaImage::from_pixel(1, 1, Rgba([255, 255, 255, 255]));
+        let src = RgbaImage::from_pixel(1, 1, Rgba([128, 0, 0, 128]));
+        assert!(composite_at(&mut dst, &src, 0, 0));
+        let out = dst.get_pixel(0, 0).0;
+        assert_eq!(out[0], 255, "red edge must not darken into a fringe");
+        assert_eq!(out[1], 127);
+        assert_eq!(out[2], 127);
+    }
+
+    #[test]
+    fn composite_passes_through_opaque_and_skips_transparent() {
+        let mut dst = RgbaImage::from_pixel(1, 1, Rgba([10, 20, 30, 255]));
+        // fully transparent src leaves the destination untouched
+        composite_at(&mut dst, &RgbaImage::from_pixel(1, 1, Rgba([9, 9, 9, 0])), 0, 0);
+        assert_eq!(dst.get_pixel(0, 0).0, [10, 20, 30, 255]);
+        // fully opaque src replaces it
+        composite_at(&mut dst, &RgbaImage::from_pixel(1, 1, Rgba([1, 2, 3, 255])), 0, 0);
+        assert_eq!(dst.get_pixel(0, 0).0, [1, 2, 3, 255]);
     }
 }
