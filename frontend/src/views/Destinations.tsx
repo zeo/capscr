@@ -5,6 +5,7 @@ import { Section } from "../components/Section";
 import { api, AppConfig, ConnectionTestReport } from "../api";
 import { configDirty, setConfigDirty } from "../dirty";
 import { config, mutateConfig } from "../store";
+import { commitNumber } from "../num";
 
 export function Destinations() {
   const [status, setStatus] = createSignal<{ tone: string; msg: string } | null>(
@@ -192,6 +193,15 @@ export function Destinations() {
                           });
                         }
                       }}
+                      onChange={(e) =>
+                        patch({
+                          ...c().upload,
+                          ftp: {
+                            ...c().upload.ftp,
+                            port: commitNumber(e.currentTarget, { min: 1, max: 65535, fallback: c().upload.ftp.port, int: true }),
+                          },
+                        })
+                      }
                     />
                     <span class="field-hint">21 plain, 990 implicit tls</span>
                   </div>
@@ -336,6 +346,15 @@ export function Destinations() {
                           });
                         }
                       }}
+                      onChange={(e) =>
+                        patch({
+                          ...c().upload,
+                          sftp: {
+                            ...c().upload.sftp,
+                            port: commitNumber(e.currentTarget, { min: 1, max: 65535, fallback: c().upload.sftp.port, int: true }),
+                          },
+                        })
+                      }
                     />
                     <span class="field-hint">22 standard ssh</span>
                   </div>

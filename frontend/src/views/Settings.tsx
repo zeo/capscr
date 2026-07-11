@@ -6,6 +6,7 @@ import { api, AppConfig, HotkeyDiagnostics, SftpKnownHost } from "../api";
 import { configDirty, setConfigDirty } from "../dirty";
 import { FolderOpen, RotateCcw, Save } from "lucide-solid";
 import { config, mutateConfig } from "../store";
+import { commitNumber } from "../num";
 
 type Pane = "general" | "capture" | "hdr" | "hotkeys" | "ssh" | "notify";
 
@@ -253,6 +254,12 @@ function GeneralPane(props: { c: AppConfig; patch: Patch }) {
               if (!isNaN(v) && v >= 1 && v <= 100)
                 props.patch("output", { ...c().output, quality: v });
             }}
+            onChange={(e) =>
+              props.patch("output", {
+                ...c().output,
+                quality: commitNumber(e.currentTarget, { min: 1, max: 100, fallback: c().output.quality, int: true }),
+              })
+            }
           />
           <span class="field-hint">1-100, ignored for png/bmp</span>
         </div>
@@ -304,6 +311,12 @@ function CapturePane(props: { c: AppConfig; patch: Patch }) {
                 if (!isNaN(v) && v >= 0 && v <= 5000)
                   props.patch("capture", { ...c().capture, delay_ms: v });
               }}
+              onChange={(e) =>
+                props.patch("capture", {
+                  ...c().capture,
+                  delay_ms: commitNumber(e.currentTarget, { min: 0, max: 5000, fallback: c().capture.delay_ms, int: true }),
+                })
+              }
             />
             <span class="field-hint">ms before grabbing pixels — useful for tooltips / menus (0 = instant)</span>
           </div>
@@ -324,6 +337,12 @@ function CapturePane(props: { c: AppConfig; patch: Patch }) {
                 if (!isNaN(v) && v >= 1 && v <= 60)
                   props.patch("capture", { ...c().capture, gif_fps: v });
               }}
+              onChange={(e) =>
+                props.patch("capture", {
+                  ...c().capture,
+                  gif_fps: commitNumber(e.currentTarget, { min: 1, max: 60, fallback: c().capture.gif_fps, int: true }),
+                })
+              }
             />
             <span class="field-hint">fps, 1-60</span>
           </div>
@@ -341,6 +360,12 @@ function CapturePane(props: { c: AppConfig; patch: Patch }) {
                 if (!isNaN(v) && v >= 1 && v <= 300)
                   props.patch("capture", { ...c().capture, gif_max_duration_secs: v });
               }}
+              onChange={(e) =>
+                props.patch("capture", {
+                  ...c().capture,
+                  gif_max_duration_secs: commitNumber(e.currentTarget, { min: 1, max: 300, fallback: c().capture.gif_max_duration_secs, int: true }),
+                })
+              }
             />
             <span class="field-hint">seconds, 1-300 — the recording auto-stops and saves when reached</span>
           </div>
@@ -415,6 +440,15 @@ function HdrPane(props: { c: AppConfig; patch: Patch }) {
                   hdr: { ...c().capture.hdr, brightness_nits: v },
                 });
             }}
+            onChange={(e) =>
+              props.patch("capture", {
+                ...c().capture,
+                hdr: {
+                  ...c().capture.hdr,
+                  brightness_nits: commitNumber(e.currentTarget, { min: 0, max: 10000, fallback: c().capture.hdr.brightness_nits }),
+                },
+              })
+            }
           />
           <span class="field-hint">
             manual sdr-white target in nits. 0 = auto-detect from the os
@@ -439,6 +473,15 @@ function HdrPane(props: { c: AppConfig; patch: Patch }) {
                   hdr: { ...c().capture.hdr, user_brightness_scale: v },
                 });
             }}
+            onChange={(e) =>
+              props.patch("capture", {
+                ...c().capture,
+                hdr: {
+                  ...c().capture.hdr,
+                  user_brightness_scale: commitNumber(e.currentTarget, { min: 0.01, max: 100, fallback: c().capture.hdr.user_brightness_scale }),
+                },
+              })
+            }
           />
           <span class="field-hint">multiply luminance before mapping (1.0 = identity)</span>
         </div>
