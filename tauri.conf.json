@@ -19,8 +19,7 @@
           "$PICTURE/capscr/**",
           "$HOME/Pictures/capscr/**",
           "$APPDATA/io.rot.capscr/**",
-          "$APPDATA/capscr/**",
-          "$APPDATA/**"
+          "$APPDATA/capscr/**"
         ]
       }
     },
