@@ -93,6 +93,29 @@ function Hub() {
     api.hotkeyDiagnostics,
   );
 
+  // the recording elapsed clock. it runs only between recording-started and
+  // recording-stopped so the reused (never-closed) hub isn't waking a 1Hz timer
+  // for the life of the process while it sits hidden in the tray.
+  let tickHandle: ReturnType<typeof setInterval> | null = null;
+  const stopTick = () => {
+    if (tickHandle !== null) {
+      clearInterval(tickHandle);
+      tickHandle = null;
+    }
+  };
+  const startTick = () => {
+    if (tickHandle !== null) return;
+    tickHandle = setInterval(() => {
+      const since = recordingSince();
+      if (since === null) return;
+      const totalSec = Math.floor((Date.now() - since) / 1000);
+      const mm = String(Math.floor(totalSec / 60)).padStart(2, "0");
+      const ss = String(totalSec % 60).padStart(2, "0");
+      setRecordingElapsed(`${mm}:${ss}`);
+    }, 1000);
+  };
+  onCleanup(stopTick);
+
   const win = getCurrentWindow();
   const active = () => tab().id;
 
@@ -140,6 +163,7 @@ function Hub() {
         setRecording(true);
         setRecordingSince(Date.now());
         setRecordingElapsed("00:00");
+        startTick();
         // tell the user how to stop — re-pressing the task's hotkey toggles
         // the recording off, but that's not obvious. Look up the hotkey from
         // config so the toast is concrete.
@@ -153,6 +177,7 @@ function Hub() {
       await listen("capscr://recording-stopped", () => {
         setRecording(false);
         setRecordingSince(null);
+        stopTick();
       }),
       // tray "Open hub → <Tab>" fires this so the hub lands on the chosen tab
       await listen<string>("capscr://goto-tab", (e) => {
@@ -192,20 +217,6 @@ function Hub() {
           // updater endpoint unreachable / GitHub release missing — silent.
         });
     }, 4000);
-
-    // while recording, refresh the elapsed counter once per second so the
-    // statusbar shows mm:ss live. Cheap: a single setInterval that no-ops
-    // when not recording.
-    const tickHandle = setInterval(() => {
-      const since = recordingSince();
-      if (since === null) return;
-      const ms = Date.now() - since;
-      const totalSec = Math.floor(ms / 1000);
-      const mm = String(Math.floor(totalSec / 60)).padStart(2, "0");
-      const ss = String(totalSec % 60).padStart(2, "0");
-      setRecordingElapsed(`${mm}:${ss}`);
-    }, 1000);
-    unlisteners.push(() => clearInterval(tickHandle));
 
     const onKey = (ev: KeyboardEvent) => {
       // prevent default browser find dialog (ctrl+f)
