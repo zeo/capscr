@@ -751,7 +751,10 @@ mod windows_hdr {
                         .ok_or_else(|| anyhow!("Failed to get recreated device context"))?;
 
                     {
-                        let mut cache = cache_mutex.lock().unwrap();
+                        // recover a poisoned lock like every other DEVICE_CACHE
+                        // access in this file; a prior panic under the cache lock
+                        // must not turn the recreation path into a hard panic
+                        let mut cache = cache_mutex.lock().unwrap_or_else(|e| e.into_inner());
                         cache.insert(luid, (new_device.clone(), new_context.clone()));
                     }
 
