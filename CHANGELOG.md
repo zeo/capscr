@@ -2,6 +2,44 @@
 
 format follows [keep-a-changelog](https://keepachangelog.com/en/1.1.0/) loosely. dates are release-tag dates.
 
+## [0.5.43] — 2026-07-11
+
+a hardening and polish pass across the whole app. if you're coming from 0.5.40, this also carries the 0.5.41 and 0.5.42 changes (the recording overhaul — flat memory use, wall-clock playback timing, system-audio sync — plus the native installer and the earlier fixes).
+
+### security
+- a plugin's network fetch now connects to the exact address that was validated instead of re-resolving the hostname, closing a dns-rebinding window that could otherwise reach an internal or cloud-metadata address
+- a plugin fetch capability wildcard has to sit on a path boundary (`https://host/*`), so a granted host can no longer silently match a look-alike domain like `host.attacker.tld`
+- the webview's asset scope no longer includes the whole roaming appdata tree — only capscr's own data, so a mis-scoped image reference can't read another app's files
+- a marketplace plugin that declares capabilities (image read, network fetch, clipboard, notifications) now installs **disabled**; it stays inert until you review those permissions in the plugins tab and enable it. capability-free plugins install ready to use
+- plugin zips are now capped by the bytes actually written, not the archive's self-declared sizes, so a small download can't decompress to gigabytes and fill the disk
+- the auto-downloaded ffmpeg is verified against its published sha256 before capscr trusts and runs it
+- the ocr, trim, pin, and drag-drop-upload commands are held to the same output+history file allow-list as the other capture-file actions
+- the wasm plugin host no longer leaks a small allocation on every plugin memory growth
+
+### fixed
+- a single missing or unknown field in `config.toml` no longer wipes every task and stored credential — missing fields fill from defaults and the file is repaired in place
+- the global hotkey kill switch is no longer silently re-enabled by the next settings save
+- switching the upload destination from the tray no longer discards unsaved edits open in the hub
+- a full-height region recording no longer bakes the timer/stop control bar into the gif/mp4
+- releasing the mouse while holding shift now commits the aspect-locked selection instead of leaving the overlay open, and the committed rectangle matches the last one drawn
+- the selection overlay's keyboard (escape, arrow-nudge, enter) reaches the overlay reliably even when another window held focus
+- the magnifier loupe flips against the monitor the cursor is on instead of straddling a bezel onto the next monitor
+- a selection anchored at the top-left desktop pixel is no longer mistaken for no selection
+- editor save/copy/upload stay disabled until an image is actually loaded, so a stale canvas can't overwrite a newly opened file
+- the statusbar capture count updates after a screenshot instead of freezing at its startup value
+- the update banner sits above the view instead of covering its title
+- numeric settings clamp to their range when you commit a field, so what's shown always matches what's saved
+- gdi and d3d device handles no longer leak on capture error paths, and a poisoned hdr device cache recovers instead of panicking
+
+### changed
+- the tasks view applies each edit immediately (its save button could never enable) and deleting a task now arms-to-confirm
+- history shows a still first frame and plays a clip on hover, instead of autoplaying every video at once
+- escape closes the trim modal and pinned windows
+- the recording elapsed clock and the startup d3d11 prewarm run only when actually needed (recording in progress / an hdr display present), trimming idle work
+- mp4 encoding no longer clones each frame on the common no-resize path
+- capscr no longer adds itself to windows startup without consent — turn it on in settings
+- the inert ftp "use tls" checkbox and the dead `minimize_to_tray` setting were removed
+
 ## [0.5.42] — 2026-07-11
 
 ### added
