@@ -1843,7 +1843,8 @@ kbd {
   cursor: pointer;
 }
 
-.icon-btn.is-arm {
+.icon-btn.is-arm,
+.btn.is-arm {
   background: var(--paper) !important;
   color: var(--ink-0) !important;
   outline: 1px solid var(--paper);

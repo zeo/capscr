@@ -64,6 +64,19 @@ export function Tasks() {
     return d.statuses.find((s) => s.task_id === taskId) ?? null;
   };
 
+  // deleting a task persists immediately, so guard it the way History guards a
+  // capture delete: first click arms, a second within 4s confirms
+  const [confirmDelete, setConfirmDelete] = createSignal<string | null>(null);
+  let armTimer: ReturnType<typeof setTimeout> | undefined;
+  onCleanup(() => clearTimeout(armTimer));
+  const armDelete = (id: string) => {
+    clearTimeout(armTimer);
+    setConfirmDelete(id);
+    armTimer = setTimeout(() => {
+      if (confirmDelete() === id) setConfirmDelete(null);
+    }, 4000);
+  };
+
   const saveConfig = async (c: AppConfig) => {
     const bound = c.capture_tasks.map((t) => t.hotkey).filter(Boolean);
     const dupes = bound.filter((h, i) => bound.indexOf(h) !== i);
@@ -103,6 +116,8 @@ export function Tasks() {
   const deleteTask = (index: number) => {
     const c = config();
     if (!c) return;
+    clearTimeout(armTimer);
+    setConfirmDelete(null);
     const next = c.capture_tasks.filter((_, i) => i !== index);
     const nextConfig = { ...c, capture_tasks: next };
     mutateConfig(nextConfig);
@@ -357,10 +372,20 @@ export function Tasks() {
                           class="btn"
                           data-variant="ghost"
                           data-size="xs"
-                          onClick={() => deleteTask(i())}
+                          classList={{ "is-arm": confirmDelete() === task.id }}
+                          title={
+                            confirmDelete() === task.id
+                              ? "click again to confirm"
+                              : "delete this task"
+                          }
+                          onClick={() =>
+                            confirmDelete() === task.id
+                              ? deleteTask(i())
+                              : armDelete(task.id)
+                          }
                         >
                           <Trash2 size={11} stroke-width={1.5} />
-                          delete
+                          {confirmDelete() === task.id ? "confirm?" : "delete"}
                         </button>
                       </div>
                     </div>
