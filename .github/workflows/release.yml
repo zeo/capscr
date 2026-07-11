@@ -104,5 +104,21 @@ jobs:
           } else {
             Write-Warning "signtool not found; uploading unsigned"
           }
-          gh release upload $env:TAG_NAME $out --clobber
-          if ($LASTEXITCODE -ne 0) { throw "release upload failed" }
+          # gh isn't on this self-hosted runner's PATH; upload the installer to
+          # the release tauri-action already created, via the REST API with the
+          # workflow token. clobber any prior asset of the same name.
+          $name = Split-Path $out -Leaf
+          $repo = $env:GITHUB_REPOSITORY
+          $headers = @{
+            Authorization          = "Bearer $env:GITHUB_TOKEN"
+            Accept                 = "application/vnd.github+json"
+            "X-GitHub-Api-Version" = "2022-11-28"
+          }
+          $rel = Invoke-RestMethod -Headers $headers "https://api.github.com/repos/$repo/releases/tags/$env:TAG_NAME"
+          foreach ($asset in @($rel.assets | Where-Object { $_.name -eq $name })) {
+            Invoke-RestMethod -Method Delete -Headers $headers "https://api.github.com/repos/$repo/releases/assets/$($asset.id)"
+          }
+          $uploadUrl = ($rel.upload_url -replace '\{.*\}$', '') + "?name=$name"
+          $uploadHeaders = $headers.Clone()
+          $uploadHeaders["Content-Type"] = "application/octet-stream"
+          Invoke-RestMethod -Method Post -Headers $uploadHeaders -InFile $out $uploadUrl | Out-Null
