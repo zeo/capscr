@@ -1439,24 +1439,33 @@ pub fn prewarm_hub_window(app: &tauri::App) -> tauri::Result<()> {
 fn intercept_hub_close(window: tauri::WebviewWindow) {
     let app = window.app_handle().clone();
     window.clone().on_window_event(move |event| {
-        if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-            api.prevent_close();
-            let state = app.state::<AppState>();
-            let close_behavior = {
-                let cfg = state.config.lock().unwrap();
-                cfg.ui.close_behavior
-            };
-            match close_behavior {
-                crate::config::CloseBehavior::MinimizeToTray => {
-                    let _ = window.hide();
-                }
-                crate::config::CloseBehavior::MinimizeToTaskbar => {
-                    let _ = window.minimize();
-                }
-                crate::config::CloseBehavior::Exit => {
-                    exit_app(app.clone());
+        match event {
+            tauri::WindowEvent::CloseRequested { api, .. } => {
+                api.prevent_close();
+                let state = app.state::<AppState>();
+                let close_behavior = {
+                    let cfg = state.config.lock().unwrap();
+                    cfg.ui.close_behavior
+                };
+                match close_behavior {
+                    crate::config::CloseBehavior::MinimizeToTray => {
+                        let _ = window.hide();
+                    }
+                    crate::config::CloseBehavior::MinimizeToTaskbar => {
+                        let _ = window.minimize();
+                    }
+                    crate::config::CloseBehavior::Exit => {
+                        exit_app(app.clone());
+                    }
                 }
             }
+            // record what the OS actually dropped so upload_file can trust the
+            // path the webview later hands it (drag-drop is the only legitimate
+            // caller with an arbitrary path)
+            tauri::WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, .. }) => {
+                app.state::<AppState>().remember_dropped_paths(paths.clone());
+            }
+            _ => {}
         }
     });
 }
@@ -1655,6 +1664,12 @@ pub fn upload_file(
     if !canonical.is_file() {
         return Err("not a regular file".into());
     }
+    // only upload a path the user actually dropped, or one of capscr's own
+    // captures; refuse an arbitrary path a compromised webview might supply
+    let config = state.config.lock().unwrap().clone();
+    if !state.was_dropped(&canonical) && !is_path_allowed(&canonical, &config) {
+        return Err("Path is outside the allowed directories".into());
+    }
 
     let ext = canonical
         .extension()
@@ -1684,7 +1699,6 @@ pub fn upload_file(
         .unwrap_or("upload")
         .to_string();
 
-    let config = state.config.lock().unwrap().clone();
     let uploader = crate::upload::shared_uploader().map_err(|e| e.to_string())?;
     let service = build_upload_service(&config);
     let result = uploader

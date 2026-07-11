@@ -4,8 +4,8 @@ use crate::config::{CaptureTask, Config};
 use crate::plugin::PluginManager;
 use crate::recording::{GifRecorder, RecordingState};
 use crossbeam_channel::Sender;
-use std::collections::{HashMap, VecDeque};
-use std::path::PathBuf;
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, RwLock};
 
@@ -59,7 +59,15 @@ pub struct AppState {
     // last committed region selection, so a "region (last)" task can re-fire the
     // same rectangle without showing the selector. None until the first drag.
     pub last_region: Mutex<Option<crate::capture::Rectangle>>,
+    // canonical paths the OS delivered via window drag-drop. upload_file trusts a
+    // path only if the user actually dropped it (or it's one of capscr's own
+    // files), so a webview-supplied arbitrary path can't be uploaded off disk.
+    pub dropped_paths: Mutex<HashSet<PathBuf>>,
 }
+
+// a session's dropped-path set won't grow past a real user's drags, but cap it
+// so a pathological stream of distinct drops can't accumulate unboundedly
+const DROPPED_PATHS_CAP: usize = 4096;
 
 #[derive(Clone, Debug)]
 pub struct UploadRecord {
@@ -95,7 +103,26 @@ impl AppState {
             hotkey_status: Mutex::new(HashMap::new()),
             pinned_images: Mutex::new(HashMap::new()),
             last_region: Mutex::new(None),
+            dropped_paths: Mutex::new(HashSet::new()),
         }
+    }
+
+    /// record canonicalized paths the OS delivered to a window drag-drop, so
+    /// upload_file can later confirm the user really dropped a given file
+    pub fn remember_dropped_paths<I: IntoIterator<Item = PathBuf>>(&self, paths: I) {
+        let mut set = self.dropped_paths.lock().unwrap();
+        for p in paths {
+            if let Ok(canonical) = std::fs::canonicalize(&p) {
+                if set.len() >= DROPPED_PATHS_CAP {
+                    set.clear();
+                }
+                set.insert(canonical);
+            }
+        }
+    }
+
+    pub fn was_dropped(&self, canonical: &Path) -> bool {
+        self.dropped_paths.lock().unwrap().contains(canonical)
     }
 
     /// load and instantiate plugins, then atomically swap them into the live
