@@ -317,11 +317,19 @@ export function History() {
                 >
                   <video
                     class="tile-img"
-                    src={convertFileSrc(e.path)}
-                    autoplay
+                    // #t=0.1 makes the browser render the first frame as a
+                    // still poster; metadata-only preload plus play-on-hover
+                    // keeps dozens of clips from all decoding and looping at once
+                    src={`${convertFileSrc(e.path)}#t=0.1`}
                     muted
                     loop
                     playsinline
+                    preload="metadata"
+                    onMouseEnter={(ev) => void ev.currentTarget.play().catch(() => {})}
+                    onMouseLeave={(ev) => {
+                      ev.currentTarget.pause();
+                      ev.currentTarget.currentTime = 0.1;
+                    }}
                     style={{ "object-fit": "cover" }}
                   />
                 </Show>
