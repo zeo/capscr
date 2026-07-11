@@ -848,20 +848,18 @@ impl Config {
                 "filename_template contains invalid path characters"
             ));
         }
-        // reject a bad output directory at save time, before set_config widens
-        // the asset-protocol scope to it (same checks ensure_output_dir applies
-        // at capture time). sanitize() repairs these in a loaded config, so this
-        // only rejects a fresh bad value the UI tries to save.
+        // reject a clearly-bad output directory at save time, before set_config
+        // widens the asset-protocol scope to it. sanitize() repairs these in a
+        // loaded config, so this only rejects a fresh bad value the UI tries to
+        // save. UNC is deliberately NOT rejected here: an enterprise Pictures
+        // folder redirected to a share makes the default dir itself UNC, and
+        // rejecting it would fail load and wipe the whole config; ensure_output_dir
+        // still surfaces an unreachable-folder notice at capture time.
         if self.output.directory.as_os_str().is_empty() {
             return Err(anyhow!("output directory path is empty"));
         }
-        let out_dir = self.output.directory.to_string_lossy();
-        if out_dir.contains("..") {
+        if self.output.directory.to_string_lossy().contains("..") {
             return Err(anyhow!("output directory contains path traversal"));
-        }
-        #[cfg(windows)]
-        if out_dir.starts_with("\\\\") {
-            return Err(anyhow!("network output paths are not allowed"));
         }
         for hotkey in [&self.hotkeys.screenshot, &self.hotkeys.record_gif] {
             if hotkey.len() > MAX_HOTKEY_LEN {
@@ -1032,14 +1030,13 @@ impl Config {
         }
 
         // repair a bad output directory in place so validate() doesn't fail the
-        // whole config: keep any real path the user set, but reset an empty,
-        // traversal, or UNC path to the default captures dir
+        // whole config: reset an empty or traversal path to the default captures
+        // dir. UNC is left alone — it's a legitimate redirected-Pictures target
+        // and default_output_dir() could itself be UNC, so "repairing" it would
+        // just fail validate again and wipe the config.
         {
             let out_dir = self.output.directory.to_string_lossy();
-            if self.output.directory.as_os_str().is_empty()
-                || out_dir.contains("..")
-                || out_dir.starts_with("\\\\")
-            {
+            if self.output.directory.as_os_str().is_empty() || out_dir.contains("..") {
                 drop(out_dir);
                 self.output.directory = default_output_dir();
             }
