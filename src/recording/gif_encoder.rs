@@ -722,6 +722,17 @@ impl GifRecorder {
     }
 }
 
+impl Drop for GifRecorder {
+    fn drop(&mut self) {
+        // save_mp4 removes the audio wav only on its mux path; its early error
+        // returns (no frames, bad path, stream finish failure) skip cleanup, so
+        // reap the temp wav here to hold the temp-hygiene invariant on every exit
+        if let Some(ref wav_path) = self.audio_temp_path {
+            let _ = std::fs::remove_file(wav_path);
+        }
+    }
+}
+
 pub fn find_ffmpeg() -> std::path::PathBuf {
     if let Ok(exe_path) = std::env::current_exe() {
         if let Some(parent) = exe_path.parent() {
