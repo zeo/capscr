@@ -2206,7 +2206,10 @@ pub async fn trim_mp4(
     if !is_path_allowed(&canonical, &config) {
         return Err("Path is outside the allowed directories".into());
     }
-    let path = canonical.to_string_lossy().to_string();
+    // pass the original path, not the canonical one: canonicalize returns a
+    // \\?\-verbatim path on Windows that trim_mp4_blocking's network-path guard
+    // would reject. the allow-list check above is what the canonical form is for;
+    // the blocking helper re-validates (no .., no UNC, exists, is mp4).
     tauri::async_runtime::spawn_blocking(move || {
         trim_mp4_blocking(&path, start_secs, end_secs, fast).map_err(|e| e.to_string())
     })
