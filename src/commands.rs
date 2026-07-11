@@ -2145,7 +2145,14 @@ pub async fn trim_mp4(
     start_secs: f64,
     end_secs: f64,
     fast: bool,
+    state: State<'_, AppState>,
 ) -> Result<String, String> {
+    let config = state.config.lock().unwrap().clone();
+    let canonical = std::fs::canonicalize(&path).map_err(|e| e.to_string())?;
+    if !is_path_allowed(&canonical, &config) {
+        return Err("Path is outside the allowed directories".into());
+    }
+    let path = canonical.to_string_lossy().to_string();
     tauri::async_runtime::spawn_blocking(move || {
         trim_mp4_blocking(&path, start_secs, end_secs, fast).map_err(|e| e.to_string())
     })
@@ -2961,7 +2968,12 @@ pub fn set_hotkeys_disabled(
 }
 
 #[tauri::command]
-pub fn run_ocr(path: String) -> Result<String, String> {
+pub fn run_ocr(path: String, state: State<AppState>) -> Result<String, String> {
+    let config = state.config.lock().unwrap().clone();
+    let canonical = std::fs::canonicalize(&path).map_err(|e| e.to_string())?;
+    if !is_path_allowed(&canonical, &config) {
+        return Err("Path is outside the allowed directories".into());
+    }
     #[cfg(windows)]
     {
         use windows::Media::Ocr::OcrEngine;
@@ -2969,7 +2981,7 @@ pub fn run_ocr(path: String) -> Result<String, String> {
         use windows::Storage::Streams::{DataWriter, InMemoryRandomAccessStream};
 
         let run = || -> Result<String, anyhow::Error> {
-            let image_bytes = std::fs::read(&path)
+            let image_bytes = std::fs::read(&canonical)
                 .map_err(|e| anyhow::anyhow!("Failed to read file: {}", e))?;
 
             let engine = OcrEngine::TryCreateFromUserProfileLanguages()
@@ -3018,6 +3030,12 @@ pub async fn pin_image(
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     use uuid::Uuid;
+    let config = state.config.lock().unwrap().clone();
+    let canonical = std::fs::canonicalize(&path).map_err(|e| e.to_string())?;
+    if !is_path_allowed(&canonical, &config) {
+        return Err("Path is outside the allowed directories".into());
+    }
+    let path = canonical.to_string_lossy().to_string();
     let label = format!("pin_{}", Uuid::new_v4());
 
     state.pinned_images.lock().unwrap().insert(label.clone(), path);
