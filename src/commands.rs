@@ -118,6 +118,11 @@ pub fn set_config(
                 stored.upload.sftp.private_key_passphrase_encrypted.clone();
         }
     }
+    // the global hotkey kill switch lives in the atomic (the tray and Settings
+    // toggle it there); make the persisted config agree with it so this save
+    // can't quietly clear the switch and re-enable every hotkey on next launch
+    config.hotkeys.disabled_globally =
+        state.hotkeys_disabled.load(std::sync::atomic::Ordering::SeqCst);
     config.validate().map_err(|e| e.to_string())?;
     config.save().map_err(|e| e.to_string())?;
     crate::install_hdr_runtime_from_config(&config);
@@ -2978,6 +2983,9 @@ pub fn set_hotkeys_disabled(
     state.send_hotkey_reload(tasks);
     crate::rebuild_tray_menu(&app);
     let _ = app.emit("capscr://hotkey-status", ());
+    // the store mirrors hotkeys.disabled_globally too; nudge it to refetch so a
+    // later Settings save doesn't persist a stale (enabled) value over the switch
+    let _ = app.emit("capscr://config-updated", ());
     Ok(())
 }
 
