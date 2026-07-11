@@ -2,6 +2,12 @@
 
 format follows [keep-a-changelog](https://keepachangelog.com/en/1.1.0/) loosely. dates are release-tag dates.
 
+## [0.5.44] — 2026-07-11
+
+### added
+- a **copy detected text (OCR)** post-action: bind it to a still-capture task and capscr runs the built-in Windows OCR on the shot and drops the recognized text straight onto your clipboard — no file saved, no editor round-trip. (OCR was already reachable from the history grid; this makes it a one-step capture action.)
+- an optional **per-task pre-capture delay**: each still-capture task can set its own delay (blank uses the global one), so a timed task for catching a menu or tooltip can sit alongside your instant hotkeys instead of the delay being all-or-nothing.
+
 ## [0.5.43] — 2026-07-11
 
 a hardening and polish pass across the whole app. if you're coming from 0.5.40, this also carries the 0.5.41 and 0.5.42 changes (the recording overhaul — flat memory use, wall-clock playback timing, system-audio sync — plus the native installer and the earlier fixes).
