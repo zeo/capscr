@@ -112,6 +112,11 @@ impl PluginManifest {
                 bail!("runtime.file must be a relative path inside the plugin dir");
             }
         }
+        if let Some(patterns) = self.capabilities.get("fetch") {
+            for pattern in patterns {
+                validate_fetch_pattern(pattern)?;
+            }
+        }
         Ok(())
     }
 
@@ -124,6 +129,24 @@ impl PluginManifest {
             .map(|r| r.runtime_type == "wasm")
             .unwrap_or(false)
     }
+}
+
+/// a fetch capability entry must name a concrete https host, optionally with a
+/// trailing `*` for a path/subpath wildcard. this forbids catch-all egress like
+/// `https://*` (whose prefix "https://" matched every https url), so a plugin's
+/// network reach has to be spelled out host by host.
+fn validate_fetch_pattern(pattern: &str) -> Result<()> {
+    let prefix = pattern.strip_suffix('*').unwrap_or(pattern);
+    let host_and_path = prefix
+        .strip_prefix("https://")
+        .ok_or_else(|| anyhow!("fetch pattern '{pattern}' must start with https://"))?;
+    let host = host_and_path.split('/').next().unwrap_or("");
+    if host.is_empty() || host.starts_with('*') || !host.contains('.') {
+        bail!(
+            "fetch pattern '{pattern}' must name a concrete host, e.g. https://api.example.com/*"
+        );
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -182,5 +205,29 @@ mod tests {
         // windows-only app), so the assertion is gated to match
         #[cfg(windows)]
         assert!(manifest_with_file("C:/win.wasm").validate().is_err());
+    }
+
+    #[test]
+    fn fetch_pattern_requires_a_concrete_host() {
+        assert!(validate_fetch_pattern("https://api.example.com/*").is_ok());
+        assert!(validate_fetch_pattern("https://api.example.com/v1/upload").is_ok());
+        assert!(validate_fetch_pattern("https://hooks.slack.com/services/*").is_ok());
+        // catch-all egress and non-https must be refused
+        assert!(validate_fetch_pattern("https://*").is_err());
+        assert!(validate_fetch_pattern("https://").is_err());
+        assert!(validate_fetch_pattern("*").is_err());
+        assert!(validate_fetch_pattern("http://api.example.com/*").is_err());
+        assert!(validate_fetch_pattern("https://localhost/*").is_err());
+    }
+
+    #[test]
+    fn manifest_with_catch_all_fetch_fails_validation() {
+        let mut m = manifest_with_file("plugin.wasm");
+        m.capabilities
+            .insert("fetch".into(), vec!["https://*".into()]);
+        assert!(m.validate().is_err());
+        m.capabilities
+            .insert("fetch".into(), vec!["https://api.example.com/*".into()]);
+        assert!(m.validate().is_ok());
     }
 }
