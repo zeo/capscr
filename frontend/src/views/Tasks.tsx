@@ -1,8 +1,8 @@
 import { createResource, createSignal, For, onCleanup, Show } from "solid-js";
 import { listen } from "@tauri-apps/api/event";
-import { Plus, Save, Trash2, Zap } from "lucide-solid";
+import { Plus, Trash2, Zap } from "lucide-solid";
 import { api, AppConfig, CaptureTask, HotkeyDiagnostics } from "../api";
-import { configDirty, setConfigDirty } from "../dirty";
+import { setConfigDirty } from "../dirty";
 import { HotkeyInput } from "../components/HotkeyInput";
 import { config, mutateConfig, refetchConfig } from "../store";
 
@@ -88,18 +88,16 @@ export function Tasks() {
     }
   };
 
-  const updateTask = (index: number, partial: Partial<CaptureTask>, shouldSave = true) => {
+  // task edits apply immediately — binding a hotkey should register it, not wait
+  // behind a Save click. the status flash reports the result
+  const updateTask = (index: number, partial: Partial<CaptureTask>) => {
     const c = config();
     if (!c) return;
     const next = [...c.capture_tasks];
     next[index] = { ...next[index], ...partial } as CaptureTask;
     const nextConfig = { ...c, capture_tasks: next };
     mutateConfig(nextConfig);
-    if (shouldSave) {
-      saveConfig(nextConfig);
-    } else {
-      setConfigDirty(true);
-    }
+    saveConfig(nextConfig);
   };
 
   const deleteTask = (index: number) => {
@@ -126,12 +124,6 @@ export function Tasks() {
     const nextConfig = { ...c, capture_tasks: [...c.capture_tasks, newTask] };
     mutateConfig(nextConfig);
     saveConfig(nextConfig);
-  };
-
-  const save = async () => {
-    const c = config();
-    if (!c) return;
-    saveConfig(c);
   };
 
   return (
@@ -161,16 +153,6 @@ export function Tasks() {
                 <button class="btn" onClick={addTask}>
                   <Plus size={12} stroke-width={1.5} />
                   new
-                </button>
-                <button
-                  class="btn"
-                  data-variant={configDirty() ? "primary" : "ghost"}
-                  onClick={save}
-                  disabled={!configDirty()}
-                  title={configDirty() ? "commit pending changes" : "no changes to save"}
-                >
-                  <Save size={12} stroke-width={1.5} />
-                  save
                 </button>
               </div>
               <Show when={status()}>
@@ -359,12 +341,7 @@ export function Tasks() {
                           class="btn"
                           data-variant="ghost"
                           data-size="xs"
-                          disabled={configDirty()}
-                          title={
-                            configDirty()
-                              ? "save first — fire uses the persisted task definition"
-                              : "run this task now (same path as pressing its hotkey)"
-                          }
+                          title="run this task now (same path as pressing its hotkey)"
                           onClick={() => {
                             api
                               .fireTask(task.id)
