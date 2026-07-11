@@ -83,6 +83,10 @@ mod windows_impl {
     // finalized. captured at commit so the saved rect matches the last painted
     // one even if Shift is released between finalizing and reading the rect.
     static SHIFT_AT_COMMIT: AtomicBool = AtomicBool::new(false);
+    // whether a selection has been started (mouse-down or keyboard init). a
+    // distinct flag instead of testing START for (0,0), which is a legal
+    // coordinate — the top-left pixel of a primary-top-left virtual desktop.
+    static DRAG_STARTED: AtomicBool = AtomicBool::new(false);
     static WINDOW_SELECTED: AtomicU32 = AtomicU32::new(0);
     static PICKED_COLOR_SET: AtomicBool = AtomicBool::new(false);
     static PICKED_R: AtomicU32 = AtomicU32::new(0);
@@ -455,6 +459,7 @@ mod windows_impl {
         END_X.store(0, Ordering::SeqCst);
         END_Y.store(0, Ordering::SeqCst);
         MOUSE_DOWN.store(false, Ordering::SeqCst);
+        DRAG_STARTED.store(false, Ordering::SeqCst);
         CANCELLED.store(false, Ordering::SeqCst);
         FULLSCREEN.store(false, Ordering::SeqCst);
         WINDOW_SELECTED.store(0, Ordering::SeqCst);
@@ -921,7 +926,7 @@ mod windows_impl {
                     }
                 }
 
-                let has_selection = (sx != 0 || sy != 0) && ((ex - sx).abs() > CLICK_THRESHOLD || (ey - sy).abs() > CLICK_THRESHOLD);
+                let has_selection = DRAG_STARTED.load(Ordering::SeqCst) && ((ex - sx).abs() > CLICK_THRESHOLD || (ey - sy).abs() > CLICK_THRESHOLD);
                 let show_selection = mouse_down || has_selection;
 
                 if show_selection {
@@ -1259,6 +1264,7 @@ mod windows_impl {
                 END_X.store(pt.x, Ordering::SeqCst);
                 END_Y.store(pt.y, Ordering::SeqCst);
                 MOUSE_DOWN.store(true, Ordering::SeqCst);
+                DRAG_STARTED.store(true, Ordering::SeqCst);
                 LRESULT(0)
             }
             WM_LBUTTONUP => {
@@ -1315,7 +1321,7 @@ mod windows_impl {
                     let sy = START_Y.load(Ordering::SeqCst);
                     let ex = END_X.load(Ordering::SeqCst);
                     let ey = END_Y.load(Ordering::SeqCst);
-                    let has_selection = (sx != 0 || sy != 0) && ((ex - sx).abs() > CLICK_THRESHOLD || (ey - sy).abs() > CLICK_THRESHOLD);
+                    let has_selection = DRAG_STARTED.load(Ordering::SeqCst) && ((ex - sx).abs() > CLICK_THRESHOLD || (ey - sy).abs() > CLICK_THRESHOLD);
                     if !has_selection {
                         FULLSCREEN.store(true, Ordering::SeqCst);
                     }
@@ -1363,7 +1369,7 @@ mod windows_impl {
                         // Adjust top-left (start) boundary
                         let sx = START_X.load(Ordering::SeqCst);
                         let sy = START_Y.load(Ordering::SeqCst);
-                        if sx != 0 || sy != 0 {
+                        if DRAG_STARTED.load(Ordering::SeqCst) {
                             START_X.store(sx + dx, Ordering::SeqCst);
                             START_Y.store(sy + dy, Ordering::SeqCst);
                         }
@@ -1371,13 +1377,13 @@ mod windows_impl {
                         // Adjust bottom-right (end) boundary
                         let cur_x = CURSOR_X.load(Ordering::SeqCst);
                         let cur_y = CURSOR_Y.load(Ordering::SeqCst);
-                        let sx = START_X.load(Ordering::SeqCst);
-                        let sy = START_Y.load(Ordering::SeqCst);
-                        if sx == 0 && sy == 0 {
+                        if !DRAG_STARTED.load(Ordering::SeqCst) {
+                            // no selection yet — seed it at the cursor
                             START_X.store(cur_x, Ordering::SeqCst);
                             START_Y.store(cur_y, Ordering::SeqCst);
                             END_X.store(cur_x + dx, Ordering::SeqCst);
                             END_Y.store(cur_y + dy, Ordering::SeqCst);
+                            DRAG_STARTED.store(true, Ordering::SeqCst);
                             let _ = SetCursorPos(cur_x + dx, cur_y + dy);
                         } else {
                             let new_end_x = END_X.load(Ordering::SeqCst) + dx;
@@ -1392,7 +1398,7 @@ mod windows_impl {
                         let sy = START_Y.load(Ordering::SeqCst);
                         let ex = END_X.load(Ordering::SeqCst);
                         let ey = END_Y.load(Ordering::SeqCst);
-                        if sx != 0 || sy != 0 || ex != 0 || ey != 0 {
+                        if DRAG_STARTED.load(Ordering::SeqCst) {
                             START_X.store(sx + dx, Ordering::SeqCst);
                             START_Y.store(sy + dy, Ordering::SeqCst);
                             END_X.store(ex + dx, Ordering::SeqCst);
