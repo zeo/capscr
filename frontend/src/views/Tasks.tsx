@@ -22,6 +22,7 @@ const POST_ACTIONS: { id: CaptureTask["post_action"]; label: string }[] = [
   { id: "save-and-clipboard", label: "save + clipboard" },
   { id: "upload", label: "upload" },
   { id: "open-editor", label: "open in editor" },
+  { id: "copy-text", label: "copy detected text (ocr)" },
   { id: "prompt", label: "prompt" },
   { id: "do-nothing", label: "do nothing" },
 ];
@@ -29,11 +30,12 @@ const POST_ACTIONS: { id: CaptureTask["post_action"]; label: string }[] = [
 const isRecordingMode = (mode: CaptureTask["capture_mode"]) =>
   mode === "region-gif" || mode === "region-mp4";
 
-// recordings can't be edited (the canvas editor would flatten the animation),
-// so the editor post-action is only offered for still-image modes
+// recordings can't be edited or OCR'd (the editor would flatten the animation,
+// and there's no still frame to read text from), so those post-actions are only
+// offered for still-image modes
 const postActionsFor = (mode: CaptureTask["capture_mode"]) =>
   isRecordingMode(mode)
-    ? POST_ACTIONS.filter((p) => p.id !== "open-editor")
+    ? POST_ACTIONS.filter((p) => p.id !== "open-editor" && p.id !== "copy-text")
     : POST_ACTIONS;
 
 const UPLOAD_TARGETS: NonNullable<CaptureTask["target_destination"]>[] = [

@@ -113,7 +113,8 @@ export interface CaptureTask {
     | "save-and-clipboard"
     | "open-editor"
     | "prompt"
-    | "do-nothing";
+    | "do-nothing"
+    | "copy-text";
   target_destination?: "imgur" | "custom" | "ftp" | "sftp" | "s3" | null;
   // per-task pre-capture delay in ms; null falls back to the global delay
   delay_ms?: number | null;

@@ -44,6 +44,7 @@ pub enum PostActionArg {
     OpenEditor,
     Prompt,
     DoNothing,
+    CopyText,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -609,12 +610,34 @@ fn run_capture_pipeline_inner(
         return Ok(());
     }
 
+    if matches!(post, PostActionArg::CopyText) {
+        // run OCR on the fresh capture and put the detected text on the clipboard,
+        // without saving a file
+        let config = state.config.lock().unwrap().clone();
+        let text = ocr_capture(&image)?;
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            if config.ui.show_notifications {
+                let _ = show_notification("No text found", "the capture had no detectable text");
+            }
+        } else {
+            let mut cb = ClipboardManager::new().map_err(|e| anyhow::anyhow!(e))?;
+            cb.copy_text(trimmed).map_err(|e| anyhow::anyhow!(e))?;
+            Sound::Screenshot.play_if_enabled(config.post_capture.play_sound);
+            if config.ui.show_notifications {
+                let preview: String = trimmed.chars().take(80).collect();
+                let _ = show_notification("Text copied", &preview);
+            }
+        }
+        return Ok(());
+    }
+
     let post_action = match post {
         PostActionArg::Clipboard => PostCaptureAction::CopyToClipboard,
         PostActionArg::SaveFile => PostCaptureAction::SaveToFile,
         PostActionArg::Upload => PostCaptureAction::Upload,
         PostActionArg::SaveAndClipboard => PostCaptureAction::SaveAndCopy,
-        PostActionArg::OpenEditor => unreachable!(),
+        PostActionArg::OpenEditor | PostActionArg::CopyText => unreachable!(),
         PostActionArg::Prompt => PostCaptureAction::PromptUser,
         PostActionArg::DoNothing => PostCaptureAction::DoNothing,
     };
@@ -2389,7 +2412,13 @@ fn apply_gif_post_action(
                 }
             });
         }
-        TaskPostAction::SaveFile | TaskPostAction::Prompt | TaskPostAction::DoNothing => {
+        // CopyText (OCR) is a still-only action, filtered out of the recording
+        // post-action list in the UI; if one reaches here the file is saved and
+        // there's nothing sensible to OCR from a recording
+        TaskPostAction::SaveFile
+        | TaskPostAction::Prompt
+        | TaskPostAction::DoNothing
+        | TaskPostAction::CopyText => {
             // already saved to disk; nothing further
         }
     }
@@ -2418,6 +2447,7 @@ impl PostActionArg {
             TaskPostAction::OpenEditor => PostActionArg::OpenEditor,
             TaskPostAction::Prompt => PostActionArg::Prompt,
             TaskPostAction::DoNothing => PostActionArg::DoNothing,
+            TaskPostAction::CopyText => PostActionArg::CopyText,
         }
     }
 }
@@ -3052,53 +3082,69 @@ pub fn run_ocr(path: String, state: State<AppState>) -> Result<String, String> {
     if !is_path_allowed(&canonical, &config) {
         return Err("Path is outside the allowed directories".into());
     }
-    #[cfg(windows)]
-    {
-        use windows::Media::Ocr::OcrEngine;
-        use windows::Graphics::Imaging::BitmapDecoder;
-        use windows::Storage::Streams::{DataWriter, InMemoryRandomAccessStream};
+    let bytes = std::fs::read(&canonical).map_err(|e| e.to_string())?;
+    ocr_image_bytes(&bytes).map_err(|e| e.to_string())
+}
 
-        let run = || -> Result<String, anyhow::Error> {
-            let image_bytes = std::fs::read(&canonical)
-                .map_err(|e| anyhow::anyhow!("Failed to read file: {}", e))?;
+/// run Windows OCR over an encoded image (png/jpeg/...) and return the text
+#[cfg(windows)]
+fn ocr_image_bytes(image_bytes: &[u8]) -> anyhow::Result<String> {
+    use windows::Graphics::Imaging::BitmapDecoder;
+    use windows::Media::Ocr::OcrEngine;
+    use windows::Storage::Streams::{DataWriter, InMemoryRandomAccessStream};
 
-            let engine = OcrEngine::TryCreateFromUserProfileLanguages()
-                .map_err(|e| anyhow::anyhow!("Failed to create OCR engine: {:?}", e))?;
-            let stream = InMemoryRandomAccessStream::new()
-                .map_err(|e| anyhow::anyhow!("Failed to create in-memory stream: {:?}", e))?;
-            let writer = DataWriter::CreateDataWriter(&stream)
-                .map_err(|e| anyhow::anyhow!("Failed to create data writer: {:?}", e))?;
-            writer.WriteBytes(&image_bytes)
-                .map_err(|e| anyhow::anyhow!("Failed to write bytes: {:?}", e))?;
-            writer.StoreAsync()?
-                .get()
-                .map_err(|e| anyhow::anyhow!("Failed to store data: {:?}", e))?;
-            writer.FlushAsync()?
-                .get()
-                .map_err(|e| anyhow::anyhow!("Failed to flush stream: {:?}", e))?;
-            stream.Seek(0)
-                .map_err(|e| anyhow::anyhow!("Failed to seek stream: {:?}", e))?;
+    let engine = OcrEngine::TryCreateFromUserProfileLanguages()
+        .map_err(|e| anyhow::anyhow!("Failed to create OCR engine: {:?}", e))?;
+    let stream = InMemoryRandomAccessStream::new()
+        .map_err(|e| anyhow::anyhow!("Failed to create in-memory stream: {:?}", e))?;
+    let writer = DataWriter::CreateDataWriter(&stream)
+        .map_err(|e| anyhow::anyhow!("Failed to create data writer: {:?}", e))?;
+    writer
+        .WriteBytes(image_bytes)
+        .map_err(|e| anyhow::anyhow!("Failed to write bytes: {:?}", e))?;
+    writer
+        .StoreAsync()?
+        .get()
+        .map_err(|e| anyhow::anyhow!("Failed to store data: {:?}", e))?;
+    writer
+        .FlushAsync()?
+        .get()
+        .map_err(|e| anyhow::anyhow!("Failed to flush stream: {:?}", e))?;
+    stream
+        .Seek(0)
+        .map_err(|e| anyhow::anyhow!("Failed to seek stream: {:?}", e))?;
+    let decoder = BitmapDecoder::CreateAsync(&stream)?
+        .get()
+        .map_err(|e| anyhow::anyhow!("Failed to decode image: {:?}", e))?;
+    let software_bitmap = decoder
+        .GetSoftwareBitmapAsync()?
+        .get()
+        .map_err(|e| anyhow::anyhow!("Failed to get software bitmap: {:?}", e))?;
+    let result = engine
+        .RecognizeAsync(&software_bitmap)?
+        .get()
+        .map_err(|e| anyhow::anyhow!("Failed to run OCR: {:?}", e))?;
+    Ok(result.Text()?.to_string())
+}
 
-            let decoder = BitmapDecoder::CreateAsync(&stream)?
-                .get()
-                .map_err(|e| anyhow::anyhow!("Failed to decode image: {:?}", e))?;
-            let software_bitmap = decoder.GetSoftwareBitmapAsync()?
-                .get()
-                .map_err(|e| anyhow::anyhow!("Failed to get software bitmap: {:?}", e))?;
-            let result = engine.RecognizeAsync(&software_bitmap)?
-                .get()
-                .map_err(|e| anyhow::anyhow!("Failed to run OCR: {:?}", e))?;
-            let text = result.Text()?
-                .to_string();
-            Ok(text)
-        };
+#[cfg(not(windows))]
+fn ocr_image_bytes(_image_bytes: &[u8]) -> anyhow::Result<String> {
+    anyhow::bail!("OCR is only supported on Windows")
+}
 
-        run().map_err(|e| e.to_string())
-    }
-    #[cfg(not(windows))]
-    {
-        Err("OCR is only supported on Windows".to_string())
-    }
+/// OCR a freshly captured image by encoding it to PNG in memory first
+fn ocr_capture(image: &RgbaImage) -> anyhow::Result<String> {
+    use image::ImageEncoder;
+    let mut png = Vec::new();
+    image::codecs::png::PngEncoder::new(&mut png)
+        .write_image(
+            image.as_raw(),
+            image.width(),
+            image.height(),
+            image::ExtendedColorType::Rgba8,
+        )
+        .map_err(|e| anyhow::anyhow!("failed to encode capture for OCR: {e}"))?;
+    ocr_image_bytes(&png)
 }
 
 #[tauri::command]
