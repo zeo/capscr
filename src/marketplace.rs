@@ -221,7 +221,11 @@ pub fn install_plugin(plugins_dir: &Path, entry: &RegistryEntry) -> Result<bool>
         // gigabytes; only the actual byte count can stop that.
         if file.size() > MAX_PLUGIN_FILE_BYTES {
             let _ = std::fs::remove_dir_all(&staging);
-            bail!("zip entry too large: {:?} ({} bytes)", raw_name, file.size());
+            bail!(
+                "zip entry too large: {:?} ({} bytes)",
+                raw_name,
+                file.size()
+            );
         }
         if let Some(parent) = out_path.parent() {
             std::fs::create_dir_all(parent)?;

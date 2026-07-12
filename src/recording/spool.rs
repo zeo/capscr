@@ -163,7 +163,10 @@ mod tests {
         let mut spool = FrameSpool::create().unwrap();
         for i in 0..5u8 {
             let ok = spool
-                .push(&solid_frame(16, 8, i * 40), Duration::from_millis(i as u64 * 100))
+                .push(
+                    &solid_frame(16, 8, i * 40),
+                    Duration::from_millis(i as u64 * 100),
+                )
                 .unwrap();
             assert!(ok);
         }

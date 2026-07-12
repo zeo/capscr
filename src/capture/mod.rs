@@ -7,10 +7,10 @@ mod d2d_tonemap;
 mod gdi;
 mod hdr;
 mod hdr_png;
-mod region;
-mod screen;
 #[cfg(target_os = "linux")]
 mod portal;
+mod region;
+mod screen;
 mod tonemapping;
 #[cfg(windows)]
 mod wgc;
@@ -18,9 +18,9 @@ mod window;
 #[cfg(target_os = "linux")]
 mod x11_grab;
 
-pub use cursor::{capture_cursor_shot, composite_cursor_shot, composite_system_cursor};
 #[cfg(not(windows))]
 pub use cursor::pointer_position;
+pub use cursor::{capture_cursor_shot, composite_cursor_shot, composite_system_cursor};
 #[cfg(windows)]
 pub use d2d_tonemap::capture_hdr_to_sdr_sweep;
 #[cfg(windows)]
@@ -667,20 +667,30 @@ mod tests {
         let monitors = match list_monitors() {
             Ok(m) => m,
             Err(e) => {
+                if std::env::var_os("CAPSCR_REQUIRE_CAPTURE").is_some() {
+                    panic!("monitor enumeration failed in capture CI: {e:#}");
+                }
                 eprintln!("no display for capture smoke test: {e:#}");
                 return;
             }
         };
-        let Some(m) = monitors.first() else { return };
+        let Some(m) = monitors.first() else {
+            assert!(
+                std::env::var_os("CAPSCR_REQUIRE_CAPTURE").is_none(),
+                "capture CI found no monitors"
+            );
+            return;
+        };
         let img = match capture_one_monitor(m) {
             Ok(img) => img,
-            Err(e) => {
-                // disconnected-session CI enumerates monitors it can't grab
-                eprintln!("capture_one_monitor unavailable in this session: {e:#}");
-                return;
-            }
+            Err(e) => panic!("capture_one_monitor failed after monitor enumeration: {e:#}"),
         };
-        eprintln!("captured {}x{} from monitor {}", img.width(), img.height(), m.id);
+        eprintln!(
+            "captured {}x{} from monitor {}",
+            img.width(),
+            img.height(),
+            m.id
+        );
         assert_eq!((img.width(), img.height()), (m.width, m.height));
     }
 

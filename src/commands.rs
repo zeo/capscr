@@ -129,8 +129,9 @@ pub fn set_config(
     // the global hotkey kill switch lives in the atomic (the tray and Settings
     // toggle it there); make the persisted config agree with it so this save
     // can't quietly clear the switch and re-enable every hotkey on next launch
-    config.hotkeys.disabled_globally =
-        state.hotkeys_disabled.load(std::sync::atomic::Ordering::SeqCst);
+    config.hotkeys.disabled_globally = state
+        .hotkeys_disabled
+        .load(std::sync::atomic::Ordering::SeqCst);
     config.validate().map_err(|e| e.to_string())?;
     config.save().map_err(|e| e.to_string())?;
     crate::install_hdr_runtime_from_config(&config);
@@ -791,9 +792,9 @@ fn capture_active_monitor_with_hdr(
                     let hdr = HdrCapture::new();
                     match hdr.capture_with_hdr_at(Some(t)) {
                         Ok(pair) => return Ok(pair),
-                        Err(e) => tracing::warn!(
-                            "active_monitor CPU HDR failed — GDI fallback: {e:#}"
-                        ),
+                        Err(e) => {
+                            tracing::warn!("active_monitor CPU HDR failed — GDI fallback: {e:#}")
+                        }
                     }
                 }
             }
@@ -1374,7 +1375,11 @@ pub struct UploadResponse {
 }
 
 #[tauri::command]
-pub fn open_in_explorer(path: String, app: AppHandle, state: State<AppState>) -> Result<(), String> {
+pub fn open_in_explorer(
+    path: String,
+    app: AppHandle,
+    state: State<AppState>,
+) -> Result<(), String> {
     let buf = PathBuf::from(&path);
     let config = state.config.lock().unwrap().clone();
     let canonical = std::fs::canonicalize(&buf).map_err(|e| e.to_string())?;
@@ -1430,8 +1435,11 @@ pub fn exit_app(app: AppHandle) {
         if let Err(e) = std::fs::create_dir_all(&cfg.output.directory) {
             tracing::warn!("failed to create output dir on exit: {e}");
         }
-        let save_result =
-            if is_mp4 { rec.save_mp4(&path).map(|_| ()) } else { rec.save(&path) };
+        let save_result = if is_mp4 {
+            rec.save_mp4(&path).map(|_| ())
+        } else {
+            rec.save(&path)
+        };
         match save_result {
             Ok(()) => {
                 notify_capture_saved(&app, &path);
@@ -1555,7 +1563,8 @@ fn intercept_hub_close(window: tauri::WebviewWindow) {
             // path the webview later hands it (drag-drop is the only legitimate
             // caller with an arbitrary path)
             tauri::WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, .. }) => {
-                app.state::<AppState>().remember_dropped_paths(paths.clone());
+                app.state::<AppState>()
+                    .remember_dropped_paths(paths.clone());
             }
             _ => {}
         }
@@ -1997,7 +2006,7 @@ fn handle_missing_ffmpeg(app: &AppHandle) -> anyhow::Result<()> {
     if FFMPEG_DOWNLOADING.load(Ordering::SeqCst) {
         let _ = show_notification(
             "FFmpeg Download",
-            "FFmpeg is already downloading in the background. Please wait."
+            "FFmpeg is already downloading in the background. Please wait.",
         );
         return Ok(());
     }
@@ -2013,14 +2022,23 @@ fn handle_missing_ffmpeg(app: &AppHandle) -> anyhow::Result<()> {
     if is_confirmed {
         FFMPEG_DOWNLOADING.store(true, Ordering::SeqCst);
         std::thread::spawn(move || {
-            let _ = show_notification("FFmpeg Download", "Starting FFmpeg download (approx. 90MB)...");
+            let _ = show_notification(
+                "FFmpeg Download",
+                "Starting FFmpeg download (approx. 90MB)...",
+            );
             match perform_ffmpeg_download() {
                 Ok(()) => {
-                    let _ = show_notification("FFmpeg Configured", "FFmpeg has been downloaded and configured. You can now record MP4 videos.");
+                    let _ = show_notification(
+                        "FFmpeg Configured",
+                        "FFmpeg has been downloaded and configured. You can now record MP4 videos.",
+                    );
                 }
                 Err(e) => {
                     tracing::error!("failed to download ffmpeg: {}", e);
-                    let _ = show_notification("FFmpeg Download Failed", &format!("Could not configure FFmpeg: {}", e));
+                    let _ = show_notification(
+                        "FFmpeg Download Failed",
+                        &format!("Could not configure FFmpeg: {}", e),
+                    );
                 }
             }
             FFMPEG_DOWNLOADING.store(false, Ordering::SeqCst);
@@ -2069,6 +2087,18 @@ fn run_gif_task(task: &CaptureTask, app: &AppHandle) -> anyhow::Result<()> {
 
     if matches!(current, RecordingState::Processing) {
         // mid-save from a previous run; skip
+        return Ok(());
+    }
+
+    #[cfg(target_os = "linux")]
+    if std::env::var("WAYLAND_DISPLAY").is_ok()
+        || std::env::var("XDG_SESSION_TYPE").is_ok_and(|session| session == "wayland")
+    {
+        emit_error(
+            app,
+            "recording",
+            "recording needs an X11 session; Wayland screen streaming is not available yet",
+        );
         return Ok(());
     }
 
@@ -2253,9 +2283,9 @@ fn finalize_gif_recording(task: &CaptureTask, app: &AppHandle) {
                     Some(StopReason::FrameCap) => {
                         Some("hit the frame-count safety limit — recording saved".to_string())
                     }
-                    Some(StopReason::DiskFull) => Some(
-                        "stopped early: the disk is nearly full — recording saved".to_string(),
-                    ),
+                    Some(StopReason::DiskFull) => {
+                        Some("stopped early: the disk is nearly full — recording saved".to_string())
+                    }
                     Some(StopReason::EncoderFailed) => Some(
                         "stopped early: couldn't write frames to disk — saved what was captured"
                             .to_string(),
@@ -2329,7 +2359,12 @@ pub async fn trim_mp4(
     .map_err(|e| e.to_string())?
 }
 
-fn trim_mp4_blocking(path: &str, start_secs: f64, end_secs: f64, fast: bool) -> anyhow::Result<String> {
+fn trim_mp4_blocking(
+    path: &str,
+    start_secs: f64,
+    end_secs: f64,
+    fast: bool,
+) -> anyhow::Result<String> {
     use std::path::Path;
     if path.contains("..") {
         anyhow::bail!("path contains directory traversal");
@@ -3206,9 +3241,7 @@ fn ocr_image_bytes(image_bytes: &[u8]) -> anyhow::Result<String> {
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
         .spawn()
-        .map_err(|_| {
-            anyhow::anyhow!("OCR needs tesseract — install the tesseract-ocr package")
-        })?;
+        .map_err(|_| anyhow::anyhow!("OCR needs tesseract — install the tesseract-ocr package"))?;
     child
         .stdin
         .take()
@@ -3256,7 +3289,11 @@ pub async fn pin_image(
     let path = canonical.to_string_lossy().to_string();
     let label = format!("pin_{}", Uuid::new_v4());
 
-    state.pinned_images.lock().unwrap().insert(label.clone(), path);
+    state
+        .pinned_images
+        .lock()
+        .unwrap()
+        .insert(label.clone(), path);
 
     let url = tauri::WebviewUrl::App("index.html".into());
     let mut builder = tauri::WebviewWindowBuilder::new(&app, &label, url)

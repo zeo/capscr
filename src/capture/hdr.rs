@@ -587,7 +587,8 @@ mod windows_hdr {
 
     pub fn is_hdr_at_point(x: i32, y: i32) -> bool {
         #[allow(clippy::type_complexity)]
-        static CACHE: OnceLock<Mutex<HashMap<(i32, i32), (bool, std::time::Instant)>>> = OnceLock::new();
+        static CACHE: OnceLock<Mutex<HashMap<(i32, i32), (bool, std::time::Instant)>>> =
+            OnceLock::new();
         let cache_mutex = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
 
         if let Ok(cache) = cache_mutex.lock() {

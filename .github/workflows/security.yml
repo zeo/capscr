@@ -67,6 +67,8 @@ jobs:
 
       # xvfb gives the capture tests a real X display to grab from
       - name: Run tests
+        env:
+          CAPSCR_REQUIRE_CAPTURE: "1"
         run: xvfb-run -a -s "-screen 0 1600x1000x24" cargo test --bin capscr --all-targets
 
       - name: Run clippy

@@ -815,7 +815,10 @@ pub fn test_connection_ftp(target: &FtpTarget) -> Result<Vec<TestStep>> {
             return Ok(steps);
         }
     };
-    steps.push(TestStep::ok("connect", format!("{}:{}", target.host, target.port.max(1))));
+    steps.push(TestStep::ok(
+        "connect",
+        format!("{}:{}", target.host, target.port.max(1)),
+    ));
 
     if let Err(e) = stream.login(&target.username, &target.password) {
         let _ = stream.quit();
@@ -1223,7 +1226,12 @@ pub fn upload_ftp(data: &[u8], file_name: &str, target: &FtpTarget) -> Result<Up
 
     // connect to the vetted address, not the hostname, so we can't be rebound
     let mut stream = FtpStream::connect(&addrs[..]).map_err(|e| {
-        anyhow!("FTP connect to {}:{} failed: {}", target.host, target.port.max(1), e)
+        anyhow!(
+            "FTP connect to {}:{} failed: {}",
+            target.host,
+            target.port.max(1),
+            e
+        )
     })?;
 
     // helper to log out and tear down the socket no matter which step below
@@ -1555,8 +1563,7 @@ use sha2::{Digest, Sha256};
 type HmacSha256 = Hmac<Sha256>;
 
 fn hmac_sha256(key: &[u8], data: &[u8]) -> Result<Vec<u8>> {
-    let mut mac = HmacSha256::new_from_slice(key)
-        .map_err(|e| anyhow!("invalid hmac key: {e}"))?;
+    let mut mac = HmacSha256::new_from_slice(key).map_err(|e| anyhow!("invalid hmac key: {e}"))?;
     mac.update(data);
     Ok(mac.finalize().into_bytes().to_vec())
 }
@@ -1575,7 +1582,9 @@ fn sign_s3_request(
 
     let path = request_url.path();
     let query = request_url.query().unwrap_or("");
-    let host = request_url.host_str().ok_or_else(|| anyhow!("no host in url"))?;
+    let host = request_url
+        .host_str()
+        .ok_or_else(|| anyhow!("no host in url"))?;
     let host_header = if let Some(port) = request_url.port() {
         format!("{}:{}", host, port)
     } else {
@@ -1590,12 +1599,7 @@ fn sign_s3_request(
 
     let canonical_request = format!(
         "{}\n{}\n{}\n{}\n{}\n{}",
-        method,
-        path,
-        query,
-        canonical_headers,
-        signed_headers,
-        payload_sha256
+        method, path, query, canonical_headers, signed_headers, payload_sha256
     );
 
     let mut hasher = Sha256::new();
@@ -1639,10 +1643,12 @@ pub fn upload_s3(data: &[u8], file_name: &str, target: &S3Target) -> Result<Uplo
         if !ep.contains("://") {
             ep = format!("https://{}", ep);
         }
-        let mut url = url::Url::parse(&ep)
-            .map_err(|e| anyhow!("invalid custom endpoint URL: {e}"))?;
+        let mut url =
+            url::Url::parse(&ep).map_err(|e| anyhow!("invalid custom endpoint URL: {e}"))?;
         {
-            let mut path_segments = url.path_segments_mut().map_err(|_| anyhow!("cannot modify path of endpoint"))?;
+            let mut path_segments = url
+                .path_segments_mut()
+                .map_err(|_| anyhow!("cannot modify path of endpoint"))?;
             path_segments.push(&target.bucket);
             path_segments.push(&filename);
         }
@@ -1736,17 +1742,26 @@ pub fn test_connection_s3(target: &S3Target) -> Result<Vec<TestStep>> {
         return Ok(steps);
     }
     if target.secret_access_key.is_empty() {
-        steps.push(TestStep::fail("config", "Secret Access Key is empty".into()));
+        steps.push(TestStep::fail(
+            "config",
+            "Secret Access Key is empty".into(),
+        ));
         return Ok(steps);
     }
-    steps.push(TestStep::ok("config", "Configuration parameters valid".into()));
+    steps.push(TestStep::ok(
+        "config",
+        "Configuration parameters valid".into(),
+    ));
 
     let test_data = b"capscr connection test";
     let file_name = "connection_test.txt";
-    
+
     match upload_s3(test_data, file_name, target) {
         Ok(res) => {
-            steps.push(TestStep::ok("upload", format!("Uploaded test file successfully! Public URL: {}", res.url)));
+            steps.push(TestStep::ok(
+                "upload",
+                format!("Uploaded test file successfully! Public URL: {}", res.url),
+            ));
         }
         Err(e) => {
             steps.push(TestStep::fail("upload", format!("Upload failed: {e}")));
@@ -1763,12 +1778,15 @@ mod tests {
     #[test]
     fn test_sign_s3_request_validity() {
         let method = "PUT";
-        let request_url = url::Url::parse("https://my-bucket.s3.us-east-1.amazonaws.com/test_file.png").unwrap();
+        let request_url =
+            url::Url::parse("https://my-bucket.s3.us-east-1.amazonaws.com/test_file.png").unwrap();
         let region = "us-east-1";
         let access_key_id = "AKIAIOSFODNN7EXAMPLE";
         let secret_access_key = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";
         let payload_sha256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
-        let date_utc = chrono::DateTime::parse_from_rfc3339("2013-05-24T15:00:00Z").unwrap().with_timezone(&chrono::Utc);
+        let date_utc = chrono::DateTime::parse_from_rfc3339("2013-05-24T15:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
 
         let result = sign_s3_request(
             method,
@@ -1783,7 +1801,8 @@ mod tests {
         assert!(result.is_ok());
         let auth_header = result.unwrap();
         assert!(auth_header.contains("AWS4-HMAC-SHA256"));
-        assert!(auth_header.contains("Credential=AKIAIOSFODNN7EXAMPLE/20130524/us-east-1/s3/aws4_request"));
+        assert!(auth_header
+            .contains("Credential=AKIAIOSFODNN7EXAMPLE/20130524/us-east-1/s3/aws4_request"));
         assert!(auth_header.contains("SignedHeaders=host;x-amz-content-sha256;x-amz-date"));
         assert!(auth_header.contains("Signature="));
     }

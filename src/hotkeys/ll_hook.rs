@@ -444,10 +444,18 @@ pub fn spawn_hook_thread() -> std::io::Result<()> {
             };
             let mut prime = 0u8;
             let down = |vk: u16| (GetAsyncKeyState(vk as i32) as u16 & 0x8000) != 0;
-            if down(VK_CONTROL.0) { prime |= MOD_CTRL; }
-            if down(VK_MENU.0) { prime |= MOD_ALT; }
-            if down(VK_SHIFT.0) { prime |= MOD_SHIFT; }
-            if down(VK_LWIN.0) || down(VK_RWIN.0) { prime |= MOD_WIN; }
+            if down(VK_CONTROL.0) {
+                prime |= MOD_CTRL;
+            }
+            if down(VK_MENU.0) {
+                prime |= MOD_ALT;
+            }
+            if down(VK_SHIFT.0) {
+                prime |= MOD_SHIFT;
+            }
+            if down(VK_LWIN.0) || down(VK_RWIN.0) {
+                prime |= MOD_WIN;
+            }
             MODIFIER_STATE.store(prime, Ordering::SeqCst);
 
             use windows::core::PCWSTR;

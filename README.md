@@ -15,7 +15,7 @@ Per-hotkey task model. Each hotkey binds a capture mode (region, region-last, wi
 
 Selection overlay: drag for region, click for window, Enter for fullscreen, `Alt+click` for color picker (pixel `#RRGGBB` copied to clipboard). Live `WxH @ X,Y` readout, 8× magnifier loupe, window-snap highlight.
 
-Recording: region GIF and H.264 MP4 (MP4 via ffmpeg, auto-downloaded on first use) with a live timer + stop control drawn outside the captured area and frames timed to real wall-clock playback. The mouse cursor is composited into recordings and screenshots when **show cursor** is enabled.
+Recording: region GIF and H.264 MP4 (MP4 via ffmpeg, auto-downloaded on first use on Windows) with a live timer + stop control drawn outside the captured area and frames timed to real wall-clock playback. The mouse cursor is composited into recordings and screenshots when **show cursor** is enabled.
 
 In-app editor: arrows, text, blur, step numbers, and crop, reached via the "open in editor" post-action.
 
@@ -41,7 +41,7 @@ Download from the [releases page](https://github.com/lintowe/capscr/releases/lat
 | `capscr_x.x.x_amd64.AppImage` | any distro — `chmod +x` and run; this is the build the Linux auto-updater tracks |
 | `latest.json` | auto-updater manifest, not for manual install |
 
-Windows 10 1903+ or a Linux desktop with webkit2gtk 4.1 and glibc 2.39+ (Ubuntu 24.04+, Debian 13+, Fedora 40+, or equivalents). On Linux, X11 sessions get the full feature set; recording MP4 wants `ffmpeg` on PATH (offered as a download otherwise), the OCR post-action wants `tesseract`, and file-clipboard on X11 wants `xclip` — the deb/rpm packages pull these in as recommends. Wayland-only sessions currently fall back for a few features (see the hub's per-task hotkey status).
+Windows 10 1903+ or a Linux desktop with webkit2gtk 4.1 and glibc 2.39+ (Ubuntu 24.04+, Debian 13+, Fedora 40+, or equivalents). On Linux, X11 sessions get the full feature set; recording MP4 wants `ffmpeg` on PATH, the OCR post-action wants `tesseract`, and file-clipboard on X11 wants `xclip` — the deb/rpm packages pull these in as recommends. Wayland supports still capture on one output at a time. Global hotkeys, recording, and window picking require an X11 session.
 
 ## default hotkeys
 

@@ -306,7 +306,8 @@ impl HotkeyManager {
         // grabs can't cover them, and the Mouse4/Mouse5 aliases would bind
         // the literal F23/F24 keys instead
         #[cfg(target_os = "linux")]
-        if hotkey_str.to_uppercase().contains("MOUSE") || hotkey_str.to_uppercase().contains("XBUTTON")
+        if hotkey_str.to_uppercase().contains("MOUSE")
+            || hotkey_str.to_uppercase().contains("XBUTTON")
         {
             return Err(anyhow!(
                 "'{}' — mouse-button hotkeys aren't supported on Linux",
@@ -380,9 +381,10 @@ impl HotkeyManager {
         //   three is worse than an honest failure. wayland-native hotkeys
         //   need the GlobalShortcuts portal, which isn't wired up yet.
         let wayland = std::env::var("WAYLAND_DISPLAY").is_ok()
-            || std::env::var("XDG_SESSION_TYPE").map(|t| t == "wayland").unwrap_or(false);
-        let x11_reachable =
-            std::env::var("DISPLAY").is_ok() && x11rb::connect(None).is_ok();
+            || std::env::var("XDG_SESSION_TYPE")
+                .map(|t| t == "wayland")
+                .unwrap_or(false);
+        let x11_reachable = std::env::var("DISPLAY").is_ok() && x11rb::connect(None).is_ok();
         if wayland || !x11_reachable {
             let reason = if wayland {
                 "global hotkeys aren't available on wayland sessions yet; \

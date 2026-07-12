@@ -1075,8 +1075,10 @@ impl Config {
             self.capture.hdr.user_brightness_scale = 100.0;
         }
 
-        let hotkey_chars_ok =
-            |s: &str| s.chars().all(|c| c.is_alphanumeric() || c == '+' || c == ' ');
+        let hotkey_chars_ok = |s: &str| {
+            s.chars()
+                .all(|c| c.is_alphanumeric() || c == '+' || c == ' ')
+        };
         for hk in [&mut self.hotkeys.screenshot, &mut self.hotkeys.record_gif] {
             if hk.len() > MAX_HOTKEY_LEN || !hotkey_chars_ok(hk) {
                 hk.clear();
@@ -1172,9 +1174,20 @@ impl Config {
                                     .sftp
                                     .private_key_passphrase_encrypted
                                     .is_empty());
+                        #[cfg(target_os = "linux")]
+                        let needs_secret_migration = needs_secret_migration
+                            || [
+                                &config.upload.ftp.password_encrypted,
+                                &config.upload.sftp.password_encrypted,
+                                &config.upload.sftp.private_key_passphrase_encrypted,
+                                &config.upload.s3.secret_access_key_encrypted,
+                            ]
+                            .iter()
+                            .any(|blob| !blob.is_empty() && !blob.starts_with("keyring:"));
                         if needs_secret_migration {
-                            config.migrate_secrets();
-                            if let Err(e) = config.save() {
+                            if let Err(e) = config.migrate_secrets() {
+                                tracing::warn!("secret migration deferred: {e}");
+                            } else if let Err(e) = config.save() {
                                 tracing::warn!(
                                     "secret migration save failed: {e}; \
                                      plaintext password stays on disk for now"
@@ -1215,7 +1228,7 @@ impl Config {
         // the on-disk config never carries credentials in the clear once the
         // user has done at least one save with 0.3.43+
         let mut to_persist = self.clone();
-        to_persist.migrate_secrets();
+        to_persist.migrate_secrets()?;
         if let Some(dir) = Self::config_dir() {
             fs::create_dir_all(&dir)?;
             if let Some(path) = Self::config_path() {
@@ -1233,7 +1246,22 @@ impl Config {
     /// in-place: encrypt any plaintext secrets that haven't been wrapped yet
     /// and clear the plaintext field. Idempotent — running twice is a no-op
     /// after the first.
-    pub fn migrate_secrets(&mut self) {
+    pub fn migrate_secrets(&mut self) -> Result<()> {
+        #[cfg(target_os = "linux")]
+        for blob in [
+            &mut self.upload.ftp.password_encrypted,
+            &mut self.upload.sftp.password_encrypted,
+            &mut self.upload.sftp.private_key_passphrase_encrypted,
+            &mut self.upload.s3.secret_access_key_encrypted,
+        ] {
+            if !blob.is_empty() && !blob.starts_with("keyring:") {
+                let plaintext = crate::secret::decrypt(blob)
+                    .context("couldn't read a legacy on-disk credential")?;
+                *blob = crate::secret::encrypt(&plaintext)
+                    .context("couldn't move a legacy credential into the system keyring")?;
+            }
+        }
+
         let ftp = &mut self.upload.ftp;
         if !ftp.password.is_empty() && ftp.password_encrypted.is_empty() {
             match crate::secret::encrypt(&ftp.password) {
@@ -1243,7 +1271,7 @@ impl Config {
                     tracing::info!("migrated FTP password into encrypted vault");
                 }
                 Err(e) => {
-                    tracing::warn!("FTP password DPAPI encrypt failed; leaving plaintext: {e}");
+                    return Err(e.context("couldn't store FTP password in the credential vault"))
                 }
             }
         }
@@ -1256,7 +1284,7 @@ impl Config {
                     tracing::info!("migrated SFTP password into encrypted vault");
                 }
                 Err(e) => {
-                    tracing::warn!("SFTP password DPAPI encrypt failed; leaving plaintext: {e}");
+                    return Err(e.context("couldn't store SFTP password in the credential vault"))
                 }
             }
         }
@@ -1270,9 +1298,9 @@ impl Config {
                     tracing::info!("migrated SFTP key passphrase into encrypted vault");
                 }
                 Err(e) => {
-                    tracing::warn!(
-                        "SFTP key passphrase DPAPI encrypt failed; leaving plaintext: {e}"
-                    );
+                    return Err(
+                        e.context("couldn't store SFTP key passphrase in the credential vault")
+                    )
                 }
             }
         }
@@ -1285,10 +1313,13 @@ impl Config {
                     tracing::info!("migrated S3 secret access key into encrypted vault");
                 }
                 Err(e) => {
-                    tracing::warn!("S3 secret access key DPAPI encrypt failed; leaving plaintext: {e}");
+                    return Err(
+                        e.context("couldn't store S3 secret access key in the credential vault")
+                    )
                 }
             }
         }
+        Ok(())
     }
 
     pub fn ensure_output_dir(&self) -> Result<()> {
@@ -1403,7 +1434,10 @@ mod tests {
             .iter()
             .filter(|t| t.hotkey == "Ctrl+Shift+G")
             .count();
-        assert_eq!(bound, 1, "the duplicate hotkey should be unbound on one task");
+        assert_eq!(
+            bound, 1,
+            "the duplicate hotkey should be unbound on one task"
+        );
     }
 
     #[test]

@@ -6,10 +6,7 @@
 //
 // linux: the freedesktop Secret Service (gnome-keyring / kwallet). the value
 // itself lives in the login keyring; config.toml only carries an opaque
-// `keyring:<id>` reference. when no secret service is reachable (headless
-// session, no keyring daemon) the value falls back to hex encoding — visible
-// to anyone who can read the config, same as the previous behavior, with a
-// warning logged so the degradation isn't silent.
+// `keyring:<id>` reference
 //
 // other targets keep the plain hex fallback for tests.
 
@@ -23,15 +20,8 @@ pub fn encrypt(plaintext: &str) -> Result<String> {
     }
     #[cfg(target_os = "linux")]
     {
-        match secret_service::store(plaintext) {
-            Ok(reference) => Ok(reference),
-            Err(e) => {
-                tracing::warn!(
-                    "secret service unavailable ({e:#}); storing value hex-encoded in config"
-                );
-                Ok(hex::encode(plaintext.as_bytes()))
-            }
-        }
+        secret_service::store(plaintext)
+            .map_err(|e| anyhow!("system keyring unavailable; credential was not saved: {e:#}"))
     }
     #[cfg(not(any(windows, target_os = "linux")))]
     {
@@ -100,7 +90,7 @@ mod secret_service {
         if collection.as_str() == "/" {
             // fresh keyrings have no default collection; create one. a
             // prompt requirement (password-protected daemon) means we can't
-            // proceed non-interactively — the caller falls back to hex
+            // proceed non-interactively
             let mut props: HashMap<&str, Value> = HashMap::new();
             props.insert(
                 "org.freedesktop.Secret.Collection.Label",
@@ -231,22 +221,17 @@ mod secret_service {
             .first()
             .or_else(|| locked.first())
             .ok_or_else(|| anyhow!("secret {id} not found in keyring"))?;
-        let (_session, _params, value, _content_type): (
-            OwnedObjectPath,
-            Vec<u8>,
-            Vec<u8>,
-            String,
-        ) = s
-            .conn
-            .call_method(
-                Some(BUS),
-                item.as_str(),
-                Some("org.freedesktop.Secret.Item"),
-                "GetSecret",
-                &(ObjectPath::from(&s.session),),
-            )?
-            .body()
-            .deserialize()?;
+        let (_session, _params, value, _content_type): (OwnedObjectPath, Vec<u8>, Vec<u8>, String) =
+            s.conn
+                .call_method(
+                    Some(BUS),
+                    item.as_str(),
+                    Some("org.freedesktop.Secret.Item"),
+                    "GetSecret",
+                    &(ObjectPath::from(&s.session),),
+                )?
+                .body()
+                .deserialize()?;
         String::from_utf8(value).map_err(|e| anyhow!("bad utf-8 from keyring: {e}"))
     }
 }

@@ -132,18 +132,36 @@ pub fn select(frozen_frame: Option<Arc<RgbaImage>>) -> SelectionResult {
     if monitors.is_empty() {
         return SelectionResult::Cancelled;
     }
-    let min_x = monitors.iter().map(|m| m.x).min().unwrap_or(0);
-    let min_y = monitors.iter().map(|m| m.y).min().unwrap_or(0);
-    let max_x = monitors
-        .iter()
-        .map(|m| m.x + m.width as i32)
-        .max()
-        .unwrap_or(0);
-    let max_y = monitors
-        .iter()
-        .map(|m| m.y + m.height as i32)
-        .max()
-        .unwrap_or(0);
+    let desktop_origin = (
+        monitors.iter().map(|m| m.x).min().unwrap_or(0),
+        monitors.iter().map(|m| m.y).min().unwrap_or(0),
+    );
+    let pure_wayland =
+        std::env::var("WAYLAND_DISPLAY").is_ok() && std::env::var("DISPLAY").is_err();
+    let surface_rect = if pure_wayland {
+        let monitor = monitors
+            .iter()
+            .find(|monitor| monitor.is_primary)
+            .unwrap_or(&monitors[0]);
+        (monitor.x, monitor.y, monitor.width, monitor.height)
+    } else {
+        (
+            desktop_origin.0,
+            desktop_origin.1,
+            monitors
+                .iter()
+                .map(|m| m.x + m.width as i32)
+                .max()
+                .unwrap_or(0)
+                .saturating_sub(desktop_origin.0) as u32,
+            monitors
+                .iter()
+                .map(|m| m.y + m.height as i32)
+                .max()
+                .unwrap_or(0)
+                .saturating_sub(desktop_origin.1) as u32,
+        )
+    };
 
     let windows = PREWARMED
         .lock()
@@ -159,21 +177,31 @@ pub fn select(frozen_frame: Option<Arc<RgbaImage>>) -> SelectionResult {
             .ok()
             .map(Arc::new)
     });
+    let frame = frame.map(|frame| {
+        if !pure_wayland {
+            return frame;
+        }
+        let x = (surface_rect.0 - desktop_origin.0).max(0) as u32;
+        let y = (surface_rect.1 - desktop_origin.1).max(0) as u32;
+        let width = surface_rect.2.min(frame.width().saturating_sub(x));
+        let height = surface_rect.3.min(frame.height().saturating_sub(y));
+        Arc::new(image::imageops::crop_imm(&frame, x, y, width, height).to_image())
+    });
 
     let (tx, rx): (Sender<SelectionResult>, Receiver<SelectionResult>) = channel();
     *ACTIVE.lock().unwrap() = Some(ActiveSelection {
         frame,
-        origin: (min_x, min_y),
+        origin: (surface_rect.0, surface_rect.1),
         windows,
         tx,
     });
 
     let app_for_build = app.clone();
     let virt = (
-        min_x as f64,
-        min_y as f64,
-        (max_x - min_x) as f64,
-        (max_y - min_y) as f64,
+        surface_rect.0 as f64,
+        surface_rect.1 as f64,
+        surface_rect.2 as f64,
+        surface_rect.3 as f64,
     );
     let built = app.run_on_main_thread(move || {
         if let Err(e) = build_selector_window(&app_for_build, virt) {
@@ -196,10 +224,7 @@ pub fn select(frozen_frame: Option<Arc<RgbaImage>>) -> SelectionResult {
     }
 }
 
-fn build_selector_window(
-    app: &AppHandle,
-    (x, y, w, h): (f64, f64, f64, f64),
-) -> tauri::Result<()> {
+fn build_selector_window(app: &AppHandle, (x, y, w, h): (f64, f64, f64, f64)) -> tauri::Result<()> {
     if let Some(stale) = app.get_webview_window(SELECTOR_LABEL) {
         let _ = stale.destroy();
     }
@@ -240,9 +265,7 @@ fn watch_selector_navigation(app: &AppHandle, window: tauri::WebviewWindow) {
                 return;
             }
             tracing::warn!("selector webview stuck on about:blank; navigating explicitly");
-            let target = app
-                .get_webview_window("hub")
-                .and_then(|hub| hub.url().ok());
+            let target = app.get_webview_window("hub").and_then(|hub| hub.url().ok());
             if let Some(url) = target {
                 if let Err(e) = window.navigate(url) {
                     tracing::warn!("selector explicit navigation failed: {e}");
@@ -296,10 +319,21 @@ pub fn selector_frame() -> Result<tauri::ipc::Response, String> {
 #[derive(serde::Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SelectorOutcome {
-    Region { x: i32, y: i32, width: u32, height: u32 },
-    Window { id: u32 },
+    Region {
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    },
+    Window {
+        id: u32,
+    },
     FullScreen,
-    Color { r: u8, g: u8, b: u8 },
+    Color {
+        r: u8,
+        g: u8,
+        b: u8,
+    },
     Cancelled,
 }
 
@@ -325,4 +359,3 @@ pub fn selector_finish(outcome: SelectorOutcome) {
     };
     finish(result);
 }
-

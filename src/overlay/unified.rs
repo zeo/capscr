@@ -36,7 +36,10 @@ mod windows_impl {
                 Threading::{AttachThreadInput, GetCurrentThreadId},
             },
             UI::{
-                Input::KeyboardAndMouse::{SetFocus, VK_CONTROL, VK_ESCAPE, VK_RETURN, VK_SHIFT, VK_SPACE, VK_LEFT, VK_RIGHT, VK_UP, VK_DOWN},
+                Input::KeyboardAndMouse::{
+                    SetFocus, VK_CONTROL, VK_DOWN, VK_ESCAPE, VK_LEFT, VK_RETURN, VK_RIGHT,
+                    VK_SHIFT, VK_SPACE, VK_UP,
+                },
                 WindowsAndMessaging::{
                     BringWindowToTop, ChildWindowFromPointEx, CreateWindowExW, DefWindowProcW,
                     DestroyWindow, DispatchMessageW, EnumWindows, GetAncestor, GetCursorPos,
@@ -47,9 +50,9 @@ mod windows_impl {
                     CS_VREDRAW, CWP_SKIPINVISIBLE, CWP_SKIPTRANSPARENT, GA_ROOT, GWL_EXSTYLE,
                     GWL_STYLE, LWA_ALPHA, LWA_COLORKEY, MSG, SM_CXVIRTUALSCREEN,
                     SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SW_SHOWNORMAL,
-                    WM_DESTROY, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_PAINT,
-                    WM_RBUTTONDOWN, WNDCLASSW, WS_EX_LAYERED, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
-                    WS_POPUP, WS_VISIBLE,
+                    WM_DESTROY, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE,
+                    WM_MOUSEWHEEL, WM_PAINT, WM_RBUTTONDOWN, WNDCLASSW, WS_EX_LAYERED,
+                    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP, WS_VISIBLE,
                 },
             },
         },
@@ -926,7 +929,8 @@ mod windows_impl {
                     }
                 }
 
-                let has_selection = DRAG_STARTED.load(Ordering::SeqCst) && ((ex - sx).abs() > CLICK_THRESHOLD || (ey - sy).abs() > CLICK_THRESHOLD);
+                let has_selection = DRAG_STARTED.load(Ordering::SeqCst)
+                    && ((ex - sx).abs() > CLICK_THRESHOLD || (ey - sy).abs() > CLICK_THRESHOLD);
                 let show_selection = mouse_down || has_selection;
 
                 if show_selection {
@@ -1321,7 +1325,8 @@ mod windows_impl {
                     let sy = START_Y.load(Ordering::SeqCst);
                     let ex = END_X.load(Ordering::SeqCst);
                     let ey = END_Y.load(Ordering::SeqCst);
-                    let has_selection = DRAG_STARTED.load(Ordering::SeqCst) && ((ex - sx).abs() > CLICK_THRESHOLD || (ey - sy).abs() > CLICK_THRESHOLD);
+                    let has_selection = DRAG_STARTED.load(Ordering::SeqCst)
+                        && ((ex - sx).abs() > CLICK_THRESHOLD || (ey - sy).abs() > CLICK_THRESHOLD);
                     if !has_selection {
                         FULLSCREEN.store(true, Ordering::SeqCst);
                     }
@@ -1329,12 +1334,28 @@ mod windows_impl {
                     SHIFT_AT_COMMIT.store(shift_held(), Ordering::SeqCst);
                     SELECTING.store(false, Ordering::SeqCst);
                     PostQuitMessage(0);
-                } else if key == VK_LEFT.0 as i32 || key == VK_RIGHT.0 as i32 || key == VK_UP.0 as i32 || key == VK_DOWN.0 as i32 {
+                } else if key == VK_LEFT.0 as i32
+                    || key == VK_RIGHT.0 as i32
+                    || key == VK_UP.0 as i32
+                    || key == VK_DOWN.0 as i32
+                {
                     let mut pt = POINT::default();
                     let _ = GetCursorPos(&mut pt);
-                    
-                    let dx = if key == VK_LEFT.0 as i32 { -1 } else if key == VK_RIGHT.0 as i32 { 1 } else { 0 };
-                    let dy = if key == VK_UP.0 as i32 { -1 } else if key == VK_DOWN.0 as i32 { 1 } else { 0 };
+
+                    let dx = if key == VK_LEFT.0 as i32 {
+                        -1
+                    } else if key == VK_RIGHT.0 as i32 {
+                        1
+                    } else {
+                        0
+                    };
+                    let dy = if key == VK_UP.0 as i32 {
+                        -1
+                    } else if key == VK_DOWN.0 as i32 {
+                        1
+                    } else {
+                        0
+                    };
 
                     let shift = shift_held();
                     let ctrl = ctrl_held();

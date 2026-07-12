@@ -74,7 +74,7 @@ jobs:
           releaseBody: ${{ steps.changelog.outputs.notes }}
           releaseDraft: false
           prerelease: false
-          includeUpdaterJson: true
+          uploadUpdaterJson: true
 
       # the branded first-install experience: a native window wrapped around the
       # very MSI tauri just built (and signed), so the in-app updater's chain is
@@ -190,4 +190,4 @@ jobs:
           releaseBody: ${{ steps.changelog.outputs.notes }}
           releaseDraft: false
           prerelease: false
-          includeUpdaterJson: true
+          uploadUpdaterJson: true

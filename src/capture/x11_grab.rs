@@ -42,7 +42,15 @@ impl X11RegionGrabber {
 
         let reply = self
             .conn
-            .get_image(ImageFormat::Z_PIXMAP, self.root, x0 as i16, y0 as i16, w, h, !0)?
+            .get_image(
+                ImageFormat::Z_PIXMAP,
+                self.root,
+                x0 as i16,
+                y0 as i16,
+                w,
+                h,
+                !0,
+            )?
             .reply()?;
         if reply.depth != 24 && reply.depth != 32 {
             return Err(anyhow!("unsupported root depth {}", reply.depth));

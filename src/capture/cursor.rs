@@ -110,9 +110,8 @@ mod windows_impl {
     use image::RgbaImage;
     use windows::Win32::Foundation::HWND;
     use windows::Win32::Graphics::Gdi::{
-        CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetDC, ReleaseDC,
+        CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetDC, GetPixel, ReleaseDC,
         SelectObject, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HBITMAP, HDC,
-        GetPixel,
     };
     use windows::Win32::UI::WindowsAndMessaging::{
         CopyIcon, DestroyIcon, DrawIconEx, GetCursorInfo, GetIconInfo, CURSORINFO, CURSOR_SHOWING,
@@ -409,10 +408,20 @@ mod tests {
     fn composite_passes_through_opaque_and_skips_transparent() {
         let mut dst = RgbaImage::from_pixel(1, 1, Rgba([10, 20, 30, 255]));
         // fully transparent src leaves the destination untouched
-        composite_at(&mut dst, &RgbaImage::from_pixel(1, 1, Rgba([9, 9, 9, 0])), 0, 0);
+        composite_at(
+            &mut dst,
+            &RgbaImage::from_pixel(1, 1, Rgba([9, 9, 9, 0])),
+            0,
+            0,
+        );
         assert_eq!(dst.get_pixel(0, 0).0, [10, 20, 30, 255]);
         // fully opaque src replaces it
-        composite_at(&mut dst, &RgbaImage::from_pixel(1, 1, Rgba([1, 2, 3, 255])), 0, 0);
+        composite_at(
+            &mut dst,
+            &RgbaImage::from_pixel(1, 1, Rgba([1, 2, 3, 255])),
+            0,
+            0,
+        );
         assert_eq!(dst.get_pixel(0, 0).0, [1, 2, 3, 255]);
     }
 }

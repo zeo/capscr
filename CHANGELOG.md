@@ -6,8 +6,8 @@ format follows [keep-a-changelog](https://keepachangelog.com/en/1.1.0/) loosely.
 
 ### added
 - **Linux support.** capscr now runs on Linux (X11 and Wayland), shipped as deb, rpm, and AppImage packages, with the auto-updater tracking the AppImage. what carries over:
-  - the whole still-capture pipeline: the freeze-frame selector (region drag, window pick, alt+click color picker, shift aspect snap, ctrl fine-tune, loupe), every capture mode, history, uploads, the editor, and pinning
-  - region GIF and MP4 recording with the same wall-clock playback guarantees as Windows; frames come off a persistent X11 connection at millisecond cost, and system audio records the PulseAudio/PipeWire monitor of the default output
+  - the whole still-capture pipeline on X11: the freeze-frame selector (region drag, window pick, alt+click color picker, shift aspect snap, ctrl fine-tune, loupe), every capture mode, history, uploads, the editor, and pinning. Wayland still capture works on one output at a time without window picking
+  - region GIF and MP4 recording on X11 with the same wall-clock playback guarantees as Windows; frames come off a persistent connection at millisecond cost, and system audio records the PulseAudio/PipeWire monitor of the default output
   - global hotkeys on X11 sessions. Wayland sessions mark their bindings with a clear per-task status until the GlobalShortcuts portal lands; the tray menu and `capscr --jump` work everywhere
   - Wayland stills work on wlroots compositors through screencopy and on other desktops through the screenshot portal, including sessions running without XWayland
   - upload credentials live in the system keyring (freedesktop Secret Service) instead of on disk; OCR runs through tesseract; copying a capture as a file uses text/uri-list; capture and upload cues play through the system audio stack

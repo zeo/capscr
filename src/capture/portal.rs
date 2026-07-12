@@ -16,7 +16,9 @@ static REQUEST_COUNTER: AtomicU32 = AtomicU32::new(0);
 
 pub fn is_wayland_session() -> bool {
     std::env::var("WAYLAND_DISPLAY").is_ok()
-        || std::env::var("XDG_SESSION_TYPE").map(|t| t == "wayland").unwrap_or(false)
+        || std::env::var("XDG_SESSION_TYPE")
+            .map(|t| t == "wayland")
+            .unwrap_or(false)
 }
 
 pub fn portal_screenshot() -> Result<RgbaImage> {

@@ -236,7 +236,7 @@ impl GifRecorder {
             let audio_filename = format!("capscr_audio_{}.wav", uuid::Uuid::new_v4().as_simple());
             let audio_path = temp_dir.join(audio_filename);
             self.audio_temp_path = Some(audio_path.clone());
-            
+
             let (audio_tx, audio_rx) = channel();
             self.audio_stop_tx = Some(audio_tx);
 
@@ -283,7 +283,9 @@ impl GifRecorder {
                 match crate::capture::X11RegionGrabber::new() {
                     Ok(g) => Some(g),
                     Err(e) => {
-                        tracing::warn!("x11 region grabber unavailable ({e:#}); using generic path");
+                        tracing::warn!(
+                            "x11 region grabber unavailable ({e:#}); using generic path"
+                        );
                         None
                     }
                 }
@@ -706,7 +708,9 @@ impl GifRecorder {
             }
         }
 
-        let audio_exists = self.audio_temp_path.as_ref()
+        let audio_exists = self
+            .audio_temp_path
+            .as_ref()
             .map(|p| p.exists() && std::fs::metadata(p).map(|m| m.len() > 44).unwrap_or(false))
             .unwrap_or(false);
 
@@ -853,21 +857,20 @@ fn write_wav_header(
 }
 
 #[cfg(windows)]
-pub fn record_loopback_audio(
-    wav_path: &Path,
-    stop_rx: Receiver<()>,
-) -> Result<()> {
+pub fn record_loopback_audio(wav_path: &Path, stop_rx: Receiver<()>) -> Result<()> {
     use std::io::{Seek, Write};
-    
+
     let _ = wasapi::initialize_mta();
 
     let device = wasapi::get_default_device(&wasapi::Direction::Render)
         .map_err(|e| anyhow!("failed to get default render device: {e:?}"))?;
 
-    let mut client = device.get_iaudioclient()
+    let mut client = device
+        .get_iaudioclient()
         .map_err(|e| anyhow!("failed to get audio client: {e:?}"))?;
 
-    let format = client.get_mixformat()
+    let format = client
+        .get_mixformat()
         .map_err(|e| anyhow!("failed to get mix format: {e:?}"))?;
 
     let sample_rate = format.get_samplespersec();
@@ -881,10 +884,12 @@ pub fn record_loopback_audio(
         autoconvert: true,
         buffer_duration_hns: 2_000_000,
     };
-    client.initialize_client(&format, &wasapi::Direction::Capture, &mode)
+    client
+        .initialize_client(&format, &wasapi::Direction::Capture, &mode)
         .map_err(|e| anyhow!("failed to initialize audio client: {e:?}"))?;
 
-    let capture_client = client.get_audiocaptureclient()
+    let capture_client = client
+        .get_audiocaptureclient()
         .map_err(|e| anyhow!("failed to get audio capture client: {e:?}"))?;
 
     let mut temp_file = std::fs::File::create(wav_path)?;
@@ -892,7 +897,8 @@ pub fn record_loopback_audio(
 
     let mut bytes_written: u32 = 0;
 
-    client.start_stream()
+    client
+        .start_stream()
         .map_err(|e| anyhow!("failed to start audio stream: {e:?}"))?;
 
     let started = std::time::Instant::now();
@@ -941,7 +947,13 @@ pub fn record_loopback_audio(
     let _ = client.stop_stream();
 
     temp_file.seek(std::io::SeekFrom::Start(0))?;
-    write_wav_header(&mut temp_file, bytes_written, sample_rate, channels, bits_per_sample)?;
+    write_wav_header(
+        &mut temp_file,
+        bytes_written,
+        sample_rate,
+        channels,
+        bits_per_sample,
+    )?;
 
     Ok(())
 }
@@ -1018,12 +1030,12 @@ mod tests {
         let mut buffer = tempfile::tempfile().unwrap();
         let res = write_wav_header(&mut buffer, 1000, 44100, 2, 16);
         assert!(res.is_ok());
-        
-        use std::io::{Seek, Read};
+
+        use std::io::{Read, Seek};
         buffer.seek(std::io::SeekFrom::Start(0)).unwrap();
         let mut header = [0u8; 44];
         buffer.read_exact(&mut header).unwrap();
-        
+
         assert_eq!(&header[0..4], b"RIFF");
         assert_eq!(u32::from_le_bytes(header[4..8].try_into().unwrap()), 1036);
         assert_eq!(&header[8..12], b"WAVE");
@@ -1031,8 +1043,14 @@ mod tests {
         assert_eq!(u32::from_le_bytes(header[16..20].try_into().unwrap()), 16);
         assert_eq!(u16::from_le_bytes(header[20..22].try_into().unwrap()), 1);
         assert_eq!(u16::from_le_bytes(header[22..24].try_into().unwrap()), 2);
-        assert_eq!(u32::from_le_bytes(header[24..28].try_into().unwrap()), 44100);
-        assert_eq!(u32::from_le_bytes(header[28..32].try_into().unwrap()), 176400);
+        assert_eq!(
+            u32::from_le_bytes(header[24..28].try_into().unwrap()),
+            44100
+        );
+        assert_eq!(
+            u32::from_le_bytes(header[28..32].try_into().unwrap()),
+            176400
+        );
         assert_eq!(u16::from_le_bytes(header[32..34].try_into().unwrap()), 4);
         assert_eq!(u16::from_le_bytes(header[34..36].try_into().unwrap()), 16);
         assert_eq!(&header[36..40], b"data");
@@ -1115,7 +1133,10 @@ mod tests {
         let times = times_at_interval(100, 100.0);
         let repeats = mp4_repeat_schedule(&times, Duration::from_millis(100), 15);
         let total: u64 = repeats.iter().sum();
-        assert!((149..=151).contains(&total), "total {total} ticks, want ~150");
+        assert!(
+            (149..=151).contains(&total),
+            "total {total} ticks, want ~150"
+        );
     }
 
     #[test]
@@ -1165,7 +1186,9 @@ mod tests {
 
         let mut options = gif::DecodeOptions::new();
         options.set_color_output(gif::ColorOutput::Indexed);
-        let mut decoder = options.read_info(std::fs::File::open(&path).unwrap()).unwrap();
+        let mut decoder = options
+            .read_info(std::fs::File::open(&path).unwrap())
+            .unwrap();
         let mut total_cs: u64 = 0;
         let mut frames = 0;
         while let Some(frame) = decoder.read_next_frame().unwrap() {
@@ -1176,7 +1199,10 @@ mod tests {
 
         assert_eq!(frames, 45);
         // 44 gaps * 222ms + one nominal 66.7ms hold = 9834.7ms
-        assert!((982..=985).contains(&total_cs), "total {total_cs}cs, want ~983");
+        assert!(
+            (982..=985).contains(&total_cs),
+            "total {total_cs}cs, want ~983"
+        );
     }
 
     #[test]
