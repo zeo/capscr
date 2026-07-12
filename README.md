@@ -1,15 +1,15 @@
 # capscr
 
-Fast HDR-aware Windows screen capture — tray-first, signed updates, no telemetry.
+Fast HDR-aware screen capture for Windows and Linux — tray-first, signed updates, no telemetry.
 
 - homepage: [rot.lt/work/capscr](https://rot.lt/work/capscr)
 - plugins: [rot.lt/work/capscr/plugins](https://rot.lt/work/capscr/plugins) — publishing contract in [`docs/marketplace.md`](docs/marketplace.md), registry at [`lintowe/capscr-plugins`](https://github.com/lintowe/capscr-plugins)
-- downloads: [GitHub Releases](https://github.com/lintowe/capscr/releases) (signed MSI + auto-updater)
+- downloads: [GitHub Releases](https://github.com/lintowe/capscr/releases) (signed MSI / deb / rpm / AppImage + auto-updater)
 - license: MIT
 
 ## features
 
-HDR captures via Windows.Graphics.Capture FP16, ICtCp luminance-only tonemap (per-frame MaxCLL via P99), SDR PNG output. Per-monitor SDR-white detection.
+HDR captures via Windows.Graphics.Capture FP16, ICtCp luminance-only tonemap (per-frame MaxCLL via P99), SDR PNG output. Per-monitor SDR-white detection. (HDR capture is Windows-only; Linux desktops don't expose an HDR capture surface yet, so captures there are SDR.)
 
 Per-hotkey task model. Each hotkey binds a capture mode (region, region-last, window, fullscreen, active monitor, region GIF, region MP4) plus a post-action (save, clipboard, open in editor, upload). No central default — every hotkey is its own task. Default tasks: region → save + clipboard (unbound out of the box; a first-launch prompt asks you to pick a key), `Ctrl+Shift+G` for region GIF → save, `Ctrl+Shift+V` for region MP4 → save.
 
@@ -19,7 +19,7 @@ Recording: region GIF and H.264 MP4 (MP4 via ffmpeg, auto-downloaded on first us
 
 In-app editor: arrows, text, blur, step numbers, and crop, reached via the "open in editor" post-action.
 
-Uploads: Imgur (anonymous), custom HTTPS POST, FTP, and SFTP. HTTP and FTP go through SSRF protection (DNS double-resolve, private-IP / cloud-metadata rejection); stored FTP/SFTP passwords are kept as per-user DPAPI blobs, not cleartext.
+Uploads: Imgur (anonymous), custom HTTPS POST, FTP, and SFTP. HTTP and FTP go through SSRF protection (DNS double-resolve, private-IP / cloud-metadata rejection); stored FTP/SFTP passwords are kept in the per-user credential vault (DPAPI on Windows, the freedesktop Secret Service on Linux), not cleartext.
 
 Tray-only at idle (~14 MB working set). The hub window allocates a webview only when opened.
 
@@ -36,9 +36,12 @@ Download from the [releases page](https://github.com/lintowe/capscr/releases/lat
 | `capscr-x.x.x-setup.exe` | **the installer** — one small window in capscr's own style, wrapping the signed MSI below (`/S` for silent installs) |
 | `capscr_x.x.x_x64_en-US.msi` | the raw MSI, for Group Policy / scripted deployment |
 | `capscr_x.x.x_x64_en-US.msi.sig` | updater signature — keep alongside the MSI if running the updater manually |
+| `capscr_x.x.x_amd64.deb` | Debian / Ubuntu / Mint package |
+| `capscr-x.x.x-1.x86_64.rpm` | Fedora / openSUSE package |
+| `capscr_x.x.x_amd64.AppImage` | any distro — `chmod +x` and run; this is the build the Linux auto-updater tracks |
 | `latest.json` | auto-updater manifest, not for manual install |
 
-Windows 10 1903+ required. HDR capture goes through Windows.Graphics.Capture FP16, which is Windows-only — no macOS or Linux builds exist. The Cargo target hooks for those platforms are vestigial scaffolding from earlier prototyping.
+Windows 10 1903+ or a Linux desktop with webkit2gtk 4.1 (Ubuntu 22.04+, Debian 12+, Fedora 39+, or equivalents). On Linux, X11 sessions get the full feature set; recording MP4 wants `ffmpeg` on PATH (offered as a download otherwise), the OCR post-action wants `tesseract`, and file-clipboard on X11 wants `xclip` — the deb/rpm packages pull these in as recommends. Wayland-only sessions currently fall back for a few features (see the hub's per-task hotkey status).
 
 ## default hotkeys
 
@@ -54,7 +57,7 @@ Hold `Alt` while the selection overlay is up and click any pixel to copy its `#R
 
 ## configuration
 
-Settings live at `%APPDATA%\capscr\config.toml` and are editable in **hub → Settings**. Notable fields:
+Settings live at `%APPDATA%\capscr\config.toml` (`~/.config/capscr/config.toml` on Linux) and are editable in **hub → Settings**. Notable fields:
 
 ```toml
 [capture.hdr]
@@ -70,7 +73,7 @@ copy_url_to_clipboard = true
 host = "files.example.com"
 port = 21
 username = "user"
-password = "secret"           # migrated to a per-user DPAPI blob on first save
+password = "secret"           # migrated to the per-user credential vault on first save
 remote_dir = "/screenshots"
 public_url_template = "https://files.example.com/{filename}"
 
@@ -78,14 +81,14 @@ public_url_template = "https://files.example.com/{filename}"
 host = "files.example.com"
 port = 22
 username = "user"
-password = "secret"           # or set private_key_path; migrated to a per-user DPAPI blob on first save
+password = "secret"           # or set private_key_path; migrated to the per-user credential vault on first save
 remote_dir = "/screenshots"
 public_url_template = "https://files.example.com/{filename}"
 ```
 
 ## build from source
 
-Requirements: Rust 1.75+, Node 20+, MSVC build tools.
+Requirements: Rust 1.75+, Node 20+, and MSVC build tools (Windows) or the webkit2gtk stack (Linux).
 
 ```powershell
 git clone https://github.com/lintowe/capscr.git
@@ -93,6 +96,16 @@ cd capscr
 npm --prefix frontend install
 cargo install tauri-cli --version "^2" --locked
 cargo tauri build
+```
+
+On Debian/Ubuntu the Linux build needs these packages first:
+
+```sh
+sudo apt install build-essential curl wget file pkg-config libssl-dev \
+  libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev \
+  librsvg2-dev libxdo-dev libclang-dev libxcb1-dev libxcb-shm0-dev \
+  libxcb-randr0-dev libxrandr-dev libdbus-1-dev libpipewire-0.3-dev \
+  libwayland-dev libegl-dev libgbm-dev libdrm-dev
 ```
 
 For signed bundles set `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` before `cargo tauri build`. Generate a keypair with `cargo tauri signer generate -w ./signing/key.priv` and paste the public key into `tauri.conf.json` → `plugins.updater.pubkey`.
