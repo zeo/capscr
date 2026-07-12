@@ -232,10 +232,38 @@ fn code_to_vk(c: Code) -> Option<u32> {
     Some(vk)
 }
 
+// linux: the OS-level grabs registered by flush_to_hook, and the id→task map
+// the dispatch thread uses to route GlobalHotKeyEvents. X11 only — on wayland
+// registration fails and surfaces as a per-task "failed" status chip until
+// the GlobalShortcuts portal backend lands.
+#[cfg(target_os = "linux")]
+mod linux_grabs {
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+
+    pub static ID_TO_TASK: Mutex<Option<HashMap<u32, String>>> = Mutex::new(None);
+
+    pub fn set(map: HashMap<u32, String>) {
+        *ID_TO_TASK.lock().unwrap() = Some(map);
+    }
+
+    pub fn task_for(id: u32) -> Option<String> {
+        ID_TO_TASK.lock().unwrap().as_ref()?.get(&id).cloned()
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub use linux_grabs::task_for as task_for_hotkey_id;
+
 pub struct HotkeyManager {
     // task_id → (parsed hotkey, original string)
     registered: HashMap<String, (HotKey, String)>,
     registration_errors: Vec<HotkeyRegistrationError>,
+    #[cfg(target_os = "linux")]
+    os_manager: Option<global_hotkey::GlobalHotKeyManager>,
+    // hotkeys currently grabbed at the OS level, so a reload can ungrab them
+    #[cfg(target_os = "linux")]
+    os_registered: Vec<HotKey>,
 }
 
 #[derive(Debug, Clone)]
@@ -250,6 +278,10 @@ impl HotkeyManager {
         Ok(Self {
             registered: HashMap::new(),
             registration_errors: Vec::new(),
+            #[cfg(target_os = "linux")]
+            os_manager: None,
+            #[cfg(target_os = "linux")]
+            os_registered: Vec::new(),
         })
     }
 
@@ -267,6 +299,17 @@ impl HotkeyManager {
         if hotkey_to_hook_binding(&hotkey).is_none() {
             return Err(anyhow!(
                 "'{}' can't be bound on Windows — that key has no virtual-key mapping",
+                hotkey_str
+            ));
+        }
+        // mouse-button chords ride the LL mouse hook on windows; X11 key
+        // grabs can't cover them, and the Mouse4/Mouse5 aliases would bind
+        // the literal F23/F24 keys instead
+        #[cfg(target_os = "linux")]
+        if hotkey_str.to_uppercase().contains("MOUSE") || hotkey_str.to_uppercase().contains("XBUTTON")
+        {
+            return Err(anyhow!(
+                "'{}' — mouse-button hotkeys aren't supported on Linux",
                 hotkey_str
             ));
         }
@@ -322,7 +365,53 @@ impl HotkeyManager {
         ll_hook::set_bindings(table);
     }
 
-    #[cfg(not(windows))]
+    // linux: sync the OS-level X11 grabs with the registered set. failures
+    // move the task from `registered` into `registration_errors` so the hub
+    // shows an honest per-task status instead of a silently dead binding.
+    #[cfg(target_os = "linux")]
+    pub fn flush_to_hook(&mut self) {
+        if self.os_manager.is_none() {
+            match global_hotkey::GlobalHotKeyManager::new() {
+                Ok(m) => self.os_manager = Some(m),
+                Err(e) => {
+                    for (task_id, (_, hotkey_str)) in self.registered.drain() {
+                        self.registration_errors.push(HotkeyRegistrationError {
+                            task_id,
+                            hotkey: hotkey_str,
+                            reason: format!("global hotkeys unavailable: {e}"),
+                        });
+                    }
+                    return;
+                }
+            }
+        }
+        let manager = self.os_manager.as_ref().unwrap();
+        for hk in self.os_registered.drain(..) {
+            let _ = manager.unregister(hk);
+        }
+        let mut id_map = HashMap::new();
+        let mut failed: Vec<(String, String, String)> = Vec::new();
+        for (task_id, (hotkey, hotkey_str)) in &self.registered {
+            match manager.register(*hotkey) {
+                Ok(()) => {
+                    self.os_registered.push(*hotkey);
+                    id_map.insert(hotkey.id(), task_id.clone());
+                }
+                Err(e) => failed.push((task_id.clone(), hotkey_str.clone(), e.to_string())),
+            }
+        }
+        for (task_id, hotkey, reason) in failed {
+            self.registered.remove(&task_id);
+            self.registration_errors.push(HotkeyRegistrationError {
+                task_id,
+                hotkey,
+                reason,
+            });
+        }
+        linux_grabs::set(id_map);
+    }
+
+    #[cfg(not(any(windows, target_os = "linux")))]
     pub fn flush_to_hook(&self) {}
 }
 
