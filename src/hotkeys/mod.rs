@@ -370,6 +370,26 @@ impl HotkeyManager {
     // shows an honest per-task status instead of a silently dead binding.
     #[cfg(target_os = "linux")]
     pub fn flush_to_hook(&mut self) {
+        // global-hotkey's X11 backend dereferences a null display whenever
+        // XOpenDisplay fails (segfaults the process), so never construct it
+        // unless an X server actually answers — DISPLAY being set is not
+        // enough, it can point at a dead socket. wayland-native hotkeys need
+        // the GlobalShortcuts portal, which isn't wired up yet.
+        let x11_reachable =
+            std::env::var("DISPLAY").is_ok() && x11rb::connect(None).is_ok();
+        if !x11_reachable {
+            for (task_id, (_, hotkey_str)) in self.registered.drain() {
+                self.registration_errors.push(HotkeyRegistrationError {
+                    task_id,
+                    hotkey: hotkey_str,
+                    reason: "no X11 display — global hotkeys aren't available on \
+                             wayland-only sessions yet; use the tray menu or \
+                             capscr --jump instead"
+                        .into(),
+                });
+            }
+            return;
+        }
         if self.os_manager.is_none() {
             match global_hotkey::GlobalHotKeyManager::new() {
                 Ok(m) => self.os_manager = Some(m),

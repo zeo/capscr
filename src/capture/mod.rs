@@ -9,6 +9,8 @@ mod hdr;
 mod hdr_png;
 mod region;
 mod screen;
+#[cfg(target_os = "linux")]
+mod portal;
 mod tonemapping;
 #[cfg(windows)]
 mod wgc;
@@ -346,8 +348,101 @@ pub fn list_monitors() -> Result<Vec<MonitorInfo>> {
             return Ok(monitors);
         }
     }
-    let screens = xcap::Monitor::all()?;
-    screens.iter().map(monitor_info).collect()
+    match xcap::Monitor::all() {
+        Ok(screens) => screens.iter().map(monitor_info).collect(),
+        // xcap enumerates through XCB even on wayland; without XWayland the
+        // compositor's own output list is the source of truth
+        #[cfg(target_os = "linux")]
+        Err(e) if portal::is_wayland_session() => {
+            tracing::debug!("xcap monitor enumeration failed ({e}); using wayland outputs");
+            wayland_list_monitors()
+        }
+        Err(e) => Err(e.into()),
+    }
+}
+
+// wayland output enumeration via wlroots protocols. ids live in their own
+// namespace (counting down from u32::MAX) so they can never collide with
+// xcap's ids; capture_one_monitor routes them to the wayland grab path.
+#[cfg(target_os = "linux")]
+fn wayland_list_monitors() -> Result<Vec<MonitorInfo>> {
+    let conn = libwayshot_xcap::WayshotConnection::new()?;
+    let outputs = conn.get_all_outputs();
+    if outputs.is_empty() {
+        return Err(anyhow::anyhow!("compositor reported no outputs"));
+    }
+    Ok(outputs
+        .iter()
+        .enumerate()
+        .map(|(i, o)| MonitorInfo {
+            id: u32::MAX - i as u32,
+            name: o.name.clone(),
+            x: o.logical_region.inner.position.x,
+            y: o.logical_region.inner.position.y,
+            width: o.logical_region.inner.size.width,
+            height: o.logical_region.inner.size.height,
+            is_primary: i == 0,
+        })
+        .collect())
+}
+
+// grab one monitor on wayland: wlroots screencopy first (fast and silent),
+// then the desktop portal (universal, may prompt once)
+#[cfg(target_os = "linux")]
+fn wayland_grab_monitor(monitor: &MonitorInfo) -> Result<RgbaImage> {
+    match wlroots_grab(monitor) {
+        Ok(img) => Ok(img),
+        Err(e) => {
+            tracing::warn!("wlroots screencopy failed ({e:#}); using the screenshot portal");
+            portal_grab_monitor(monitor)
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn wlroots_grab(monitor: &MonitorInfo) -> Result<RgbaImage> {
+    use libwayshot_xcap::region::{LogicalRegion, Position, Region, Size};
+    let conn = libwayshot_xcap::WayshotConnection::new()?;
+    let region = LogicalRegion {
+        inner: Region {
+            position: Position {
+                x: monitor.x,
+                y: monitor.y,
+            },
+            size: Size {
+                width: monitor.width,
+                height: monitor.height,
+            },
+        },
+    };
+    // libwayshot is on image 0.24; rewrap the raw bytes into our image 0.25
+    let img = conn.screenshot(region, false)?;
+    let rgba = img.to_rgba8();
+    RgbaImage::from_raw(rgba.width(), rgba.height(), rgba.into_vec())
+        .ok_or_else(|| anyhow::anyhow!("screencopy buffer size mismatch"))
+}
+
+// portal screenshots cover the whole desktop; crop this monitor's rect out
+#[cfg(target_os = "linux")]
+fn portal_grab_monitor(monitor: &MonitorInfo) -> Result<RgbaImage> {
+    let full = portal::portal_screenshot()?;
+    let monitors = list_monitors().unwrap_or_default();
+    let min_x = monitors.iter().map(|m| m.x).min().unwrap_or(0);
+    let min_y = monitors.iter().map(|m| m.y).min().unwrap_or(0);
+    let img_x = (monitor.x - min_x).max(0) as u32;
+    let img_y = (monitor.y - min_y).max(0) as u32;
+    let w = monitor.width.min(full.width().saturating_sub(img_x));
+    let h = monitor.height.min(full.height().saturating_sub(img_y));
+    if w == 0 || h == 0 {
+        return Err(anyhow::anyhow!(
+            "portal screenshot ({}x{}) doesn't cover monitor at {},{}",
+            full.width(),
+            full.height(),
+            monitor.x,
+            monitor.y,
+        ));
+    }
+    Ok(image::imageops::crop_imm(&full, img_x, img_y, w, h).to_image())
 }
 
 // run a 4-byte-per-pixel conversion from src into dst, splitting the work
@@ -510,26 +605,37 @@ pub fn capture_one_monitor(monitor: &MonitorInfo) -> Result<RgbaImage> {
 // silently producing an empty capture.
 #[cfg(not(windows))]
 pub fn capture_one_monitor(monitor: &MonitorInfo) -> Result<RgbaImage> {
-    let screen = find_xcap_monitor(monitor.id)?;
-    let raw = match screen.capture_image() {
-        Ok(img) => img,
-        #[cfg(target_os = "linux")]
-        Err(e) => {
-            // some X servers size the root drawable lazily (WSLg's RDP
-            // backend), which makes xcap's full-monitor GetImage fail with a
-            // Match error; grabbing the monitor rect straight off the root,
-            // clamped to its real bounds, still returns the visible pixels
-            tracing::warn!("xcap monitor capture failed ({e}); using root grab");
-            X11RegionGrabber::new()?.grab(
-                monitor.x,
-                monitor.y,
-                monitor.width,
-                monitor.height,
-            )?
-        }
-        #[cfg(not(target_os = "linux"))]
-        Err(e) => return Err(e.into()),
+    #[cfg(target_os = "linux")]
+    let raw = match find_xcap_monitor(monitor.id) {
+        Ok(screen) => match screen.capture_image() {
+            Ok(img) => img,
+            Err(e) if portal::is_wayland_session() => {
+                tracing::warn!("xcap wayland capture failed ({e}); using compositor grab");
+                wayland_grab_monitor(monitor)?
+            }
+            Err(e) => {
+                // some X servers size the root drawable lazily (WSLg's RDP
+                // backend), which makes xcap's full-monitor GetImage fail
+                // with a Match error; grabbing the monitor rect straight off
+                // the root, clamped to its real bounds, still returns the
+                // visible pixels
+                tracing::warn!("xcap monitor capture failed ({e}); using root grab");
+                X11RegionGrabber::new()?.grab(
+                    monitor.x,
+                    monitor.y,
+                    monitor.width,
+                    monitor.height,
+                )?
+            }
+        },
+        // monitors enumerated through the wayland fallback have no xcap
+        // counterpart at all
+        Err(_) if portal::is_wayland_session() => wayland_grab_monitor(monitor)?,
+        Err(e) => return Err(e),
     };
+    #[cfg(not(any(windows, target_os = "linux")))]
+    let raw = find_xcap_monitor(monitor.id)?.capture_image()?;
+
     let mut img = orient_captured_image(raw, monitor.width, monitor.height, monitor.x, monitor.y);
     ensure_opaque_if_fully_transparent(&mut img);
     Ok(img)
@@ -558,8 +664,12 @@ mod tests {
     fn capture_one_monitor_matches_reported_dimensions() {
         // no-ops headless (no display -> list_monitors errs); with a display it
         // proves the per-monitor grab returns pixels at the reported size
-        let Ok(monitors) = list_monitors() else {
-            return;
+        let monitors = match list_monitors() {
+            Ok(m) => m,
+            Err(e) => {
+                eprintln!("no display for capture smoke test: {e:#}");
+                return;
+            }
         };
         let Some(m) = monitors.first() else { return };
         let img = match capture_one_monitor(m) {
@@ -570,6 +680,7 @@ mod tests {
                 return;
             }
         };
+        eprintln!("captured {}x{} from monitor {}", img.width(), img.height(), m.id);
         assert_eq!((img.width(), img.height()), (m.width, m.height));
     }
 

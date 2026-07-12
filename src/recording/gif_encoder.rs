@@ -275,9 +275,11 @@ impl GifRecorder {
 
             // one persistent X11 connection per recording: GetImage of just
             // the region keeps frame cost in the low milliseconds, where the
-            // generic whole-monitor-then-crop path can cost whole seconds
+            // generic whole-monitor-then-crop path can cost whole seconds.
+            // never used under wayland — the XWayland root only contains X
+            // clients, so grabbing it records the wrong pixels
             #[cfg(target_os = "linux")]
-            let x11_grabber = if region.is_some() {
+            let x11_grabber = if region.is_some() && std::env::var("WAYLAND_DISPLAY").is_err() {
                 match crate::capture::X11RegionGrabber::new() {
                     Ok(g) => Some(g),
                     Err(e) => {
