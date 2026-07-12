@@ -14,6 +14,7 @@ import { Tasks } from "./views/Tasks";
 import { config, refetchConfig, mutateConfig } from "./store";
 import { HotkeyInput } from "./components/HotkeyInput";
 import { PinView } from "./views/PinView";
+import { Selector } from "./views/Selector";
 
 // lazy-loaded so the hub bundle doesn't ship the full canvas editor and the
 // editor window doesn't ship the hub. Editor is a named export, so adapt it to
@@ -62,6 +63,9 @@ export function App() {
   }
   if (label.startsWith("pin_")) {
     return <PinView label={label} />;
+  }
+  if (label === "selector") {
+    return <Selector />;
   }
   return <Hub />;
 }

@@ -339,7 +339,6 @@ fn run_capture_pipeline_inner(
     // kick window enumeration onto a background thread so it overlaps the
     // freeze-frame capture below instead of running serially on the selector's
     // critical path. only the selector-backed modes consume the result.
-    #[cfg(windows)]
     if needs_selector {
         UnifiedSelector::prewarm_window_list();
     }
@@ -3069,7 +3068,9 @@ pub fn start_hotkey_capture() -> Result<(), String> {
 #[tauri::command]
 #[cfg(not(windows))]
 pub fn start_hotkey_capture() -> Result<(), String> {
-    Err("hotkey capture is windows-only".into())
+    // no global hook to arm here — the hub window has focus while binding, so
+    // HotkeyInput's browser-side keydown capture records the chord itself
+    Ok(())
 }
 
 #[tauri::command]

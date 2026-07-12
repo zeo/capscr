@@ -1576,7 +1576,7 @@ mod windows_impl {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "linux")))]
 mod fallback_impl {
     use super::*;
 
@@ -1593,7 +1593,12 @@ impl UnifiedSelector {
         windows_impl::select(frozen_frame)
     }
 
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
+    pub fn select(frozen_frame: Option<std::sync::Arc<image::RgbaImage>>) -> SelectionResult {
+        super::linux::select(frozen_frame)
+    }
+
+    #[cfg(not(any(windows, target_os = "linux")))]
     pub fn select(frozen_frame: Option<std::sync::Arc<image::RgbaImage>>) -> SelectionResult {
         fallback_impl::select(frozen_frame)
     }
@@ -1603,7 +1608,12 @@ impl UnifiedSelector {
         windows_impl::active_selector_active()
     }
 
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
+    pub fn active_selector_active() -> bool {
+        super::linux::active_selector_active()
+    }
+
+    #[cfg(not(any(windows, target_os = "linux")))]
     pub fn active_selector_active() -> bool {
         false
     }
@@ -1613,7 +1623,12 @@ impl UnifiedSelector {
         windows_impl::cancel_active_selection();
     }
 
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
+    pub fn cancel_active_selection() {
+        super::linux::cancel_active_selection();
+    }
+
+    #[cfg(not(any(windows, target_os = "linux")))]
     pub fn cancel_active_selection() {}
 
     /// kick off window enumeration on a background thread ahead of select() so
@@ -1624,6 +1639,11 @@ impl UnifiedSelector {
         windows_impl::prewarm_window_list();
     }
 
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
+    pub fn prewarm_window_list() {
+        super::linux::prewarm_window_list();
+    }
+
+    #[cfg(not(any(windows, target_os = "linux")))]
     pub fn prewarm_window_list() {}
 }

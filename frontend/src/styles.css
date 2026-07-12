@@ -2121,3 +2121,12 @@ kbd {
   color: var(--text-1);
   background: rgba(255, 255, 255, 0.1);
 }
+
+/* linux selection overlay: the canvas is the whole window */
+.selector-canvas {
+  display: block;
+  width: 100vw;
+  height: 100vh;
+  cursor: crosshair;
+}
+

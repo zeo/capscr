@@ -138,6 +138,10 @@ fn main() {
         )
         .manage(app_state)
         .setup(move |app| {
+            // the linux selector overlay builds its webview through a stored
+            // AppHandle; register it before any capture can fire
+            #[cfg(target_os = "linux")]
+            overlay::linux::init(&app.handle().clone());
             // load plugins on a background thread so the cranelift JIT compile
             // of each enabled WASM plugin doesn't delay the tray or first
             // capture. dispatch sees zero plugins until the load swaps them in.
@@ -248,6 +252,12 @@ fn main() {
             commands::run_ocr,
             commands::pin_image,
             commands::get_pinned_image_path,
+            #[cfg(target_os = "linux")]
+            overlay::linux::selector_context,
+            #[cfg(target_os = "linux")]
+            overlay::linux::selector_frame,
+            #[cfg(target_os = "linux")]
+            overlay::linux::selector_finish,
         ])
         .build(tauri::generate_context!())
         .expect("error while building capscr")
@@ -754,6 +764,46 @@ fn spawn_hotkey_thread(
                             let _ = app_dispatch.emit("capscr://hotkey-captured", payload);
                         }
                     }
+                }
+            })
+            .ok();
+    }
+
+    // linux dispatcher: global-hotkey (X11 grabs) delivers events on a static
+    // channel; route pressed events to their task with the same auto-repeat
+    // dedupe the windows LL-hook dispatcher applies
+    #[cfg(target_os = "linux")]
+    {
+        use std::sync::atomic::Ordering;
+        let app_dispatch = app.clone();
+        std::thread::Builder::new()
+            .name("capscr-hotkey-dispatch".into())
+            .spawn(move || {
+                use global_hotkey::{GlobalHotKeyEvent, HotKeyState};
+                let rx = GlobalHotKeyEvent::receiver();
+                let mut last_fire: std::collections::HashMap<String, std::time::Instant> =
+                    std::collections::HashMap::new();
+                while let Ok(ev) = rx.recv() {
+                    if ev.state() != HotKeyState::Pressed {
+                        continue;
+                    }
+                    let Some(task_id) = hotkeys::task_for_hotkey_id(ev.id()) else {
+                        continue;
+                    };
+                    let st = app_dispatch.state::<state::AppState>();
+                    if st.hotkeys_disabled.load(Ordering::SeqCst) {
+                        continue;
+                    }
+                    let now = std::time::Instant::now();
+                    let allow = match last_fire.get(&task_id) {
+                        None => true,
+                        Some(t) => now.duration_since(*t).as_millis() > 250,
+                    };
+                    if !allow {
+                        continue;
+                    }
+                    last_fire.insert(task_id.clone(), now);
+                    commands::trigger_task(&app_dispatch, &task_id);
                 }
             })
             .ok();
