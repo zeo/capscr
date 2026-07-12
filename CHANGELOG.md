@@ -2,7 +2,19 @@
 
 format follows [keep-a-changelog](https://keepachangelog.com/en/1.1.0/) loosely. dates are release-tag dates.
 
-## [0.5.44] — 2026-07-11
+## [unreleased]
+
+### added
+- **Linux support.** capscr now runs on Linux (X11 and Wayland), shipped as deb, rpm, and AppImage packages, with the auto-updater tracking the AppImage. what carries over:
+  - the whole still-capture pipeline: the freeze-frame selector (region drag, window pick, alt+click color picker, shift aspect snap, ctrl fine-tune, loupe), every capture mode, history, uploads, the editor, and pinning
+  - region GIF and MP4 recording with the same wall-clock playback guarantees as Windows; frames come off a persistent X11 connection at millisecond cost, and system audio records the PulseAudio/PipeWire monitor of the default output
+  - global hotkeys on X11 sessions. Wayland sessions mark their bindings with a clear per-task status until the GlobalShortcuts portal lands; the tray menu and `capscr --jump` work everywhere
+  - Wayland stills work on wlroots compositors through screencopy and on other desktops through the screenshot portal, including sessions running without XWayland
+  - upload credentials live in the system keyring (freedesktop Secret Service) instead of on disk; OCR runs through tesseract; copying a capture as a file uses text/uri-list; capture and upload cues play through the system audio stack
+- linux CI: the test suite and clippy now run on ubuntu alongside the windows suite, with the capture path exercised against a real X server
+
+### fixed
+- when fast GDI capture fails on Windows, the xcap fallback now resolves the monitor by position instead of an id that the two enumerators never shared
 
 ### added
 - a **copy detected text (OCR)** post-action: bind it to a still-capture task and capscr runs the built-in Windows OCR on the shot and drops the recognized text straight onto your clipboard — no file saved, no editor round-trip. (OCR was already reachable from the history grid; this makes it a one-step capture action.)
