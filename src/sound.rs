@@ -1,6 +1,6 @@
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 const SCREENSHOT_WAV: &[u8] = include_bytes!("../assets/screenshot.wav");
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 const UPLOAD_WAV: &[u8] = include_bytes!("../assets/upload.wav");
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -21,6 +21,10 @@ impl Sound {
         {
             engine::play(self);
         }
+        #[cfg(target_os = "linux")]
+        {
+            linux_player::play(self);
+        }
     }
 }
 
@@ -33,6 +37,85 @@ pub fn warm_audio_subsystem() {
     #[cfg(windows)]
     {
         engine::ensure_initialized();
+    }
+    #[cfg(target_os = "linux")]
+    {
+        linux_player::warm();
+    }
+}
+
+// linux cue playback: the bundled wavs are written once into the app cache
+// dir, then played through the first CLI player that works — paplay covers
+// pulseaudio and pipewire-pulse, aplay is the bare-alsa fallback, ffplay the
+// ffmpeg-only case. the working player is remembered after the first probe.
+#[cfg(target_os = "linux")]
+mod linux_player {
+    use super::Sound;
+    use std::path::PathBuf;
+    use std::sync::OnceLock;
+
+    static CUE_DIR: OnceLock<Option<PathBuf>> = OnceLock::new();
+    static PLAYER: OnceLock<Option<&'static str>> = OnceLock::new();
+
+    fn cue_path(sound: Sound) -> Option<PathBuf> {
+        let dir = CUE_DIR
+            .get_or_init(|| {
+                let dirs = directories::ProjectDirs::from("com", "capscr", "capscr")?;
+                let dir = dirs.cache_dir().join("cues");
+                std::fs::create_dir_all(&dir).ok()?;
+                Some(dir)
+            })
+            .clone()?;
+        let (name, bytes) = match sound {
+            Sound::Screenshot => ("screenshot.wav", super::SCREENSHOT_WAV),
+            Sound::Upload => ("upload.wav", super::UPLOAD_WAV),
+        };
+        let path = dir.join(name);
+        let current_len = std::fs::metadata(&path).map(|m| m.len() as usize).ok();
+        if current_len != Some(bytes.len()) {
+            std::fs::write(&path, bytes).ok()?;
+        }
+        Some(path)
+    }
+
+    fn player() -> Option<&'static str> {
+        *PLAYER.get_or_init(|| {
+            for candidate in ["paplay", "pw-play", "aplay", "ffplay"] {
+                let probe = std::process::Command::new(candidate)
+                    .arg("--version")
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .status();
+                if probe.is_ok() {
+                    return Some(candidate);
+                }
+            }
+            tracing::info!("no audio cue player found (tried paplay/pw-play/aplay/ffplay)");
+            None
+        })
+    }
+
+    pub fn warm() {
+        let _ = cue_path(Sound::Screenshot);
+        let _ = cue_path(Sound::Upload);
+        let _ = player();
+    }
+
+    pub fn play(sound: Sound) {
+        std::thread::spawn(move || {
+            let (Some(player), Some(path)) = (player(), cue_path(sound)) else {
+                return;
+            };
+            let mut cmd = std::process::Command::new(player);
+            if player == "ffplay" {
+                cmd.args(["-nodisp", "-autoexit", "-loglevel", "quiet"]);
+            }
+            let _ = cmd
+                .arg(&path)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status();
+        });
     }
 }
 
