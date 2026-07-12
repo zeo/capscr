@@ -54,6 +54,10 @@ pub fn init(app: &AppHandle) {
     let _ = APP.set(app.clone());
 }
 
+pub(crate) fn app_handle() -> Option<&'static AppHandle> {
+    APP.get()
+}
+
 fn enumerate_windows() -> Vec<WindowRect> {
     let own_pid = std::process::id();
     let Ok(windows) = xcap::Window::all() else {
@@ -147,9 +151,18 @@ pub fn select(frozen_frame: Option<Arc<RgbaImage>>) -> SelectionResult {
         .take()
         .unwrap_or_else(enumerate_windows);
 
+    // recording region-picks call select(None). the win32 selector shows the
+    // live desktop through a semi-transparent layered window there; X11 can't
+    // rely on a compositor for that, so grab our own freeze-frame backdrop
+    let frame = frozen_frame.or_else(|| {
+        crate::capture::ScreenCapture::all_monitors()
+            .ok()
+            .map(Arc::new)
+    });
+
     let (tx, rx): (Sender<SelectionResult>, Receiver<SelectionResult>) = channel();
     *ACTIVE.lock().unwrap() = Some(ActiveSelection {
-        frame: frozen_frame,
+        frame,
         origin: (min_x, min_y),
         windows,
         tx,

@@ -15,6 +15,7 @@ import { config, refetchConfig, mutateConfig } from "./store";
 import { HotkeyInput } from "./components/HotkeyInput";
 import { PinView } from "./views/PinView";
 import { Selector } from "./views/Selector";
+import { RecBar } from "./views/RecBar";
 
 // lazy-loaded so the hub bundle doesn't ship the full canvas editor and the
 // editor window doesn't ship the hub. Editor is a named export, so adapt it to
@@ -66,6 +67,9 @@ export function App() {
   }
   if (label === "selector") {
     return <Selector />;
+  }
+  if (label === "recbar") {
+    return <RecBar />;
   }
   return <Hub />;
 }

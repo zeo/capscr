@@ -273,6 +273,22 @@ impl GifRecorder {
                 TimerGuard
             };
 
+            // one persistent X11 connection per recording: GetImage of just
+            // the region keeps frame cost in the low milliseconds, where the
+            // generic whole-monitor-then-crop path can cost whole seconds
+            #[cfg(target_os = "linux")]
+            let x11_grabber = if region.is_some() {
+                match crate::capture::X11RegionGrabber::new() {
+                    Ok(g) => Some(g),
+                    Err(e) => {
+                        tracing::warn!("x11 region grabber unavailable ({e:#}); using generic path");
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+
             let min_frame_duration = Duration::from_millis(MIN_FRAME_INTERVAL_MS);
             let frame_duration = Duration::from_secs_f64(1.0 / fps as f64).max(min_frame_duration);
             let start_time = Instant::now();
@@ -292,43 +308,62 @@ impl GifRecorder {
                 let frame_start = Instant::now();
 
                 let capture_result = if let Some(rect) = region {
-                    let single_monitor_capture = if let Some(ref m) = best_monitor {
-                        crate::capture::capture_one_monitor(m).map(|img| {
-                            let local_x = (rect.x - m.x).max(0) as u32;
-                            let local_y = (rect.y - m.y).max(0) as u32;
-                            let max_w = img.width().saturating_sub(local_x);
-                            let max_h = img.height().saturating_sub(local_y);
-                            let w = rect.width.min(max_w).min(MAX_GIF_DIMENSION);
-                            let h = rect.height.min(max_h).min(MAX_GIF_DIMENSION);
-                            (img, local_x, local_y, w, h)
-                        })
-                    } else {
-                        Err(anyhow!("No monitor matches the region"))
-                    };
+                    // fast path: direct region grab from the persistent X11
+                    // connection; any failure falls through to the generic path
+                    #[cfg(target_os = "linux")]
+                    let direct = x11_grabber.as_ref().and_then(|g| {
+                        g.grab(
+                            rect.x,
+                            rect.y,
+                            rect.width.min(MAX_GIF_DIMENSION),
+                            rect.height.min(MAX_GIF_DIMENSION),
+                        )
+                        .ok()
+                    });
+                    #[cfg(not(target_os = "linux"))]
+                    let direct: Option<RgbaImage> = None;
 
-                    match single_monitor_capture {
-                        Ok((img, local_x, local_y, w, h)) => {
-                            if w == 0 || h == 0 {
-                                Err(anyhow!("Invalid region"))
-                            } else {
-                                Ok(image::imageops::crop_imm(&img, local_x, local_y, w, h)
-                                    .to_image())
-                            }
-                        }
-                        Err(_) => {
-                            let full = ScreenCapture::all_monitors();
-                            full.and_then(|img| {
-                                let x = rect.x.max(0) as u32;
-                                let y = rect.y.max(0) as u32;
-                                let max_w = img.width().saturating_sub(x);
-                                let max_h = img.height().saturating_sub(y);
+                    if let Some(img) = direct {
+                        Ok(img)
+                    } else {
+                        let single_monitor_capture = if let Some(ref m) = best_monitor {
+                            crate::capture::capture_one_monitor(m).map(|img| {
+                                let local_x = (rect.x - m.x).max(0) as u32;
+                                let local_y = (rect.y - m.y).max(0) as u32;
+                                let max_w = img.width().saturating_sub(local_x);
+                                let max_h = img.height().saturating_sub(local_y);
                                 let w = rect.width.min(max_w).min(MAX_GIF_DIMENSION);
                                 let h = rect.height.min(max_h).min(MAX_GIF_DIMENSION);
-                                if w == 0 || h == 0 {
-                                    return Err(anyhow!("Invalid region"));
-                                }
-                                Ok(image::imageops::crop_imm(&img, x, y, w, h).to_image())
+                                (img, local_x, local_y, w, h)
                             })
+                        } else {
+                            Err(anyhow!("No monitor matches the region"))
+                        };
+
+                        match single_monitor_capture {
+                            Ok((img, local_x, local_y, w, h)) => {
+                                if w == 0 || h == 0 {
+                                    Err(anyhow!("Invalid region"))
+                                } else {
+                                    Ok(image::imageops::crop_imm(&img, local_x, local_y, w, h)
+                                        .to_image())
+                                }
+                            }
+                            Err(_) => {
+                                let full = ScreenCapture::all_monitors();
+                                full.and_then(|img| {
+                                    let x = rect.x.max(0) as u32;
+                                    let y = rect.y.max(0) as u32;
+                                    let max_w = img.width().saturating_sub(x);
+                                    let max_h = img.height().saturating_sub(y);
+                                    let w = rect.width.min(max_w).min(MAX_GIF_DIMENSION);
+                                    let h = rect.height.min(max_h).min(MAX_GIF_DIMENSION);
+                                    if w == 0 || h == 0 {
+                                        return Err(anyhow!("Invalid region"));
+                                    }
+                                    Ok(image::imageops::crop_imm(&img, x, y, w, h).to_image())
+                                })
+                            }
                         }
                     }
                 } else {
@@ -350,6 +385,12 @@ impl GifRecorder {
                         }
                     })
                 };
+
+                tracing::debug!(
+                    "recording frame capture took {}ms (ok={})",
+                    frame_start.elapsed().as_millis(),
+                    capture_result.is_ok(),
+                );
 
                 if let Ok(mut image) = capture_result {
                     if image.width() <= MAX_GIF_DIMENSION && image.height() <= MAX_GIF_DIMENSION {
@@ -903,12 +944,60 @@ pub fn record_loopback_audio(
     Ok(())
 }
 
-#[cfg(not(windows))]
-pub fn record_loopback_audio(
-    _wav_path: &Path,
-    _stop_rx: Receiver<()>,
-) -> Result<()> {
-    Err(anyhow!("WASAPI loopback audio is only supported on Windows"))
+// linux: pulseaudio (or pipewire-pulse) exposes the default output's monitor
+// as @DEFAULT_MONITOR@, and monitor sources deliver continuous silence while
+// nothing plays — the wall-clock alignment the wasapi path zero-fills for
+// comes free. a second ffmpeg child records it straight to the wav.
+#[cfg(target_os = "linux")]
+pub fn record_loopback_audio(wav_path: &Path, stop_rx: Receiver<()>) -> Result<()> {
+    use std::io::Write;
+
+    let mut child = ffmpeg_command()
+        .args([
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "pulse",
+            "-i",
+            "@DEFAULT_MONITOR@",
+            "-ac",
+            "2",
+            "-ar",
+            "48000",
+            "-c:a",
+            "pcm_s16le",
+            "-y",
+        ])
+        .arg(wav_path)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|e| anyhow!("audio ffmpeg spawn failed: {e}"))?;
+
+    // block until the recording stops (signal or sender drop), then ask
+    // ffmpeg to finish cleanly so the wav header gets finalized
+    let _ = stop_rx.recv();
+    if let Some(stdin) = child.stdin.as_mut() {
+        let _ = stdin.write_all(b"q");
+        let _ = stdin.flush();
+    }
+    // bounded wait so a wedged ffmpeg can't outlive the recording
+    for _ in 0..40 {
+        if let Ok(Some(_)) = child.try_wait() {
+            return Ok(());
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    Ok(())
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
+pub fn record_loopback_audio(_wav_path: &Path, _stop_rx: Receiver<()>) -> Result<()> {
+    Err(anyhow!("loopback audio is not supported on this platform"))
 }
 
 impl Default for GifRecorder {

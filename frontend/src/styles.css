@@ -2130,3 +2130,40 @@ kbd {
   cursor: crosshair;
 }
 
+
+/* linux recording control bar */
+.recbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 100vh;
+  padding: 0 10px;
+  background: var(--ink-0);
+  border: 1px solid var(--rule-2);
+}
+.recbar-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #c0392b;
+  animation: recbar-pulse 1.2s ease-in-out infinite;
+}
+@keyframes recbar-pulse {
+  50% { opacity: 0.35; }
+}
+.recbar-time {
+  font-variant-numeric: tabular-nums;
+  color: var(--text-2);
+  flex: 1;
+}
+.recbar-stop {
+  background: var(--ink-4);
+  color: var(--text-2);
+  border: 1px solid var(--rule-2);
+  padding: 3px 10px;
+  cursor: pointer;
+}
+.recbar-stop:hover {
+  background: var(--ink-5);
+}
+

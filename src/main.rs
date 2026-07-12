@@ -258,6 +258,8 @@ fn main() {
             overlay::linux::selector_frame,
             #[cfg(target_os = "linux")]
             overlay::linux::selector_finish,
+            #[cfg(target_os = "linux")]
+            overlay::recording::linux_impl::recbar_stop,
         ])
         .build(tauri::generate_context!())
         .expect("error while building capscr")

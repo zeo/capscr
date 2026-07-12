@@ -13,6 +13,8 @@ mod tonemapping;
 #[cfg(windows)]
 mod wgc;
 mod window;
+#[cfg(target_os = "linux")]
+mod x11_grab;
 
 pub use cursor::{capture_cursor_shot, composite_cursor_shot, composite_system_cursor};
 #[cfg(not(windows))]
@@ -29,6 +31,8 @@ pub use tonemapping::TonemapParams;
 #[cfg(windows)]
 pub use wgc::capture_at_point as wgc_capture_at_point;
 pub use window::WindowCapture;
+#[cfg(target_os = "linux")]
+pub use x11_grab::X11RegionGrabber;
 
 use std::sync::OnceLock;
 

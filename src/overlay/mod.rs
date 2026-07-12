@@ -2,7 +2,7 @@
 
 #[cfg(target_os = "linux")]
 pub mod linux;
-mod recording;
+pub mod recording;
 mod unified;
 
 pub use recording::RecordingOverlay;

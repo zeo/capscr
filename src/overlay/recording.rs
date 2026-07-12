@@ -526,7 +526,93 @@ mod windows_impl {
     }
 }
 
-#[cfg(not(windows))]
+// linux: a small always-on-top webview (label "recbar") with the elapsed
+// clock and stop button, placed OUTSIDE the recorded region — there is no
+// SetWindowDisplayAffinity equivalent, so a bar inside the region would be
+// captured into the recording.
+#[cfg(target_os = "linux")]
+pub mod linux_impl {
+    use super::*;
+    use std::sync::Mutex;
+    use tauri::Manager;
+
+    const LABEL: &str = "recbar";
+    const BAR_W: f64 = 148.0;
+    const BAR_H: f64 = 36.0;
+
+    static ON_STOP: Mutex<Option<Box<dyn Fn() + Send>>> = Mutex::new(None);
+
+    pub fn start(region: Rectangle, _max_secs: u64, on_stop: Box<dyn Fn() + Send>) {
+        let Some(app) = crate::overlay::linux::app_handle() else {
+            return;
+        };
+        *ON_STOP.lock().unwrap() = Some(on_stop);
+
+        // below the region's bottom-right corner; above it when there's no
+        // room; last resort tucks it inside (it will appear in the recording)
+        let monitors = crate::capture::list_monitors().unwrap_or_default();
+        let max_y = monitors
+            .iter()
+            .map(|m| m.y + m.height as i32)
+            .max()
+            .unwrap_or(region.y + region.height as i32);
+        let x = (region.x + region.width as i32 - BAR_W as i32).max(region.x) as f64;
+        let below = region.y + region.height as i32 + 8;
+        let y = if below + BAR_H as i32 <= max_y {
+            below as f64
+        } else if region.y - BAR_H as i32 - 8 >= 0 {
+            (region.y - BAR_H as i32 - 8) as f64
+        } else {
+            (region.y + region.height as i32 - BAR_H as i32 - 8) as f64
+        };
+
+        let app2 = app.clone();
+        let _ = app.run_on_main_thread(move || {
+            if let Some(stale) = app2.get_webview_window(LABEL) {
+                let _ = stale.destroy();
+            }
+            let url = tauri::WebviewUrl::App("index.html".into());
+            let built = tauri::WebviewWindowBuilder::new(&app2, LABEL, url)
+                .title("capscr recording")
+                .decorations(false)
+                .resizable(false)
+                .always_on_top(true)
+                .skip_taskbar(true)
+                .position(x, y)
+                .inner_size(BAR_W, BAR_H)
+                .min_inner_size(BAR_W, BAR_H)
+                .max_inner_size(BAR_W, BAR_H)
+                .build();
+            if let Err(e) = built {
+                tracing::warn!("recording bar window failed: {e}");
+            }
+        });
+    }
+
+    pub fn stop() {
+        *ON_STOP.lock().unwrap() = None;
+        let Some(app) = crate::overlay::linux::app_handle() else {
+            return;
+        };
+        let app2 = app.clone();
+        let _ = app.run_on_main_thread(move || {
+            if let Some(w) = app2.get_webview_window(LABEL) {
+                let _ = w.destroy();
+            }
+        });
+    }
+
+    // stop-button click from the bar UI
+    #[tauri::command]
+    pub fn recbar_stop() {
+        let cb = ON_STOP.lock().unwrap().take();
+        if let Some(cb) = cb {
+            cb();
+        }
+    }
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
 mod fallback_impl {
     use super::*;
 
@@ -542,7 +628,12 @@ impl RecordingOverlay {
         windows_impl::start(region, max_secs, on_stop);
     }
 
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
+    pub fn start(region: Rectangle, max_secs: u64, on_stop: Box<dyn Fn() + Send>) {
+        linux_impl::start(region, max_secs, on_stop);
+    }
+
+    #[cfg(not(any(windows, target_os = "linux")))]
     pub fn start(region: Rectangle, max_secs: u64, on_stop: Box<dyn Fn() + Send>) {
         fallback_impl::start(region, max_secs, on_stop);
     }
@@ -552,7 +643,12 @@ impl RecordingOverlay {
         windows_impl::stop();
     }
 
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
+    pub fn stop() {
+        linux_impl::stop();
+    }
+
+    #[cfg(not(any(windows, target_os = "linux")))]
     pub fn stop() {
         fallback_impl::stop();
     }
