@@ -101,6 +101,55 @@ impl ClipboardManager {
     }
 }
 
+// linux: put the file on the clipboard as text/uri-list (plus the gnome
+// paste-as-copy variant so file managers offer a real paste). wayland goes
+// through wl-clipboard-rs, which forks a serving process; x11 shells out to
+// xclip, which daemonizes the same way. callers fall back to copying the
+// plain path string when neither transport is available.
+#[cfg(target_os = "linux")]
+pub fn copy_file_to_clipboard(path: &Path) -> Result<()> {
+    let uri = url::Url::from_file_path(path)
+        .map_err(|_| anyhow!("clipboard file copy requires an absolute path"))?
+        .to_string();
+
+    if std::env::var("WAYLAND_DISPLAY").is_ok() {
+        use wl_clipboard_rs::copy::{MimeSource, MimeType, Options, Source};
+        let sources = vec![
+            MimeSource {
+                source: Source::Bytes(uri.clone().into_bytes().into()),
+                mime_type: MimeType::Specific("text/uri-list".into()),
+            },
+            MimeSource {
+                source: Source::Bytes(format!("copy\n{uri}").into_bytes().into()),
+                mime_type: MimeType::Specific("x-special/gnome-copied-files".into()),
+            },
+        ];
+        Options::new()
+            .copy_multi(sources)
+            .map_err(|e| anyhow!("wayland clipboard copy failed: {e}"))?;
+        return Ok(());
+    }
+
+    use std::io::Write;
+    let mut child = std::process::Command::new("xclip")
+        .args(["-selection", "clipboard", "-t", "text/uri-list"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|_| anyhow!("file clipboard copy needs xclip on X11"))?;
+    child
+        .stdin
+        .take()
+        .ok_or_else(|| anyhow!("xclip stdin unavailable"))?
+        .write_all(uri.as_bytes())?;
+    let status = child.wait()?;
+    if !status.success() {
+        return Err(anyhow!("xclip exited with {status}"));
+    }
+    Ok(())
+}
+
 /// put the file itself on the clipboard as a CF_HDROP file list, the format
 /// explorer/discord/slack expect when pasting a file. arboard has no file-list
 /// support, so this goes through the win32 clipboard directly

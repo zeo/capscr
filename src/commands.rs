@@ -1289,7 +1289,7 @@ pub fn copy_capture_to_clipboard(path: String, state: State<AppState>) -> Result
     if ext == "gif" || ext == "mp4" {
         // copy the file itself so pasting inserts the animation instead of a
         // path string; fall back to path text if the file copy fails
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "linux"))]
         if crate::clipboard::copy_file_to_clipboard(&canonical).is_ok() {
             return Ok(());
         }
@@ -2388,7 +2388,7 @@ fn apply_gif_post_action(
             // animated gif/mp4 can't go on the clipboard as pixels without
             // flattening, so copy the saved file itself (CF_HDROP) — pasting
             // into explorer/discord/slack then inserts the actual file
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "linux"))]
             let copied = match crate::clipboard::copy_file_to_clipboard(path) {
                 Ok(()) => true,
                 Err(e) => {
@@ -2396,7 +2396,7 @@ fn apply_gif_post_action(
                     false
                 }
             };
-            #[cfg(not(windows))]
+            #[cfg(not(any(windows, target_os = "linux")))]
             let copied = false;
             if !copied {
                 if let Ok(mut cb) = ClipboardManager::new() {
@@ -3175,9 +3175,36 @@ fn ocr_image_bytes(image_bytes: &[u8]) -> anyhow::Result<String> {
     Ok(result.Text()?.to_string())
 }
 
-#[cfg(not(windows))]
+/// run tesseract over an encoded image and return the text. tesseract is the
+/// packaged OCR engine on every major distro; the error message points at the
+/// package when it's missing so the post-action isn't a dead end
+#[cfg(target_os = "linux")]
+fn ocr_image_bytes(image_bytes: &[u8]) -> anyhow::Result<String> {
+    use std::io::Write;
+    let mut child = std::process::Command::new("tesseract")
+        .args(["stdin", "stdout"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|_| {
+            anyhow::anyhow!("OCR needs tesseract — install the tesseract-ocr package")
+        })?;
+    child
+        .stdin
+        .take()
+        .ok_or_else(|| anyhow::anyhow!("tesseract stdin unavailable"))?
+        .write_all(image_bytes)?;
+    let output = child.wait_with_output()?;
+    if !output.status.success() {
+        anyhow::bail!("tesseract failed with status {}", output.status);
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
 fn ocr_image_bytes(_image_bytes: &[u8]) -> anyhow::Result<String> {
-    anyhow::bail!("OCR is only supported on Windows")
+    anyhow::bail!("OCR is not supported on this platform")
 }
 
 /// OCR a freshly captured image by encoding it to PNG in memory first
