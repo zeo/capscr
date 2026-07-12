@@ -1890,14 +1890,14 @@ pub fn run_task(task: &CaptureTask, app: &AppHandle) -> anyhow::Result<()> {
     run_capture_pipeline_with_target(mode, post, app, task.target_destination, task.delay_ms)
 }
 
+#[cfg(windows)]
 use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(windows)]
 static FFMPEG_DOWNLOADING: AtomicBool = AtomicBool::new(false);
 
+#[cfg(windows)]
 fn perform_ffmpeg_download() -> anyhow::Result<()> {
-    #[cfg(windows)]
     const FFMPEG_BIN_NAME: &str = "ffmpeg.exe";
-    #[cfg(not(windows))]
-    const FFMPEG_BIN_NAME: &str = "ffmpeg";
 
     let proj_dirs = directories::ProjectDirs::from("com", "capscr", "capscr")
         .ok_or_else(|| anyhow::anyhow!("failed to locate app data directory"))?;
@@ -1974,6 +1974,25 @@ fn perform_ffmpeg_download() -> anyhow::Result<()> {
     Ok(())
 }
 
+// the auto-download serves a windows build (gyan.dev); on linux ffmpeg is a
+// package-manager install away and stays security-updated there
+#[cfg(not(windows))]
+fn handle_missing_ffmpeg(app: &AppHandle) -> anyhow::Result<()> {
+    use tauri_plugin_dialog::DialogExt;
+    app.dialog()
+        .message(
+            "Recording MP4 requires FFmpeg, which was not found on your system.\n\n\
+             Install it with your package manager, e.g.\n\
+             sudo apt install ffmpeg   (Debian/Ubuntu)\n\
+             sudo dnf install ffmpeg   (Fedora)",
+        )
+        .title("FFmpeg Required")
+        .kind(tauri_plugin_dialog::MessageDialogKind::Info)
+        .blocking_show();
+    Ok(())
+}
+
+#[cfg(windows)]
 fn handle_missing_ffmpeg(app: &AppHandle) -> anyhow::Result<()> {
     if FFMPEG_DOWNLOADING.load(Ordering::SeqCst) {
         let _ = show_notification(
