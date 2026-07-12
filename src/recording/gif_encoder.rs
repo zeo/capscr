@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 use crate::capture::{MonitorInfo, Rectangle, ScreenCapture};
 
 fn find_best_monitor(rect: Rectangle) -> Option<MonitorInfo> {
-    let monitors = crate::capture::fast_list_monitors().ok()?;
+    let monitors = crate::capture::list_monitors().ok()?;
     let mut best_monitor: Option<MonitorInfo> = None;
     let mut max_overlap_area = 0i64;
 
@@ -1090,7 +1090,7 @@ mod tests {
 
     #[test]
     fn test_find_best_monitor_overlap() {
-        if let Ok(monitors) = crate::capture::fast_list_monitors() {
+        if let Ok(monitors) = crate::capture::list_monitors() {
             if let Some(m) = monitors.first() {
                 let rect = Rectangle {
                     x: m.x + 10,

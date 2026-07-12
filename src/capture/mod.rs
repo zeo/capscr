@@ -489,6 +489,23 @@ pub fn capture_one_monitor(monitor: &MonitorInfo) -> Result<RgbaImage> {
     Ok(img)
 }
 
+// capture a single monitor as an oriented, opaque RGBA image. no HDR surface
+// exists on this platform yet, so every monitor goes through xcap; the same
+// black-frame/opacity guards as the Windows path keep a failed grab from
+// silently producing an empty capture.
+#[cfg(not(windows))]
+pub fn capture_one_monitor(monitor: &MonitorInfo) -> Result<RgbaImage> {
+    let screens = xcap::Monitor::all()?;
+    let screen = screens
+        .into_iter()
+        .find(|s| s.id() == monitor.id)
+        .ok_or_else(|| anyhow::anyhow!("monitor {} not found", monitor.id))?;
+    let raw = screen.capture_image()?;
+    let mut img = orient_captured_image(raw, monitor.width, monitor.height, monitor.x, monitor.y);
+    ensure_opaque_if_fully_transparent(&mut img);
+    Ok(img)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -506,6 +523,18 @@ mod tests {
     fn test_screen_capture_with_monitor() {
         let capture = ScreenCapture::with_monitor(1);
         assert!(capture.get_monitor_info().is_err() || capture.get_monitor_info().is_ok());
+    }
+
+    #[test]
+    fn capture_one_monitor_matches_reported_dimensions() {
+        // no-ops headless (no display -> list_monitors errs); with a display it
+        // proves the per-monitor grab returns pixels at the reported size
+        let Ok(monitors) = list_monitors() else {
+            return;
+        };
+        let Some(m) = monitors.first() else { return };
+        let img = capture_one_monitor(m).expect("capture primary monitor");
+        assert_eq!((img.width(), img.height()), (m.width, m.height));
     }
 
     #[test]
