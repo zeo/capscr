@@ -493,6 +493,9 @@ fn run_capture_pipeline_inner(
                 }
                 #[cfg(not(windows))]
                 {
+                    // window bounds come from the compositor here, not DWM;
+                    // crop-from-frozen lands together with the linux selector
+                    let _ = frozen;
                     let cap = WindowCapture::new(hwnd);
                     let img = cap.capture()?;
                     let origin = window_screen_origin(hwnd);
@@ -743,24 +746,30 @@ fn build_upload_service_for_target(
 fn capture_active_monitor_with_hdr(
 ) -> anyhow::Result<(RgbaImage, Option<crate::capture::HdrBitmap>)> {
     tracing::info!("capture_active_monitor_with_hdr entry");
-    use crate::capture::HdrCapture;
     let target = cursor_position();
-    let wgc_on = crate::capture::wgc_enabled();
-    let hdr_avail = HdrCapture::is_hdr_available();
 
     #[cfg(windows)]
-    if hdr_avail {
-        if let Some(t) = target {
-            if wgc_on {
-                match crate::capture::wgc_capture_at_point(t.0, t.1) {
-                    Ok(img) => return Ok((img, None)),
-                    Err(e) => tracing::warn!("active_monitor WGC failed — fallthrough: {e:#}"),
-                }
-            } else {
-                let hdr = HdrCapture::new();
-                match hdr.capture_with_hdr_at(Some(t)) {
-                    Ok(pair) => return Ok(pair),
-                    Err(e) => tracing::warn!("active_monitor CPU HDR failed — GDI fallback: {e:#}"),
+    {
+        use crate::capture::HdrCapture;
+        let wgc_on = crate::capture::wgc_enabled();
+        let hdr_avail = HdrCapture::is_hdr_available();
+        if hdr_avail {
+            if let Some(t) = target {
+                if wgc_on {
+                    match crate::capture::wgc_capture_at_point(t.0, t.1) {
+                        Ok(img) => return Ok((img, None)),
+                        Err(e) => {
+                            tracing::warn!("active_monitor WGC failed — fallthrough: {e:#}")
+                        }
+                    }
+                } else {
+                    let hdr = HdrCapture::new();
+                    match hdr.capture_with_hdr_at(Some(t)) {
+                        Ok(pair) => return Ok(pair),
+                        Err(e) => tracing::warn!(
+                            "active_monitor CPU HDR failed — GDI fallback: {e:#}"
+                        ),
+                    }
                 }
             }
         }
@@ -1328,7 +1337,7 @@ pub struct UploadResponse {
 }
 
 #[tauri::command]
-pub fn open_in_explorer(path: String, state: State<AppState>) -> Result<(), String> {
+pub fn open_in_explorer(path: String, app: AppHandle, state: State<AppState>) -> Result<(), String> {
     let buf = PathBuf::from(&path);
     let config = state.config.lock().unwrap().clone();
     let canonical = std::fs::canonicalize(&buf).map_err(|e| e.to_string())?;
@@ -1337,20 +1346,26 @@ pub fn open_in_explorer(path: String, state: State<AppState>) -> Result<(), Stri
     if !is_path_allowed(&canonical, &config) {
         return Err("Path is outside the allowed capture directories".into());
     }
-    #[cfg(windows)]
-    {
-        std::process::Command::new("explorer")
-            .arg("/select,")
-            .arg(&canonical)
-            .spawn()
-            .map_err(|e| e.to_string())?;
-    }
-    #[cfg(not(windows))]
-    {
-        let parent = canonical.parent().unwrap_or(&canonical);
-        open::that_in_background(parent);
-    }
+    reveal_in_file_manager(&app, &canonical);
     Ok(())
+}
+
+#[cfg(windows)]
+fn reveal_in_file_manager(_app: &AppHandle, path: &std::path::Path) {
+    let _ = std::process::Command::new("explorer")
+        .arg("/select,")
+        .arg(path)
+        .spawn();
+}
+
+// the opener plugin talks to the freedesktop FileManager1 dbus interface and
+// falls back to plain-opening the parent directory itself
+#[cfg(not(windows))]
+fn reveal_in_file_manager(app: &AppHandle, path: &std::path::Path) {
+    use tauri_plugin_opener::OpenerExt;
+    if let Err(e) = app.opener().reveal_item_in_dir(path) {
+        tracing::warn!("reveal in file manager failed: {e}");
+    }
 }
 
 #[tauri::command]
@@ -2354,14 +2369,8 @@ fn apply_gif_post_action(
         }
         TaskPostAction::OpenEditor => {
             // recordings can't be annotated without flattening their frames —
-            // reveal the saved file in explorer instead of opening the editor
-            #[cfg(windows)]
-            {
-                let _ = std::process::Command::new("explorer")
-                    .arg("/select,")
-                    .arg(path)
-                    .spawn();
-            }
+            // reveal the saved file in the file manager instead of opening the editor
+            reveal_in_file_manager(app, path);
         }
         TaskPostAction::Upload => {
             let app2 = app.clone();
