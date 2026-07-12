@@ -12,8 +12,6 @@ use x11rb::rust_connection::RustConnection;
 pub struct X11RegionGrabber {
     conn: RustConnection,
     root: Window,
-    screen_width: u16,
-    screen_height: u16,
 }
 
 impl X11RegionGrabber {
@@ -26,19 +24,21 @@ impl X11RegionGrabber {
             .ok_or_else(|| anyhow!("X11 screen {screen_num} missing"))?;
         Ok(Self {
             root: screen.root,
-            screen_width: screen.width_in_pixels,
-            screen_height: screen.height_in_pixels,
             conn,
         })
     }
 
     // grab a root-relative rectangle as opaque RGBA. the rect is clamped to
-    // the root bounds because GetImage errors on any out-of-bounds pixel
+    // the root's CURRENT bounds (queried per grab — servers like WSLg resize
+    // the root dynamically, so the connection-setup dimensions go stale)
+    // because GetImage errors on any out-of-bounds pixel
     pub fn grab(&self, x: i32, y: i32, width: u32, height: u32) -> Result<RgbaImage> {
-        let x0 = x.clamp(0, self.screen_width as i32 - 1);
-        let y0 = y.clamp(0, self.screen_height as i32 - 1);
-        let w = width.min((self.screen_width as i32 - x0) as u32).max(1) as u16;
-        let h = height.min((self.screen_height as i32 - y0) as u32).max(1) as u16;
+        let geom = self.conn.get_geometry(self.root)?.reply()?;
+        let (root_w, root_h) = (geom.width as i32, geom.height as i32);
+        let x0 = x.clamp(0, root_w - 1);
+        let y0 = y.clamp(0, root_h - 1);
+        let w = width.min((root_w - x0) as u32).max(1) as u16;
+        let h = height.min((root_h - y0) as u32).max(1) as u16;
 
         let reply = self
             .conn

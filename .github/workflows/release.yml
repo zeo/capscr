@@ -123,14 +123,16 @@ jobs:
           $uploadHeaders["Content-Type"] = "application/octet-stream"
           Invoke-RestMethod -Method Post -Headers $uploadHeaders -InFile $out $uploadUrl | Out-Null
 
-  # linux bundles (deb / rpm / AppImage) on a hosted runner: ubuntu-22.04 keeps
-  # the AppImage's glibc floor broad. runs after the windows job so the two
-  # tauri-action invocations update the release (and merge latest.json)
-  # sequentially instead of racing to create it.
+  # linux bundles (deb / rpm / AppImage) on a hosted runner. ubuntu-24.04 is
+  # the oldest image whose pipewire headers libspa 0.9 compiles against, which
+  # puts the AppImage glibc floor at 2.39 (Ubuntu 24.04 / Debian 13 / Fedora 40
+  # or newer). runs after the windows job so the two tauri-action invocations
+  # update the release (and merge latest.json) sequentially instead of racing
+  # to create it.
   build-linux:
     if: github.actor == 'lintowe'
     needs: build-windows
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
     steps:

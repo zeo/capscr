@@ -41,7 +41,7 @@ Download from the [releases page](https://github.com/lintowe/capscr/releases/lat
 | `capscr_x.x.x_amd64.AppImage` | any distro — `chmod +x` and run; this is the build the Linux auto-updater tracks |
 | `latest.json` | auto-updater manifest, not for manual install |
 
-Windows 10 1903+ or a Linux desktop with webkit2gtk 4.1 (Ubuntu 22.04+, Debian 12+, Fedora 39+, or equivalents). On Linux, X11 sessions get the full feature set; recording MP4 wants `ffmpeg` on PATH (offered as a download otherwise), the OCR post-action wants `tesseract`, and file-clipboard on X11 wants `xclip` — the deb/rpm packages pull these in as recommends. Wayland-only sessions currently fall back for a few features (see the hub's per-task hotkey status).
+Windows 10 1903+ or a Linux desktop with webkit2gtk 4.1 and glibc 2.39+ (Ubuntu 24.04+, Debian 13+, Fedora 40+, or equivalents). On Linux, X11 sessions get the full feature set; recording MP4 wants `ffmpeg` on PATH (offered as a download otherwise), the OCR post-action wants `tesseract`, and file-clipboard on X11 wants `xclip` — the deb/rpm packages pull these in as recommends. Wayland-only sessions currently fall back for a few features (see the hub's per-task hotkey status).
 
 ## default hotkeys
 
