@@ -1,0 +1,14 @@
+{
+  "bundle": {
+    "targets": ["deb", "rpm", "appimage"],
+    "linux": {
+      "deb": {
+        "recommends": ["ffmpeg", "tesseract-ocr", "xclip"],
+        "section": "graphics"
+      },
+      "rpm": {
+        "recommends": ["ffmpeg", "tesseract", "xclip"]
+      }
+    }
+  }
+}

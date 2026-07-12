@@ -28,6 +28,50 @@ jobs:
       - name: Run security audit
         run: cargo audit
 
+  lint-and-test-linux:
+    if: github.actor == 'lintowe'
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential curl wget file pkg-config \
+            libssl-dev libgtk-3-dev libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev librsvg2-dev libxdo-dev \
+            libclang-dev libxcb1-dev libxcb-shm0-dev libxcb-randr0-dev \
+            libxrandr-dev libdbus-1-dev libpipewire-0.3-dev \
+            libwayland-dev libegl-dev libgbm-dev libdrm-dev xvfb
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install frontend deps
+        working-directory: frontend
+        run: npm install
+
+      - name: Build frontend
+        working-directory: frontend
+        run: npm run build
+
+      # xvfb gives the capture tests a real X display to grab from
+      - name: Run tests
+        run: xvfb-run -a -s "-screen 0 1600x1000x24" cargo test --bin capscr --all-targets
+
+      - name: Run clippy
+        run: cargo clippy --bin capscr --all-targets -- -D warnings
+
   lint-and-test:
     if: github.actor == 'lintowe'
     runs-on: [self-hosted, windows-vm]

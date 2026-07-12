@@ -122,3 +122,70 @@ jobs:
           $uploadHeaders = $headers.Clone()
           $uploadHeaders["Content-Type"] = "application/octet-stream"
           Invoke-RestMethod -Method Post -Headers $uploadHeaders -InFile $out $uploadUrl | Out-Null
+
+  # linux bundles (deb / rpm / AppImage) on a hosted runner: ubuntu-22.04 keeps
+  # the AppImage's glibc floor broad. runs after the windows job so the two
+  # tauri-action invocations update the release (and merge latest.json)
+  # sequentially instead of racing to create it.
+  build-linux:
+    if: github.actor == 'lintowe'
+    needs: build-windows
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract changelog for tag
+        id: changelog
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          version="${TAG_NAME#v}"
+          body="$(awk -v ver="$version" '
+            $0 ~ "^##[[:space:]]+\\[" ver "\\]" { found=1; next }
+            found && /^##[[:space:]]+\[/ { exit }
+            found { print }
+          ' CHANGELOG.md)"
+          if [ -z "$(printf %s "$body" | tr -d '[:space:]')" ]; then body="capscr $version"; fi
+          delim="CHANGELOG_EOF_$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
+          { echo "notes<<$delim"; printf '%s\n' "$body"; echo "$delim"; } >> "$GITHUB_OUTPUT"
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential curl wget file pkg-config \
+            libssl-dev libgtk-3-dev libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev librsvg2-dev libxdo-dev \
+            libclang-dev libxcb1-dev libxcb-shm0-dev libxcb-randr0-dev \
+            libxrandr-dev libdbus-1-dev libpipewire-0.3-dev \
+            libwayland-dev libegl-dev libgbm-dev libdrm-dev
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install frontend deps
+        working-directory: frontend
+        run: npm install
+
+      - name: Build and release with tauri-action
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: 'capscr ${{ github.ref_name }}'
+          releaseBody: ${{ steps.changelog.outputs.notes }}
+          releaseDraft: false
+          prerelease: false
+          includeUpdaterJson: true
