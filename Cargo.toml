@@ -122,6 +122,12 @@ png = "0.17"
 # X11 cursor snapshot (XFixes) + pointer position. already a transitive dep
 # of arboard, so this adds no new code to the build
 x11rb = { version = "0.13", features = ["xfixes"] }
+# freedesktop Secret Service client for secret-at-rest (src/secret.rs).
+# already a transitive dep of xcap and notify-rust — no new compiled code
+zbus = "5"
+# wayland clipboard with arbitrary mime types (file copy as text/uri-list).
+# already a transitive dep of arboard — no new compiled code
+wl-clipboard-rs = "0.9"
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = [
