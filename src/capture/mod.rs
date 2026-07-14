@@ -413,6 +413,21 @@ fn wayland_list_monitors() -> Result<Vec<MonitorInfo>> {
         .collect())
 }
 
+#[cfg(target_os = "linux")]
+pub fn active_wayland_monitor() -> Result<MonitorInfo> {
+    let monitors = wayland_list_monitors()?;
+    let active_name = pointer_position()
+        .and_then(|(x, y)| xcap::Monitor::from_point(x, y).ok())
+        .and_then(|monitor| monitor.name().ok());
+    active_name
+        .as_ref()
+        .and_then(|name| monitors.iter().find(|monitor| monitor.name == *name))
+        .or_else(|| monitors.iter().find(|monitor| monitor.is_primary))
+        .or_else(|| monitors.first())
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("compositor reported no outputs"))
+}
+
 // grab one monitor on wayland. kwin's ScreenShot2 first (the only path that
 // isn't black on kde+nvidia), then wlr screencopy, then the desktop portal.
 // each in-process grab is checked for the all-black frame nvidia hands back.

@@ -90,11 +90,12 @@ fn enumerate_windows() -> Vec<WindowRect> {
 fn normalize_wayland_windows(
     windows: Vec<WindowRect>,
     surface_rect: (i32, i32, u32, u32),
+    output_name: &str,
 ) -> Vec<WindowRect> {
     let Some(monitor) = xcap::Monitor::all().ok().and_then(|monitors| {
         monitors
             .into_iter()
-            .find(|monitor| monitor.is_primary().unwrap_or(false))
+            .find(|monitor| monitor.name().ok().as_deref() == Some(output_name))
     }) else {
         return windows;
     };
@@ -191,11 +192,18 @@ pub fn select(frozen_frame: Option<Arc<RgbaImage>>) -> SelectionResult {
         monitors.iter().map(|m| m.y).min().unwrap_or(0),
     );
     let pure_wayland = is_wayland_session();
-    let surface_rect = if pure_wayland {
-        let monitor = monitors
-            .iter()
-            .find(|monitor| monitor.is_primary)
-            .unwrap_or(&monitors[0]);
+    let active_wayland_monitor = if pure_wayland {
+        crate::capture::active_wayland_monitor().ok().or_else(|| {
+            monitors
+                .iter()
+                .find(|monitor| monitor.is_primary)
+                .or_else(|| monitors.first())
+                .cloned()
+        })
+    } else {
+        None
+    };
+    let surface_rect = if let Some(monitor) = &active_wayland_monitor {
         (monitor.x, monitor.y, monitor.width, monitor.height)
     } else {
         (
@@ -222,7 +230,11 @@ pub fn select(frozen_frame: Option<Arc<RgbaImage>>) -> SelectionResult {
         .take()
         .unwrap_or_else(enumerate_windows);
     if pure_wayland {
-        windows = normalize_wayland_windows(windows, surface_rect);
+        let output_name = active_wayland_monitor
+            .as_ref()
+            .map(|monitor| monitor.name.as_str())
+            .unwrap_or_default();
+        windows = normalize_wayland_windows(windows, surface_rect, output_name);
     }
 
     // recording region-picks call select(None). the win32 selector shows the

@@ -381,21 +381,14 @@ fn run_capture_pipeline_inner(
         let t0 = std::time::Instant::now();
         #[cfg(target_os = "linux")]
         let captured = if crate::capture::is_wayland_session() {
-            crate::capture::list_monitors()
-                .and_then(|monitors| {
-                    monitors
-                        .into_iter()
-                        .find(|monitor| monitor.is_primary)
-                        .ok_or_else(|| anyhow::anyhow!("no primary Wayland output available"))
-                })
-                .and_then(|monitor| {
-                    crate::capture::capture_wayland_area(
-                        monitor.x,
-                        monitor.y,
-                        monitor.width,
-                        monitor.height,
-                    )
-                })
+            crate::capture::active_wayland_monitor().and_then(|monitor| {
+                crate::capture::capture_wayland_area(
+                    monitor.x,
+                    monitor.y,
+                    monitor.width,
+                    monitor.height,
+                )
+            })
         } else {
             ScreenCapture::all_monitors()
         };
@@ -853,6 +846,18 @@ fn capture_active_monitor_with_hdr(
 ) -> anyhow::Result<(RgbaImage, Option<crate::capture::HdrBitmap>)> {
     tracing::info!("capture_active_monitor_with_hdr entry");
     let target = cursor_position();
+
+    #[cfg(target_os = "linux")]
+    if crate::capture::is_wayland_session() {
+        let monitor = crate::capture::active_wayland_monitor()?;
+        let image = crate::capture::capture_wayland_area(
+            monitor.x,
+            monitor.y,
+            monitor.width,
+            monitor.height,
+        )?;
+        return Ok((image, None));
+    }
 
     #[cfg(windows)]
     {
