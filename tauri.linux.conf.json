@@ -3,10 +3,12 @@
     "targets": ["deb", "rpm", "appimage"],
     "linux": {
       "deb": {
+        "desktopTemplate": "linux/capscr.desktop",
         "recommends": ["ffmpeg", "tesseract-ocr", "xclip"],
         "section": "graphics"
       },
       "rpm": {
+        "desktopTemplate": "linux/capscr.desktop",
         "recommends": ["ffmpeg", "tesseract", "xclip"]
       }
     }

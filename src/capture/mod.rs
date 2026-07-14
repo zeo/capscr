@@ -8,6 +8,8 @@ mod gdi;
 mod hdr;
 mod hdr_png;
 #[cfg(target_os = "linux")]
+mod kwin;
+#[cfg(target_os = "linux")]
 mod portal;
 mod region;
 mod screen;
@@ -386,12 +388,22 @@ fn wayland_list_monitors() -> Result<Vec<MonitorInfo>> {
         .collect())
 }
 
-// grab one monitor on wayland: wlroots screencopy first (fast and silent),
-// then the desktop portal (universal, may prompt once)
+// grab one monitor on wayland. kwin's ScreenShot2 first (the only path that
+// isn't black on kde+nvidia), then wlr screencopy, then the desktop portal.
+// each in-process grab is checked for the all-black frame nvidia hands back.
 #[cfg(target_os = "linux")]
 fn wayland_grab_monitor(monitor: &MonitorInfo) -> Result<RgbaImage> {
+    match kwin::capture_area(monitor.x, monitor.y, monitor.width, monitor.height) {
+        Ok(img) if !is_black_frame(&img) => return Ok(img),
+        Ok(_) => tracing::warn!("kwin ScreenShot2 returned all-black; trying screencopy"),
+        Err(e) => tracing::debug!("kwin ScreenShot2 unavailable ({e:#}); trying screencopy"),
+    }
     match wlroots_grab(monitor) {
-        Ok(img) => Ok(img),
+        Ok(img) if !is_black_frame(&img) => Ok(img),
+        Ok(_) => {
+            tracing::warn!("wlr screencopy returned all-black; using the screenshot portal");
+            portal_grab_monitor(monitor)
+        }
         Err(e) => {
             tracing::warn!("wlroots screencopy failed ({e:#}); using the screenshot portal");
             portal_grab_monitor(monitor)
@@ -605,6 +617,16 @@ pub fn capture_one_monitor(monitor: &MonitorInfo) -> Result<RgbaImage> {
 // silently producing an empty capture.
 #[cfg(not(windows))]
 pub fn capture_one_monitor(monitor: &MonitorInfo) -> Result<RgbaImage> {
+    // on wayland, xcap goes through XWayland and returns black frames on the
+    // nvidia driver; take the compositor grab chain (kwin ScreenShot2, then
+    // screencopy, then portal) directly so we get real pixels the first time
+    #[cfg(target_os = "linux")]
+    if portal::is_wayland_session() {
+        let mut img = wayland_grab_monitor(monitor)?;
+        img = orient_captured_image(img, monitor.width, monitor.height, monitor.x, monitor.y);
+        ensure_opaque_if_fully_transparent(&mut img);
+        return Ok(img);
+    }
     #[cfg(target_os = "linux")]
     let raw = match find_xcap_monitor(monitor.id) {
         Ok(screen) => match screen.capture_image() {
