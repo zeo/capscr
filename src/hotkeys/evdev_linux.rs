@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::os::fd::AsRawFd;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Mutex;
 use std::time::Instant;
@@ -75,7 +75,7 @@ struct MouseMirror {
 }
 
 impl MouseMirror {
-    fn create(path: &PathBuf, input_fd: i32) -> std::io::Result<Option<Self>> {
+    fn create(path: &Path, input_fd: i32) -> std::io::Result<Option<Self>> {
         let event_name = path
             .file_name()
             .and_then(|name| name.to_str())

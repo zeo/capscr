@@ -128,7 +128,7 @@ fn decode(buf: &[u8], w: u32, h: u32, stride: u32, format: u32) -> Result<RgbaIm
         ));
     }
     let bgra = match format {
-        4 | 5 | 6 => true,
+        4..=6 => true,
         17 | 18 => false,
         _ => return Err(anyhow!("unsupported ScreenShot2 QImage format {format}")),
     };
