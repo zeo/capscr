@@ -236,12 +236,13 @@ export function Selector() {
   const commitRegion = () => {
     if (!ctxInfo) return finish({ kind: "cancelled" });
     const rect = selectionRect();
+    const { sx, sy } = scale();
     finish({
       kind: "region",
-      x: rect.left + ctxInfo.origin_x,
-      y: rect.top + ctxInfo.origin_y,
-      width: rect.width,
-      height: rect.height,
+      x: Math.round(rect.left / sx) + ctxInfo.origin_x,
+      y: Math.round(rect.top / sy) + ctxInfo.origin_y,
+      width: Math.max(1, Math.round(rect.width / sx)),
+      height: Math.max(1, Math.round(rect.height / sy)),
     });
   };
 

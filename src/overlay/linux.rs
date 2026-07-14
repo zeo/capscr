@@ -87,6 +87,42 @@ fn enumerate_windows() -> Vec<WindowRect> {
     rects.into_iter().map(|(_, r)| r).collect()
 }
 
+fn normalize_wayland_windows(
+    windows: Vec<WindowRect>,
+    surface_rect: (i32, i32, u32, u32),
+) -> Vec<WindowRect> {
+    let Some(monitor) = xcap::Monitor::all().ok().and_then(|monitors| {
+        monitors
+            .into_iter()
+            .find(|monitor| monitor.is_primary().unwrap_or(false))
+    }) else {
+        return windows;
+    };
+    let Ok(monitor_x) = monitor.x() else {
+        return windows;
+    };
+    let Ok(monitor_y) = monitor.y() else {
+        return windows;
+    };
+
+    let right = surface_rect.0.saturating_add_unsigned(surface_rect.2);
+    let bottom = surface_rect.1.saturating_add_unsigned(surface_rect.3);
+    windows
+        .into_iter()
+        .filter_map(|mut window| {
+            window.x = surface_rect.0 + window.x - monitor_x;
+            window.y = surface_rect.1 + window.y - monitor_y;
+            let window_right = window.x.saturating_add_unsigned(window.width);
+            let window_bottom = window.y.saturating_add_unsigned(window.height);
+            (window.x < right
+                && window_right > surface_rect.0
+                && window.y < bottom
+                && window_bottom > surface_rect.1)
+                .then_some(window)
+        })
+        .collect()
+}
+
 pub fn prewarm_window_list() {
     std::thread::spawn(|| {
         let list = enumerate_windows();
@@ -180,11 +216,14 @@ pub fn select(frozen_frame: Option<Arc<RgbaImage>>) -> SelectionResult {
         )
     };
 
-    let windows = PREWARMED
+    let mut windows = PREWARMED
         .lock()
         .unwrap()
         .take()
         .unwrap_or_else(enumerate_windows);
+    if pure_wayland {
+        windows = normalize_wayland_windows(windows, surface_rect);
+    }
 
     // recording region-picks call select(None). the win32 selector shows the
     // live desktop through a semi-transparent layered window there; X11 can't
