@@ -308,15 +308,28 @@ fn build_selector_window(app: &AppHandle, (x, y, w, h): (f64, f64, f64, f64)) ->
         .position(x, y)
         .inner_size(w, h)
         .build()?;
+    use gtk::gdk::prelude::MonitorExt;
     use gtk::prelude::{GtkWindowExt, WidgetExt};
     if let Ok(gtk_window) = window.gtk_window() {
         gtk_window.set_type_hint(gtk::gdk::WindowTypeHint::Notification);
         if is_wayland_session() {
             if let Some(screen) = WidgetExt::screen(&gtk_window) {
                 let display = gtk_window.display();
-                let primary = display.primary_monitor();
                 let monitor_index = (0..display.n_monitors())
-                    .find(|index| display.monitor(*index) == primary)
+                    .find(|index| {
+                        let Some(monitor) = display.monitor(*index) else {
+                            return false;
+                        };
+                        let geometry = monitor.geometry();
+                        geometry.x() == x as i32
+                            && geometry.y() == y as i32
+                            && geometry.width() == w as i32
+                            && geometry.height() == h as i32
+                    })
+                    .or_else(|| {
+                        let primary = display.primary_monitor();
+                        (0..display.n_monitors()).find(|index| display.monitor(*index) == primary)
+                    })
                     .unwrap_or(0);
                 gtk_window.fullscreen_on_monitor(&screen, monitor_index);
             }

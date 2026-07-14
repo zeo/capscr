@@ -416,9 +416,24 @@ fn wayland_list_monitors() -> Result<Vec<MonitorInfo>> {
 #[cfg(target_os = "linux")]
 pub fn active_wayland_monitor() -> Result<MonitorInfo> {
     let monitors = wayland_list_monitors()?;
-    let active_name = pointer_position()
-        .and_then(|(x, y)| xcap::Monitor::from_point(x, y).ok())
-        .and_then(|monitor| monitor.name().ok());
+    let active_name = zbus::blocking::Connection::session()
+        .ok()
+        .and_then(|conn| {
+            conn.call_method(
+                Some("org.kde.KWin"),
+                "/KWin",
+                Some("org.kde.KWin"),
+                "activeOutputName",
+                &(),
+            )
+            .ok()
+        })
+        .and_then(|reply| reply.body().deserialize::<String>().ok())
+        .or_else(|| {
+            pointer_position()
+                .and_then(|(x, y)| xcap::Monitor::from_point(x, y).ok())
+                .and_then(|monitor| monitor.name().ok())
+        });
     active_name
         .as_ref()
         .and_then(|name| monitors.iter().find(|monitor| monitor.name == *name))
