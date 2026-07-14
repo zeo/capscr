@@ -10,7 +10,8 @@
 use crate::hotkeys::{MOD_ALT, MOD_CTRL, MOD_SHIFT, MOD_WIN};
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::Read;
+use std::io::{Read, Write};
+use std::os::fd::AsRawFd;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Mutex;
@@ -36,6 +37,128 @@ const KEY_RIGHTMETA: u16 = 126;
 
 // one input_event record on 64-bit linux: timeval(16) + type(2) + code(2) + value(4)
 const EVENT_SIZE: usize = 24;
+const EV_SYN: u16 = 0x00;
+const EV_REL: u16 = 0x02;
+const EV_MSC: u16 = 0x04;
+
+const UI_DEV_CREATE: usize = 0x5501;
+const UI_DEV_DESTROY: usize = 0x5502;
+const UI_DEV_SETUP: usize = 0x405c_5503;
+const UI_SET_EVBIT: usize = 0x4004_5564;
+const UI_SET_KEYBIT: usize = 0x4004_5565;
+const UI_SET_RELBIT: usize = 0x4004_5566;
+const UI_SET_MSCBIT: usize = 0x4004_5568;
+const EVIOCGRAB: usize = 0x4004_4590;
+
+unsafe extern "C" {
+    fn ioctl(fd: i32, request: usize, ...) -> i32;
+}
+
+#[repr(C)]
+struct InputId {
+    bustype: u16,
+    vendor: u16,
+    product: u16,
+    version: u16,
+}
+
+#[repr(C)]
+struct UInputSetup {
+    id: InputId,
+    name: [u8; 80],
+    ff_effects_max: u32,
+}
+
+struct MouseMirror {
+    output: File,
+    input_fd: i32,
+}
+
+impl MouseMirror {
+    fn create(path: &PathBuf, input_fd: i32) -> std::io::Result<Option<Self>> {
+        let event_name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("");
+        let device_dir = PathBuf::from("/sys/class/input")
+            .join(event_name)
+            .join("device");
+        let is_mouse = std::fs::read_dir(&device_dir)?
+            .flatten()
+            .any(|entry| entry.file_name().to_string_lossy().starts_with("mouse"));
+        if !is_mouse {
+            return Ok(None);
+        }
+
+        let output = std::fs::OpenOptions::new()
+            .write(true)
+            .open("/dev/uinput")?;
+        let fd = output.as_raw_fd();
+        let set = |request, code| unsafe { ioctl(fd, request, code as usize) } == 0;
+        if !set(UI_SET_EVBIT, EV_SYN)
+            || !set(UI_SET_EVBIT, EV_KEY)
+            || !set(UI_SET_EVBIT, EV_REL)
+            || !set(UI_SET_EVBIT, EV_MSC)
+        {
+            return Err(std::io::Error::last_os_error());
+        }
+        for code in 0x110..=0x117 {
+            if !set(UI_SET_KEYBIT, code) {
+                return Err(std::io::Error::last_os_error());
+            }
+        }
+        for code in 0..=12 {
+            if !set(UI_SET_RELBIT, code) {
+                return Err(std::io::Error::last_os_error());
+            }
+        }
+        for code in 0..=7 {
+            if !set(UI_SET_MSCBIT, code) {
+                return Err(std::io::Error::last_os_error());
+            }
+        }
+
+        let mut setup = UInputSetup {
+            id: InputId {
+                bustype: 0x03,
+                vendor: 0x1d6b,
+                product: 0x0104,
+                version: 1,
+            },
+            name: [0; 80],
+            ff_effects_max: 0,
+        };
+        let name = b"capscr mouse passthrough";
+        setup.name[..name.len()].copy_from_slice(name);
+        if unsafe { ioctl(fd, UI_DEV_SETUP, &setup) } != 0
+            || unsafe { ioctl(fd, UI_DEV_CREATE) } != 0
+        {
+            return Err(std::io::Error::last_os_error());
+        }
+
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        if unsafe { ioctl(input_fd, EVIOCGRAB, 1usize) } != 0 {
+            unsafe {
+                ioctl(fd, UI_DEV_DESTROY);
+            }
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(Some(Self { output, input_fd }))
+    }
+
+    fn forward(&mut self, event: &[u8; EVENT_SIZE]) -> std::io::Result<()> {
+        self.output.write_all(event)
+    }
+}
+
+impl Drop for MouseMirror {
+    fn drop(&mut self) {
+        unsafe {
+            ioctl(self.input_fd, EVIOCGRAB, 0usize);
+            ioctl(self.output.as_raw_fd(), UI_DEV_DESTROY);
+        }
+    }
+}
 
 static MODS: AtomicU8 = AtomicU8::new(0);
 // (modifier mask, evdev button code) -> capture task id
@@ -138,9 +261,17 @@ fn read_device(path: PathBuf, app: AppHandle) {
     let Ok(mut file) = File::open(&path) else {
         return;
     };
+    let mut mirror = match MouseMirror::create(&path, file.as_raw_fd()) {
+        Ok(mirror) => mirror,
+        Err(error) => {
+            tracing::debug!("evdev: couldn't mirror {}: {error}", path.display());
+            None
+        }
+    };
     let mut buf = [0u8; EVENT_SIZE];
     // per-thread dedupe so a fast double-report of one press fires once
     let mut last_fire: HashMap<String, Instant> = HashMap::new();
+    let mut consumed_button = None;
     loop {
         // evdev delivers whole 24-byte records; read_exact stays aligned
         if file.read_exact(&mut buf).is_err() {
@@ -148,6 +279,11 @@ fn read_device(path: PathBuf, app: AppHandle) {
         }
         let etype = u16::from_ne_bytes([buf[16], buf[17]]);
         if etype != EV_KEY {
+            if let Some(mirror) = &mut mirror {
+                if mirror.forward(&buf).is_err() {
+                    return;
+                }
+            }
             continue;
         }
         let code = u16::from_ne_bytes([buf[18], buf[19]]);
@@ -163,24 +299,51 @@ fn read_device(path: PathBuf, app: AppHandle) {
                 }
                 _ => {} // autorepeat: modifier already held
             }
+            if let Some(mirror) = &mut mirror {
+                if mirror.forward(&buf).is_err() {
+                    return;
+                }
+            }
             continue;
         }
 
-        if value == 1 {
-            if let Some(code) = normalize_button(code) {
-                dispatch(&app, code, &mut last_fire);
+        let normalized = normalize_button(code);
+        let consume = if value == 1 {
+            normalized
+                .map(|button| {
+                    let consumed = dispatch(&app, button, &mut last_fire);
+                    if consumed {
+                        consumed_button = Some(button);
+                    }
+                    consumed
+                })
+                .unwrap_or(false)
+        } else if value == 0 {
+            let consumed = normalized == consumed_button;
+            if consumed {
+                consumed_button = None;
+            }
+            consumed
+        } else {
+            normalized == consumed_button
+        };
+        if !consume {
+            if let Some(mirror) = &mut mirror {
+                if mirror.forward(&buf).is_err() {
+                    return;
+                }
             }
         }
     }
 }
 
-fn dispatch(app: &AppHandle, code: u16, last_fire: &mut HashMap<String, Instant>) {
+fn dispatch(app: &AppHandle, code: u16, last_fire: &mut HashMap<String, Instant>) -> bool {
     if app
         .state::<crate::state::AppState>()
         .hotkeys_disabled
         .load(Ordering::SeqCst)
     {
-        return;
+        return false;
     }
     let mods = MODS.load(Ordering::SeqCst);
     let task_id = {
@@ -188,7 +351,7 @@ fn dispatch(app: &AppHandle, code: u16, last_fire: &mut HashMap<String, Instant>
         guard.as_ref().and_then(|m| m.get(&(mods, code)).cloned())
     };
     let Some(task_id) = task_id else {
-        return;
+        return false;
     };
     let now = Instant::now();
     let recent = last_fire
@@ -196,10 +359,11 @@ fn dispatch(app: &AppHandle, code: u16, last_fire: &mut HashMap<String, Instant>
         .map(|t| now.duration_since(*t).as_millis() <= 250)
         .unwrap_or(false);
     if recent {
-        return;
+        return true;
     }
     last_fire.insert(task_id.clone(), now);
     crate::commands::trigger_task(app, &task_id);
+    true
 }
 
 #[cfg(test)]
