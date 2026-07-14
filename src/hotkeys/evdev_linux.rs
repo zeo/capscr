@@ -261,12 +261,16 @@ fn read_device(path: PathBuf, app: AppHandle) {
     let Ok(mut file) = File::open(&path) else {
         return;
     };
-    let mut mirror = match MouseMirror::create(&path, file.as_raw_fd()) {
-        Ok(mirror) => mirror,
-        Err(error) => {
-            tracing::debug!("evdev: couldn't mirror {}: {error}", path.display());
-            None
+    let mut mirror = if std::env::var_os("CAPSCR_EXCLUSIVE_MOUSE").is_some() {
+        match MouseMirror::create(&path, file.as_raw_fd()) {
+            Ok(mirror) => mirror,
+            Err(error) => {
+                tracing::debug!("evdev: couldn't mirror {}: {error}", path.display());
+                None
+            }
         }
+    } else {
+        None
     };
     let mut buf = [0u8; EVENT_SIZE];
     // per-thread dedupe so a fast double-report of one press fires once
