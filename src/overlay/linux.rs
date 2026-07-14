@@ -275,6 +275,29 @@ fn build_selector_window(app: &AppHandle, (x, y, w, h): (f64, f64, f64, f64)) ->
     Ok(())
 }
 
+fn set_selector_cursor(window: &tauri::WebviewWindow) {
+    use gtk::prelude::{Cast, ContainerExt, GtkWindowExt, WidgetExt};
+
+    fn set_on_widget(widget: &gtk::Widget, cursor: &gtk::gdk::Cursor) {
+        if let Some(surface) = widget.window() {
+            surface.set_cursor(Some(cursor));
+        }
+        if let Some(container) = widget.dynamic_cast_ref::<gtk::Container>() {
+            for child in container.children() {
+                set_on_widget(&child, cursor);
+            }
+        }
+    }
+
+    let Ok(gtk_window) = window.gtk_window() else {
+        return;
+    };
+    let display = gtk_window.display();
+    if let Some(cursor) = gtk::gdk::Cursor::from_name(&display, "crosshair") {
+        set_on_widget(gtk_window.upcast_ref(), &cursor);
+    }
+}
+
 // dynamically created webviews sometimes come up on about:blank instead of
 // the app url (tauri#13967) — same watchdog the editor window uses, copying
 // the canonical url from the always-alive hub webview
@@ -348,7 +371,9 @@ pub fn selector_ready() -> Result<(), String> {
         .get_webview_window(SELECTOR_LABEL)
         .ok_or("selector window is unavailable")?;
     window.show().map_err(|error| error.to_string())?;
-    window.set_focus().map_err(|error| error.to_string())
+    window.set_focus().map_err(|error| error.to_string())?;
+    set_selector_cursor(&window);
+    Ok(())
 }
 
 #[derive(serde::Deserialize)]
