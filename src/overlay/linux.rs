@@ -49,7 +49,7 @@ struct SelectorSurface {
 
 static ACTIVE: Mutex<Option<ActiveSelection>> = Mutex::new(None);
 // prewarmed window list, filled on a background thread ahead of select()
-static PREWARMED: Mutex<Option<Vec<WindowRect>>> = Mutex::new(None);
+static PREWARMED: Mutex<Option<Receiver<Vec<WindowRect>>>> = Mutex::new(None);
 
 struct LayerShellApi {
     _library: usize,
@@ -242,7 +242,12 @@ fn normalize_wayland_windows(
             }
             let window_right = window.x.saturating_add_unsigned(window.width);
             let window_bottom = window.y.saturating_add_unsigned(window.height);
-            (window.x < right
+            let covers_output = window.x <= surface_rect.0
+                && window.y <= surface_rect.1
+                && window_right >= right
+                && window_bottom >= bottom;
+            (!covers_output
+                && window.x < right
                 && window_right > surface_rect.0
                 && window.y < bottom
                 && window_bottom > surface_rect.1)
@@ -252,9 +257,10 @@ fn normalize_wayland_windows(
 }
 
 pub fn prewarm_window_list() {
-    std::thread::spawn(|| {
-        let list = enumerate_windows();
-        *PREWARMED.lock().unwrap() = Some(list);
+    let (tx, rx) = channel();
+    *PREWARMED.lock().unwrap() = Some(rx);
+    std::thread::spawn(move || {
+        let _ = tx.send(enumerate_windows());
     });
 }
 
@@ -339,6 +345,7 @@ pub fn select(frozen_frame: Option<Arc<RgbaImage>>) -> SelectionResult {
         .lock()
         .unwrap()
         .take()
+        .and_then(|receiver| receiver.recv().ok())
         .unwrap_or_else(enumerate_windows);
     let surfaces = if pure_wayland {
         let captures = std::thread::scope(|scope| {
@@ -517,24 +524,17 @@ fn build_selector_window(
         .position(x, y)
         .inner_size(w, h)
         .build()?;
-    use gtk::gdk::prelude::MonitorExt;
     use gtk::prelude::{Cast, GtkWindowExt, WidgetExt};
     if let Ok(gtk_window) = window.gtk_window() {
         gtk_window.set_type_hint(gtk::gdk::WindowTypeHint::Notification);
         if is_wayland_session() {
             if let Some(screen) = WidgetExt::screen(&gtk_window) {
                 let display = gtk_window.display();
+                let center_x = (x + w / 2.0).round() as i32;
+                let center_y = (y + h / 2.0).round() as i32;
+                let target = display.monitor_at_point(center_x, center_y);
                 let monitor_index = (0..display.n_monitors())
-                    .find(|index| {
-                        let Some(monitor) = display.monitor(*index) else {
-                            return false;
-                        };
-                        let geometry = monitor.geometry();
-                        geometry.x() == x as i32
-                            && geometry.y() == y as i32
-                            && geometry.width() == w as i32
-                            && geometry.height() == h as i32
-                    })
+                    .find(|index| display.monitor(*index) == target)
                     .or_else(|| {
                         let primary = display.primary_monitor();
                         (0..display.n_monitors()).find(|index| display.monitor(*index) == primary)

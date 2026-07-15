@@ -324,6 +324,13 @@ export function Selector() {
     schedule();
   };
 
+  const onMouseLeave = () => {
+    cursorX = -1;
+    cursorY = -1;
+    if (!mouseDown && !hasSelection()) hovered = null;
+    schedule();
+  };
+
   const onMouseDown = async (e: MouseEvent) => {
     if (e.button !== 0) return;
     const point = toFrame(e);
@@ -498,6 +505,7 @@ export function Selector() {
       ref={root}
       class="selector"
       onMouseMove={onMouseMove}
+      onMouseLeave={onMouseLeave}
       onMouseDown={onMouseDown}
       onMouseUp={onMouseUp}
       onWheel={onWheel}
