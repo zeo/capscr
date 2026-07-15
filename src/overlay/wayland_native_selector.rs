@@ -145,6 +145,20 @@ struct Label {
     visible: bool,
 }
 
+// zoomed loupe following the pointer: the content surface samples the bright
+// plane through a viewport, the frame sibling draws the border and cross
+struct Magnifier {
+    surface: wl_surface::WlSurface,
+    subsurface: wl_subsurface::WlSubsurface,
+    viewport: wp_viewport::WpViewport,
+    frame_surface: wl_surface::WlSurface,
+    frame_subsurface: wl_subsurface::WlSubsurface,
+    visible: bool,
+}
+
+const MAG_SIZE: i32 = 120;
+const MAG_OFFSET: i32 = 30;
+
 struct OutputSurface {
     name: String,
     rect: Rectangle,
@@ -162,6 +176,7 @@ struct OutputSurface {
     bright: Plane,
     highlight: Highlight,
     label: Label,
+    magnifier: Magnifier,
     crosshair: Vec<Border>,
     borders: Vec<Border>,
     viewport: wp_viewport::WpViewport,
@@ -183,6 +198,8 @@ struct State {
     shift: bool,
     alt: bool,
     ctrl: bool,
+    zoom: i32,
+    scroll_accum: f64,
     cursor: Cursor,
     outcome: Sender<NativeOutcome>,
     done: bool,
@@ -486,6 +503,28 @@ impl Dispatch<wl_pointer::WlPointer, ()> for State {
                 state: WEnum::Value(button_state),
                 ..
             } => state.button(button, button_state),
+            wl_pointer::Event::Axis {
+                axis: WEnum::Value(wl_pointer::Axis::VerticalScroll),
+                value,
+                ..
+            } => {
+                // one wheel detent is 15 wayland axis units; scroll up zooms in
+                state.scroll_accum += value;
+                let mut changed = false;
+                while state.scroll_accum <= -15.0 {
+                    state.zoom = (state.zoom + 1).min(30);
+                    state.scroll_accum += 15.0;
+                    changed = true;
+                }
+                while state.scroll_accum >= 15.0 {
+                    state.zoom = (state.zoom - 1).max(2);
+                    state.scroll_accum -= 15.0;
+                    changed = true;
+                }
+                if changed {
+                    state.repaint();
+                }
+            }
             _ => {}
         }
     }
@@ -683,6 +722,7 @@ impl State {
         let dragging = !matches!(self.phase, DragPhase::Idle);
         let pointer = (self.pointer_x, self.pointer_y);
         let current = self.current_output;
+        let zoom = self.zoom as f64;
         for (index, output) in self.outputs.iter_mut().enumerate() {
             let clipped = rect.and_then(|rect| intersect(rect, output.rect));
             for (side, border) in output.borders.iter().enumerate() {
@@ -820,6 +860,68 @@ impl State {
                     guide.viewport.set_destination(width.max(1), height.max(1));
                 }
                 guide.surface.commit();
+            }
+
+            // loupe following the pointer, flipped inside the output at edges
+            match local_pointer {
+                Some((px, py)) => {
+                    let mag_x = if px + MAG_OFFSET + MAG_SIZE > output_width {
+                        (px - MAG_SIZE - MAG_OFFSET).max(0)
+                    } else {
+                        px + MAG_OFFSET
+                    };
+                    let mag_y = if py + MAG_OFFSET + MAG_SIZE > output_height {
+                        (py - MAG_SIZE - MAG_OFFSET).max(0)
+                    } else {
+                        py + MAG_OFFSET
+                    };
+                    let scale_x = output.image.width() as f64 / output.rect.width as f64;
+                    let scale_y = output.image.height() as f64 / output.rect.height as f64;
+                    // the source rect must stay inside the buffer: an
+                    // out-of-buffer viewport is a fatal protocol error
+                    let source_width = ((MAG_SIZE as f64 / zoom) * scale_x)
+                        .clamp(1.0, output.image.width() as f64);
+                    let source_height = ((MAG_SIZE as f64 / zoom) * scale_y)
+                        .clamp(1.0, output.image.height() as f64);
+                    let source_x = (px as f64 * scale_x - source_width / 2.0)
+                        .clamp(0.0, (output.image.width() as f64 - source_width).max(0.0));
+                    let source_y = (py as f64 * scale_y - source_height / 2.0)
+                        .clamp(0.0, (output.image.height() as f64 - source_height).max(0.0));
+                    output.magnifier.subsurface.set_position(mag_x, mag_y);
+                    output
+                        .magnifier
+                        .frame_subsurface
+                        .set_position(mag_x, mag_y);
+                    output
+                        .magnifier
+                        .viewport
+                        .set_source(source_x, source_y, source_width, source_height);
+                    output.magnifier.viewport.set_destination(MAG_SIZE, MAG_SIZE);
+                    output
+                        .magnifier
+                        .surface
+                        .attach(Some(&output.bright.buffer), 0, 0);
+                    output.magnifier.surface.damage_buffer(
+                        0,
+                        0,
+                        output.image.width() as i32,
+                        output.image.height() as i32,
+                    );
+                    output.magnifier.surface.commit();
+                    output.magnifier.frame_surface.commit();
+                    output.magnifier.visible = true;
+                }
+                None if output.magnifier.visible => {
+                    output.magnifier.subsurface.set_position(-10000, -10000);
+                    output
+                        .magnifier
+                        .frame_subsurface
+                        .set_position(-10000, -10000);
+                    output.magnifier.surface.commit();
+                    output.magnifier.frame_surface.commit();
+                    output.magnifier.visible = false;
+                }
+                None => {}
             }
 
             output.surface.commit();
@@ -981,6 +1083,8 @@ fn run(
         solid_buffer(&shm, &queue, [255; 4]).context("allocate border buffer")?;
     let (gray_pool, gray_buffer, gray_file) =
         solid_buffer(&shm, &queue, [128, 128, 128, 255]).context("allocate guide buffer")?;
+    let (loupe_pool, loupe_buffer, loupe_file) =
+        magnifier_frame_buffer(&shm, &queue).context("allocate loupe frame")?;
     let cursor = cursor(&compositor, &shm, &queue).context("build cursor surface")?;
     let empty_region = compositor.create_region(&queue, ());
     let mut state = State {
@@ -999,6 +1103,8 @@ fn run(
         shift: false,
         alt: false,
         ctrl: false,
+        zoom: 8,
+        scroll_accum: 0.0,
         cursor,
         outcome,
         done: false,
@@ -1045,6 +1151,7 @@ fn run(
                 output,
                 &white_buffer,
                 &gray_buffer,
+                &loupe_buffer,
                 &empty_region,
             )
             .with_context(|| format!("map selector surface on {output_name}"))?,
@@ -1134,6 +1241,9 @@ fn run(
     drop(gray_buffer);
     drop(gray_pool);
     drop(gray_file);
+    drop(loupe_buffer);
+    drop(loupe_pool);
+    drop(loupe_file);
     Ok(())
 }
 
@@ -1173,6 +1283,7 @@ fn map_output(
     output: NativeOutput,
     white_buffer: &wl_buffer::WlBuffer,
     gray_buffer: &wl_buffer::WlBuffer,
+    loupe_buffer: &wl_buffer::WlBuffer,
     empty_region: &wl_region::WlRegion,
 ) -> Result<OutputSurface> {
     let surface = compositor.create_surface(queue, ());
@@ -1299,6 +1410,31 @@ fn map_output(
         }
     };
 
+    // topmost pair: zoomed content below its chrome frame
+    let magnifier = {
+        let mag_surface = compositor.create_surface(queue, ());
+        mag_surface.set_input_region(Some(empty_region));
+        let mag_viewport = viewporter.get_viewport(&mag_surface, queue, ());
+        let subsurface = subcompositor.get_subsurface(&mag_surface, &surface, queue, ());
+        subsurface.set_position(-10000, -10000);
+        mag_surface.commit();
+        let frame_surface = compositor.create_surface(queue, ());
+        frame_surface.set_input_region(Some(empty_region));
+        frame_surface.attach(Some(loupe_buffer), 0, 0);
+        frame_surface.damage_buffer(0, 0, MAG_SIZE, MAG_SIZE);
+        let frame_subsurface = subcompositor.get_subsurface(&frame_surface, &surface, queue, ());
+        frame_subsurface.set_position(-10000, -10000);
+        frame_surface.commit();
+        Magnifier {
+            surface: mag_surface,
+            subsurface,
+            viewport: mag_viewport,
+            frame_surface,
+            frame_subsurface,
+            visible: false,
+        }
+    };
+
     Ok(OutputSurface {
         name: output.output_name,
         rect: output.rect,
@@ -1316,6 +1452,7 @@ fn map_output(
         bright,
         highlight,
         label,
+        magnifier,
         crosshair,
         borders,
         viewport,
@@ -1366,6 +1503,51 @@ fn image_buffer(
         _pool: pool,
         _file: file,
     })
+}
+
+// 120x120 loupe chrome: transparent fill, 1px white border, gray center cross
+fn magnifier_frame_buffer(
+    shm: &wl_shm::WlShm,
+    queue: &QueueHandle<State>,
+) -> Result<(wl_shm_pool::WlShmPool, wl_buffer::WlBuffer, File)> {
+    let side = MAG_SIZE as usize;
+    let mut pixels = vec![0u8; side * side * 4];
+    let mut put = |x: usize, y: usize, color: [u8; 4]| {
+        let offset = (y * side + x) * 4;
+        pixels[offset..offset + 4].copy_from_slice(&color);
+    };
+    for i in 0..side {
+        for (x, y) in [(i, 0), (i, side - 1), (0, i), (side - 1, i)] {
+            put(x, y, [255, 255, 255, 255]);
+        }
+    }
+    let center = side / 2;
+    for arm in 0..=10usize {
+        for (x, y) in [
+            (center - arm, center),
+            (center + arm, center),
+            (center, center - arm),
+            (center, center + arm),
+        ] {
+            put(x, y, [128, 128, 128, 255]);
+        }
+    }
+    let size = (side * side * 4) as u32;
+    let (mut file, path) = create_shm_file("loupe", size)?;
+    file.write_all(&pixels)?;
+    file.seek(SeekFrom::Start(0))?;
+    let _ = std::fs::remove_file(path);
+    let pool = shm.create_pool(file.as_fd(), size as i32, queue, ());
+    let buffer = pool.create_buffer(
+        0,
+        MAG_SIZE,
+        MAG_SIZE,
+        MAG_SIZE * 4,
+        wl_shm::Format::Argb8888,
+        queue,
+        (),
+    );
+    Ok((pool, buffer, file))
 }
 
 fn solid_buffer(
