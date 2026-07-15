@@ -18,7 +18,8 @@ const PANES: { id: Pane; label: string }[] = [
   { id: "hotkeys", label: "hotkeys" },
   { id: "ssh", label: "ssh" },
   { id: "notify", label: "notify" },
-];
+  // no hdr pixel source exists on linux; the pane would be inert
+].filter((pane) => !(IS_LINUX && pane.id === "hdr"));
 
 export function Settings() {
   const [pane, setPane] = createSignal<Pane>("general");
@@ -849,7 +850,7 @@ function NotifyPane(props: { c: AppConfig; patch: Patch }) {
 
       <Section title="system">
         <div class="field">
-          <label class="field-label">start up with windows</label>
+          <label class="field-label">start at login</label>
           <div class="field-control">
             <label class="check">
               <input
@@ -864,11 +865,11 @@ function NotifyPane(props: { c: AppConfig; patch: Patch }) {
               />
               <span class="check-label">
                 {c().ui.auto_start
-                  ? "will show up in windows startup apps list"
+                  ? "launches automatically at login"
                   : "manual launch only"}
               </span>
             </label>
-            <span class="field-hint">launch capscr automatically on windows bootup (applied on next save)</span>
+            <span class="field-hint">launch capscr automatically at login (applied on next save)</span>
           </div>
         </div>
         <div class="field">
@@ -906,7 +907,7 @@ function NotifyPane(props: { c: AppConfig; patch: Patch }) {
               />
               <span class="check-label">
                 {c().ui.save_clipboard_to_history
-                  ? "saves clipboard-only captures to AppData history cache"
+                  ? "saves clipboard-only captures to the local history cache"
                   : "clipboard-only captures are not saved to history"}
               </span>
             </label>

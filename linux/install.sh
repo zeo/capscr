@@ -32,7 +32,7 @@ install -m 644 icons/icon.png "$icon_dir/capscr.png"
 
 # the desktop file name and the ScreenShot2 grant are what authorize the app
 # against kwin's screenshot interface — keep both stable
-sed -e "s|{{exec}}|$bin_dir/capscr|" \
+sed -e "s|{{exec}}|$bin_dir/capscr|g" \
     -e "s|{{name}}|capscr|" \
     -e "s|{{icon}}|capscr|" \
     -e "s|{{comment}}|Screen capture|" \

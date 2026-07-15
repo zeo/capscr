@@ -4,12 +4,12 @@
     "linux": {
       "deb": {
         "desktopTemplate": "linux/capscr.desktop",
-        "recommends": ["ffmpeg", "tesseract-ocr", "xclip"],
+        "recommends": ["ffmpeg", "tesseract-ocr", "xclip", "pulseaudio-utils"],
         "section": "graphics"
       },
       "rpm": {
         "desktopTemplate": "linux/capscr.desktop",
-        "recommends": ["ffmpeg", "tesseract", "xclip"]
+        "recommends": ["ffmpeg", "tesseract", "xclip", "pulseaudio-utils"]
       }
     }
   }

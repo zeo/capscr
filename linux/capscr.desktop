@@ -10,3 +10,29 @@ Terminal=false
 Type=Application
 X-KDE-DBUS-Restricted-Interfaces=org.kde.KWin.ScreenShot2
 X-KDE-Wayland-Interfaces=org_kde_plasma_window_management
+Actions=capture-region;capture-window;capture-fullscreen;open-captures;open-hub;
+
+[Desktop Action capture-region]
+Name=Capture region
+Exec={{exec}} --jump=region
+Icon={{icon}}
+
+[Desktop Action capture-window]
+Name=Capture window
+Exec={{exec}} --jump=window
+Icon={{icon}}
+
+[Desktop Action capture-fullscreen]
+Name=Capture fullscreen
+Exec={{exec}} --jump=fullscreen
+Icon={{icon}}
+
+[Desktop Action open-captures]
+Name=Open captures folder
+Exec={{exec}} --jump=captures
+Icon={{icon}}
+
+[Desktop Action open-hub]
+Name=Open hub
+Exec={{exec}} --jump=hub
+Icon={{icon}}
