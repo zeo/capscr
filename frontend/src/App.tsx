@@ -45,6 +45,9 @@ type Tab = {
   context: string;
 };
 
+// matches the updater endpoint host in tauri.conf.json
+const RELEASES_URL = "https://github.com/zeo/capscr/releases/latest";
+
 const TABS: Tab[] = [
   { id: "settings", key: "s", label: "settings", context: "settings" },
   { id: "tasks", key: "t", label: "tasks", context: "tasks" },
@@ -484,16 +487,31 @@ function Hub() {
                 you're on v{updateInfo()!.current_version}
               </span>
             </div>
-            <button
-              type="button"
-              class="btn"
-              data-size="xs"
-              onClick={runUpdate}
-              disabled={updating()}
+            <Show
+              when={updateInfo()!.install_kind === "in-place"}
+              fallback={
+                <button
+                  type="button"
+                  class="btn"
+                  data-size="xs"
+                  onClick={() => void openUrl(RELEASES_URL)}
+                >
+                  <Download size={11} stroke-width={1.5} />
+                  get release
+                </button>
+              }
             >
-              <Download size={11} stroke-width={1.5} />
-              {updating() ? "installing..." : "install + restart"}
-            </button>
+              <button
+                type="button"
+                class="btn"
+                data-size="xs"
+                onClick={runUpdate}
+                disabled={updating()}
+              >
+                <Download size={11} stroke-width={1.5} />
+                {updating() ? "installing..." : "install + restart"}
+              </button>
+            </Show>
             <button
               type="button"
               class="btn"

@@ -173,6 +173,7 @@ export interface UpdateInfo {
   version: string;
   current_version: string;
   notes: string | null;
+  install_kind: "in-place" | "external";
 }
 
 export interface HotkeyStatusEntry {

@@ -1585,6 +1585,24 @@ pub struct UpdateInfo {
     pub version: String,
     pub current_version: String,
     pub notes: Option<String>,
+    pub install_kind: &'static str,
+}
+
+// the linux updater can only swap a running AppImage; deb/rpm/plain-binary
+// installs must fetch the release themselves
+fn update_install_kind() -> &'static str {
+    #[cfg(target_os = "linux")]
+    {
+        if std::env::var_os("APPIMAGE").is_some() {
+            "in-place"
+        } else {
+            "external"
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        "in-place"
+    }
 }
 
 #[tauri::command]
@@ -1596,12 +1614,16 @@ pub async fn check_for_updates(app: AppHandle) -> Result<Option<UpdateInfo>, Str
         version: u.version.to_string(),
         current_version: u.current_version.to_string(),
         notes: u.body.clone(),
+        install_kind: update_install_kind(),
     }))
 }
 
 #[tauri::command]
 pub async fn install_update(app: AppHandle) -> Result<(), String> {
     use tauri_plugin_updater::UpdaterExt;
+    if update_install_kind() == "external" {
+        return Err("this install can't self-update; download the new release instead".into());
+    }
     let updater = app.updater().map_err(|e| e.to_string())?;
     let update = updater
         .check()
