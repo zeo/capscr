@@ -380,33 +380,23 @@ fn run_capture_pipeline_inner(
     let frozen_frame = if needs_selector {
         let t0 = std::time::Instant::now();
         #[cfg(target_os = "linux")]
-        let captured = if crate::capture::is_wayland_session() {
-            crate::capture::active_wayland_monitor().and_then(|monitor| {
-                crate::capture::capture_wayland_area(
-                    monitor.x,
-                    monitor.y,
-                    monitor.width,
-                    monitor.height,
-                )
-            })
-        } else {
-            ScreenCapture::all_monitors()
-        };
+        let captured = (!crate::capture::is_wayland_session()).then(ScreenCapture::all_monitors);
         #[cfg(not(target_os = "linux"))]
-        let captured = ScreenCapture::all_monitors();
+        let captured = Some(ScreenCapture::all_monitors());
 
         match captured {
-            Ok(img) => {
+            Some(Ok(img)) => {
                 tracing::info!(
                     "Captured full screen freeze-frame in {}ms",
                     t0.elapsed().as_millis()
                 );
                 Some(Arc::new(img))
             }
-            Err(e) => {
+            Some(Err(e)) => {
                 tracing::warn!("Failed to capture full screen freeze-frame: {e:#}");
                 None
             }
+            None => None,
         }
     } else {
         None
@@ -415,7 +405,7 @@ fn run_capture_pipeline_inner(
     // snapshot the cursor at the freeze-frame instant for selector-backed modes
     // so the composite step paints it where it was when the screen froze instead
     // of wherever the mouse ended up after the region drag
-    let frozen_cursor = if frozen_frame.is_some() {
+    let frozen_cursor = if needs_selector {
         crate::capture::capture_cursor_shot()
     } else {
         None
@@ -436,6 +426,13 @@ fn run_capture_pipeline_inner(
     };
 
     tracing::info!("run_capture_pipeline_inner: selection = {selection:?}");
+    #[cfg(target_os = "linux")]
+    if needs_selector
+        && crate::capture::is_wayland_session()
+        && !matches!(&selection, SelectionResult::Cancelled)
+    {
+        std::thread::sleep(Duration::from_millis(20));
+    }
 
     let (mut image, mut hdr_bitmap, screen_origin): (
         image::RgbaImage,

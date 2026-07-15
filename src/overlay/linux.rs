@@ -1,5 +1,5 @@
-// linux selector overlay: a single undecorated always-on-top webview spanning
-// the virtual desktop, showing the frozen frame with the same interaction
+// linux selector overlay: one undecorated always-on-top webview per output,
+// showing frozen frames with the same interaction
 // model as the win32 GDI selector (drag region, click window, alt+click color
 // pick, shift aspect-snap, ctrl fine-tune, esc/right-click cancel). the UI
 // lives in frontend/src/views/Selector.tsx and talks back over the commands
@@ -7,9 +7,9 @@
 //
 // select() blocks the calling capture thread on a channel until the UI
 // commits a result; window creation happens on the main thread via
-// run_on_main_thread. on wayland global window positioning isn't available,
-// so the overlay is fullscreened on the current monitor instead of spanning.
+// run_on_main_thread. on wayland each webview is fullscreened on its output.
 
+use std::collections::HashSet;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
@@ -22,7 +22,7 @@ use crate::capture::Rectangle;
 
 use super::SelectionResult;
 
-const SELECTOR_LABEL: &str = "selector";
+const SELECTOR_LABEL_PREFIX: &str = "selector-";
 // generous upper bound so a wedged webview can't hold the capture gate
 // (capture_in_progress) forever
 const SELECT_TIMEOUT: Duration = Duration::from_secs(600);
@@ -30,11 +30,18 @@ const SELECT_TIMEOUT: Duration = Duration::from_secs(600);
 static APP: OnceLock<AppHandle> = OnceLock::new();
 
 struct ActiveSelection {
-    frame: Option<Arc<RgbaImage>>,
-    // virtual-screen origin of the frame's top-left pixel
+    surfaces: Vec<SelectorSurface>,
+    ready: HashSet<String>,
+    focus_label: String,
+    tx: Sender<SelectionResult>,
+}
+
+struct SelectorSurface {
+    label: String,
+    frame: Arc<RgbaImage>,
     origin: (i32, i32),
     windows: Vec<WindowRect>,
-    tx: Sender<SelectionResult>,
+    rect: (i32, i32, u32, u32),
 }
 
 static ACTIVE: Mutex<Option<ActiveSelection>> = Mutex::new(None);
@@ -145,15 +152,28 @@ pub fn cancel_active_selection() {
 fn finish(result: SelectionResult) {
     let active = ACTIVE.lock().unwrap().take();
     let Some(active) = active else { return };
-    let _ = active.tx.send(result);
+    let labels: Vec<_> = active
+        .surfaces
+        .into_iter()
+        .map(|surface| surface.label)
+        .collect();
     if let Some(app) = APP.get() {
+        for label in &labels {
+            if let Some(window) = app.get_webview_window(label) {
+                let _ = window.hide();
+            }
+        }
         let app = app.clone();
+        let labels = labels.clone();
         let _ = app.clone().run_on_main_thread(move || {
-            if let Some(w) = app.get_webview_window(SELECTOR_LABEL) {
-                let _ = w.destroy();
+            for label in labels {
+                if let Some(window) = app.get_webview_window(&label) {
+                    let _ = window.destroy();
+                }
             }
         });
     }
+    let _ = active.tx.send(result);
 }
 
 // a wayland session also exposes DISPLAY via xwayland, so DISPLAY being set does
@@ -187,95 +207,131 @@ pub fn select(frozen_frame: Option<Arc<RgbaImage>>) -> SelectionResult {
     if monitors.is_empty() {
         return SelectionResult::Cancelled;
     }
-    let desktop_origin = (
-        monitors.iter().map(|m| m.x).min().unwrap_or(0),
-        monitors.iter().map(|m| m.y).min().unwrap_or(0),
-    );
     let pure_wayland = is_wayland_session();
-    let active_wayland_monitor = if pure_wayland {
-        crate::capture::active_wayland_monitor().ok().or_else(|| {
+    let active_output = pure_wayland
+        .then(crate::capture::active_wayland_monitor)
+        .and_then(Result::ok)
+        .map(|monitor| monitor.name);
+    let all_windows = PREWARMED
+        .lock()
+        .unwrap()
+        .take()
+        .unwrap_or_else(enumerate_windows);
+    let surfaces = if pure_wayland {
+        let captures = std::thread::scope(|scope| {
             monitors
                 .iter()
-                .find(|monitor| monitor.is_primary)
-                .or_else(|| monitors.first())
-                .cloned()
-        })
+                .map(|monitor| {
+                    scope.spawn(|| {
+                        crate::capture::capture_wayland_area(
+                            monitor.x,
+                            monitor.y,
+                            monitor.width,
+                            monitor.height,
+                        )
+                    })
+                })
+                .collect::<Vec<_>>()
+                .into_iter()
+                .map(|job| job.join())
+                .collect::<Vec<_>>()
+        });
+        let mut surfaces = Vec::with_capacity(monitors.len());
+        for (index, (monitor, capture)) in monitors.iter().zip(captures).enumerate() {
+            let rect = (monitor.x, monitor.y, monitor.width, monitor.height);
+            let frame = match capture {
+                Ok(Ok(frame)) => Arc::new(frame),
+                Ok(Err(error)) => {
+                    tracing::error!("failed to freeze output {}: {error:#}", monitor.name);
+                    return SelectionResult::Cancelled;
+                }
+                Err(_) => {
+                    tracing::error!("output capture worker panicked for {}", monitor.name);
+                    return SelectionResult::Cancelled;
+                }
+            };
+            surfaces.push(SelectorSurface {
+                label: format!("{SELECTOR_LABEL_PREFIX}{index}"),
+                frame,
+                origin: (monitor.x, monitor.y),
+                windows: normalize_wayland_windows(all_windows.clone(), rect, &monitor.name),
+                rect,
+            });
+        }
+        surfaces
     } else {
-        None
-    };
-    let surface_rect = if let Some(monitor) = &active_wayland_monitor {
-        (monitor.x, monitor.y, monitor.width, monitor.height)
-    } else {
-        (
+        let desktop_origin = (
+            monitors.iter().map(|monitor| monitor.x).min().unwrap_or(0),
+            monitors.iter().map(|monitor| monitor.y).min().unwrap_or(0),
+        );
+        let rect = (
             desktop_origin.0,
             desktop_origin.1,
             monitors
                 .iter()
-                .map(|m| m.x + m.width as i32)
+                .map(|monitor| monitor.x + monitor.width as i32)
                 .max()
                 .unwrap_or(0)
                 .saturating_sub(desktop_origin.0) as u32,
             monitors
                 .iter()
-                .map(|m| m.y + m.height as i32)
+                .map(|monitor| monitor.y + monitor.height as i32)
                 .max()
                 .unwrap_or(0)
                 .saturating_sub(desktop_origin.1) as u32,
-        )
-    };
-
-    let mut windows = PREWARMED
-        .lock()
-        .unwrap()
-        .take()
-        .unwrap_or_else(enumerate_windows);
-    if pure_wayland {
-        let output_name = active_wayland_monitor
-            .as_ref()
-            .map(|monitor| monitor.name.as_str())
-            .unwrap_or_default();
-        windows = normalize_wayland_windows(windows, surface_rect, output_name);
-    }
-
-    // recording region-picks call select(None). the win32 selector shows the
-    // live desktop through a semi-transparent layered window there; X11 can't
-    // rely on a compositor for that, so grab our own freeze-frame backdrop
-    let frame = frozen_frame.or_else(|| {
-        if pure_wayland {
-            crate::capture::capture_wayland_area(
-                surface_rect.0,
-                surface_rect.1,
-                surface_rect.2,
-                surface_rect.3,
-            )
-            .ok()
-            .map(Arc::new)
-        } else {
+        );
+        let frame = frozen_frame.or_else(|| {
             crate::capture::ScreenCapture::all_monitors()
                 .ok()
                 .map(Arc::new)
-        }
-    });
+        });
+        let Some(frame) = frame else {
+            return SelectionResult::Cancelled;
+        };
+        vec![SelectorSurface {
+            label: format!("{SELECTOR_LABEL_PREFIX}0"),
+            frame,
+            origin: desktop_origin,
+            windows: all_windows,
+            rect,
+        }]
+    };
+
+    let focus_label = active_output
+        .and_then(|name| {
+            monitors
+                .iter()
+                .position(|monitor| monitor.name == name)
+                .map(|index| format!("{SELECTOR_LABEL_PREFIX}{index}"))
+        })
+        .unwrap_or_else(|| surfaces[0].label.clone());
 
     let (tx, rx): (Sender<SelectionResult>, Receiver<SelectionResult>) = channel();
     *ACTIVE.lock().unwrap() = Some(ActiveSelection {
-        frame,
-        origin: (surface_rect.0, surface_rect.1),
-        windows,
+        surfaces,
+        ready: HashSet::new(),
+        focus_label,
         tx,
     });
 
     let app_for_build = app.clone();
-    let virt = (
-        surface_rect.0 as f64,
-        surface_rect.1 as f64,
-        surface_rect.2 as f64,
-        surface_rect.3 as f64,
-    );
+    let windows: Vec<_> = ACTIVE
+        .lock()
+        .unwrap()
+        .as_ref()
+        .unwrap()
+        .surfaces
+        .iter()
+        .map(|surface| (surface.label.clone(), surface.rect))
+        .collect();
     let built = app.run_on_main_thread(move || {
-        if let Err(e) = build_selector_window(&app_for_build, virt) {
-            tracing::error!("selector window build failed: {e}");
-            finish(SelectionResult::Cancelled);
+        for (label, rect) in windows {
+            let rect = (rect.0 as f64, rect.1 as f64, rect.2 as f64, rect.3 as f64);
+            if let Err(error) = build_selector_window(&app_for_build, &label, rect) {
+                tracing::error!("selector window build failed: {error}");
+                finish(SelectionResult::Cancelled);
+                break;
+            }
         }
     });
     if built.is_err() {
@@ -293,12 +349,16 @@ pub fn select(frozen_frame: Option<Arc<RgbaImage>>) -> SelectionResult {
     }
 }
 
-fn build_selector_window(app: &AppHandle, (x, y, w, h): (f64, f64, f64, f64)) -> tauri::Result<()> {
-    if let Some(stale) = app.get_webview_window(SELECTOR_LABEL) {
+fn build_selector_window(
+    app: &AppHandle,
+    label: &str,
+    (x, y, w, h): (f64, f64, f64, f64),
+) -> tauri::Result<()> {
+    if let Some(stale) = app.get_webview_window(label) {
         let _ = stale.destroy();
     }
     let url = tauri::WebviewUrl::App("index.html".into());
-    let window = tauri::WebviewWindowBuilder::new(app, SELECTOR_LABEL, url)
+    let window = tauri::WebviewWindowBuilder::new(app, label, url)
         .title("capscr selector")
         .decorations(false)
         .resizable(false)
@@ -401,42 +461,73 @@ pub struct SelectorContext {
 }
 
 #[tauri::command]
-pub fn selector_context() -> Result<SelectorContext, String> {
+pub fn selector_context(window: tauri::WebviewWindow) -> Result<SelectorContext, String> {
     let guard = ACTIVE.lock().unwrap();
     let active = guard.as_ref().ok_or("no active selection")?;
-    let (fw, fh) = active
-        .frame
-        .as_ref()
-        .map(|f| (f.width(), f.height()))
-        .unwrap_or((0, 0));
+    let surface = active
+        .surfaces
+        .iter()
+        .find(|surface| surface.label == window.label())
+        .ok_or("selector surface is unavailable")?;
     Ok(SelectorContext {
-        origin_x: active.origin.0,
-        origin_y: active.origin.1,
-        frame_width: fw,
-        frame_height: fh,
-        windows: active.windows.clone(),
+        origin_x: surface.origin.0,
+        origin_y: surface.origin.1,
+        frame_width: surface.frame.width(),
+        frame_height: surface.frame.height(),
+        windows: surface.windows.clone(),
     })
 }
 
 // raw RGBA bytes of the frozen frame; the UI paints them straight into a
 // canvas ImageData without an encode/decode round-trip
 #[tauri::command]
-pub fn selector_frame() -> Result<tauri::ipc::Response, String> {
+pub fn selector_frame(window: tauri::WebviewWindow) -> Result<tauri::ipc::Response, String> {
     let guard = ACTIVE.lock().unwrap();
     let active = guard.as_ref().ok_or("no active selection")?;
-    let frame = active.frame.as_ref().ok_or("no frozen frame")?;
-    Ok(tauri::ipc::Response::new(frame.as_raw().clone()))
+    let surface = active
+        .surfaces
+        .iter()
+        .find(|surface| surface.label == window.label())
+        .ok_or("selector surface is unavailable")?;
+    Ok(tauri::ipc::Response::new(surface.frame.as_raw().clone()))
 }
 
 #[tauri::command]
-pub fn selector_ready() -> Result<(), String> {
+pub fn selector_ready(window: tauri::WebviewWindow) -> Result<(), String> {
     let app = APP.get().ok_or("selector app handle is unavailable")?;
-    let window = app
-        .get_webview_window(SELECTOR_LABEL)
-        .ok_or("selector window is unavailable")?;
-    window.show().map_err(|error| error.to_string())?;
-    window.set_focus().map_err(|error| error.to_string())?;
-    set_selector_cursor(&window);
+    let (labels, focus_label) = {
+        let mut guard = ACTIVE.lock().unwrap();
+        let active = guard.as_mut().ok_or("no active selection")?;
+        if !active
+            .surfaces
+            .iter()
+            .any(|surface| surface.label == window.label())
+        {
+            return Err("selector surface is unavailable".into());
+        }
+        active.ready.insert(window.label().to_string());
+        if active.ready.len() != active.surfaces.len() {
+            return Ok(());
+        }
+        (
+            active
+                .surfaces
+                .iter()
+                .map(|surface| surface.label.clone())
+                .collect::<Vec<_>>(),
+            active.focus_label.clone(),
+        )
+    };
+    for label in labels {
+        let surface = app
+            .get_webview_window(&label)
+            .ok_or("selector window is unavailable")?;
+        surface.show().map_err(|error| error.to_string())?;
+        set_selector_cursor(&surface);
+    }
+    if let Some(focus) = app.get_webview_window(&focus_label) {
+        focus.set_focus().map_err(|error| error.to_string())?;
+    }
     Ok(())
 }
 

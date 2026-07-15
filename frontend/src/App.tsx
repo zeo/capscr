@@ -65,7 +65,7 @@ export function App() {
   if (label.startsWith("pin_")) {
     return <PinView label={label} />;
   }
-  if (label === "selector") {
+  if (label.startsWith("selector-")) {
     return <Selector />;
   }
   if (label === "recbar") {
