@@ -1,8 +1,8 @@
 #![allow(dead_code)]
 
-use anyhow::{anyhow, Result};
 #[cfg(target_os = "linux")]
 use anyhow::Context;
+use anyhow::{anyhow, Result};
 use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 use std::fs;
