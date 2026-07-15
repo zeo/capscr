@@ -338,6 +338,57 @@ mod tests {
         let _ = std::fs::remove_file(tmp);
     }
 
+    // linux has no HDR pixel source yet (see the note in hdr.rs), so this
+    // synthetic gradient stands in for a DXGI frame and proves the pipeline
+    // from raw HDR10 bytes through tonemapping and the cICP-preserving
+    // encoder on every platform
+    #[test]
+    fn synthetic_hdr10_pipeline_tonemaps_and_roundtrips_cicp() {
+        use crate::capture::tonemapping::{hdr10_to_sdr_bt2390, TonemapParams};
+
+        // 4x1 PQ gradient: black, ~mid gray, bright highlight, PQ peak
+        let pq_levels = [0u16, 33124, 49854, 65535];
+        let mut data = Vec::new();
+        for level in pq_levels {
+            for _ in 0..3 {
+                data.extend_from_slice(&level.to_le_bytes());
+            }
+            data.extend_from_slice(&65535u16.to_le_bytes());
+        }
+        let bitmap = HdrBitmap {
+            width: 4,
+            height: 1,
+            format: HdrFormat::Hdr10,
+            data: data.clone(),
+            max_luminance_nits: 1000.0,
+        };
+
+        let pq_u16: Vec<u16> = data
+            .chunks_exact(2)
+            .map(|bytes| u16::from_le_bytes([bytes[0], bytes[1]]))
+            .collect();
+        let sdr = hdr10_to_sdr_bt2390(&pq_u16, 4, 1, 240.0, TonemapParams::default());
+        assert_eq!((sdr.width(), sdr.height()), (4, 1));
+        assert_eq!(sdr.get_pixel(0, 0)[0], 0);
+        assert!(sdr.get_pixel(1, 0)[0] < sdr.get_pixel(2, 0)[0]);
+        assert!(sdr.get_pixel(2, 0)[0] <= sdr.get_pixel(3, 0)[0]);
+
+        let tmp = std::env::temp_dir().join("capscr-hdr10-pipeline-test.png");
+        encode_hdr_png(&tmp, &bitmap, HdrTransfer::Pq).unwrap();
+        let info = read_cicp(&tmp).expect("cICP chunk should be present");
+        assert_eq!(
+            (
+                info.colour_primaries,
+                info.transfer,
+                info.matrix,
+                info.full_range
+            ),
+            (9, 16, 0, 1)
+        );
+        assert!(info.is_hdr());
+        let _ = std::fs::remove_file(tmp);
+    }
+
     #[test]
     fn pq_eotf_known_points() {
         // 0 -> 0 nits

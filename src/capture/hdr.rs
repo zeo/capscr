@@ -102,6 +102,14 @@ impl Default for HdrDisplayInfo {
     }
 }
 
+// linux capture stays SDR for now: as of mid-2026 there is no HDR pixel
+// source to integrate — kwin's ScreenShot2 (v5) returns 8-bit frames with no
+// color metadata, kwin's pipewire screencast advertises 8-bit formats only,
+// and ext-image-copy-capture-v1 color-management integration is still in
+// progress upstream. when a source lands, a backend has to produce raw bytes
+// plus an HdrFormat and the display's sdr white level; tonemapping.rs and
+// hdr_png.rs already handle everything downstream and are test-covered with
+// synthetic buffers (hdr_png.rs, synthetic pipeline test).
 pub struct HdrCapture;
 
 impl HdrCapture {
@@ -142,6 +150,7 @@ impl HdrCapture {
         #[cfg(not(target_os = "windows"))]
         {
             let _ = (x, y);
+            tracing::debug!("no hdr pixel source on this platform; capturing sdr");
             false
         }
     }
