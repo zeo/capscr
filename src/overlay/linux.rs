@@ -560,6 +560,9 @@ pub fn select(frozen_frame: Option<Arc<RgbaImage>>) -> SelectionResult {
                             },
                         )
                     }
+                    Ok(super::wayland_native_selector::NativeOutcome::FullScreen) => {
+                        SelectionResult::FullScreen
+                    }
                     Ok(super::wayland_native_selector::NativeOutcome::Cancelled) => {
                         SelectionResult::Cancelled
                     }

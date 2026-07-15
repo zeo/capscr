@@ -40,8 +40,18 @@ pub enum NativeOutcome {
     Region(Rectangle),
     Window(NativeWindow),
     Monitor(Rectangle, String),
+    FullScreen,
     Color(u8, u8, u8),
     Cancelled,
+}
+
+// windows-parity drag lifecycle: a ctrl-release parks the selection in
+// Standing, where pointer motion leaves it alone and arrows fine-tune it
+#[derive(Clone, Copy)]
+enum DragPhase {
+    Idle,
+    Dragging { start: (f64, f64), end: (f64, f64) },
+    Standing { start: (f64, f64), end: (f64, f64) },
 }
 
 pub struct NativeSelector {
@@ -167,10 +177,12 @@ struct State {
     current_output: Option<usize>,
     pointer_x: f64,
     pointer_y: f64,
-    start: Option<(f64, f64)>,
+    phase: DragPhase,
+    repeat: Option<(u32, std::time::Instant)>,
     hovered: Option<NativeWindow>,
     shift: bool,
     alt: bool,
+    ctrl: bool,
     cursor: Cursor,
     outcome: Sender<NativeOutcome>,
     done: bool,
@@ -401,26 +413,27 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for State {
         match key {
             42 | 54 => state.shift = pressed,
             56 | 100 => state.alt = pressed,
+            29 | 97 => state.ctrl = pressed,
             _ => {}
         }
         if !pressed {
+            if state.repeat.is_some_and(|(held, _)| held == key) {
+                state.repeat = None;
+            }
             return;
         }
         match key {
             1 => state.finish(NativeOutcome::Cancelled),
-            28 | 57 => {
-                if let Some((start_x, start_y)) = state.start {
-                    state.finish(NativeOutcome::Region(selection_rectangle(
-                        start_x,
-                        start_y,
-                        state.pointer_x,
-                        state.pointer_y,
-                        state.shift,
-                    )));
-                } else if let Some(index) = state.current_output {
-                    let output = &state.outputs[index];
-                    state.finish(NativeOutcome::Monitor(output.rect, output.name.clone()));
-                }
+            28 | 57 => match state.selection_rect() {
+                Some(rect) => state.finish(NativeOutcome::Region(rect)),
+                // enter or space with nothing selected captures everything,
+                // same as the windows selector
+                None => state.finish(NativeOutcome::FullScreen),
+            },
+            103 | 105 | 106 | 108 => {
+                state.nudge(key);
+                state.repeat =
+                    Some((key, std::time::Instant::now() + Duration::from_millis(500)));
             }
             _ => {}
         }
@@ -463,7 +476,7 @@ impl Dispatch<wl_pointer::WlPointer, ()> for State {
             } => state.update_pointer(surface_x, surface_y),
             wl_pointer::Event::Leave { .. } => {
                 state.current_output = None;
-                if state.start.is_none() {
+                if matches!(state.phase, DragPhase::Idle) {
                     state.hovered = None;
                     state.paint_outline(None);
                 }
@@ -495,30 +508,122 @@ impl State {
         let output = &self.outputs[index];
         self.pointer_x = output.rect.x as f64 + local_x;
         self.pointer_y = output.rect.y as f64 + local_y;
-        let outline = if let Some(start) = self.start {
-            Some(selection_rectangle(
-                start.0,
-                start.1,
-                self.pointer_x,
-                self.pointer_y,
-                self.shift,
-            ))
-        } else {
-            self.hovered = output
-                .windows
-                .iter()
-                .find(|window| {
-                    self.pointer_x >= window.rect.x as f64
-                        && self.pointer_x
-                            < window.rect.x.saturating_add_unsigned(window.rect.width) as f64
-                        && self.pointer_y >= window.rect.y as f64
-                        && self.pointer_y
-                            < window.rect.y.saturating_add_unsigned(window.rect.height) as f64
-                })
-                .cloned();
-            self.hovered.as_ref().map(|window| window.rect)
+        match self.phase {
+            // pointer motion re-anchors the drag end (arrow nudges made
+            // mid-drag are provisional; Standing is the durable phase)
+            DragPhase::Dragging { start, .. } => {
+                self.phase = DragPhase::Dragging {
+                    start,
+                    end: (self.pointer_x, self.pointer_y),
+                };
+            }
+            DragPhase::Standing { .. } => {}
+            DragPhase::Idle => {
+                self.hovered = output
+                    .windows
+                    .iter()
+                    .find(|window| {
+                        self.pointer_x >= window.rect.x as f64
+                            && self.pointer_x
+                                < window.rect.x.saturating_add_unsigned(window.rect.width) as f64
+                            && self.pointer_y >= window.rect.y as f64
+                            && self.pointer_y
+                                < window.rect.y.saturating_add_unsigned(window.rect.height) as f64
+                    })
+                    .cloned();
+            }
+        }
+        self.repaint();
+    }
+
+    // the current outline, derived from the drag phase or the hovered window
+    fn repaint(&mut self) {
+        let outline = match self.phase {
+            DragPhase::Dragging { start, end } | DragPhase::Standing { start, end } => Some(
+                selection_rectangle(start.0, start.1, end.0, end.1, self.shift),
+            ),
+            DragPhase::Idle => self.hovered.as_ref().map(|window| window.rect),
         };
         self.paint_outline(outline);
+    }
+
+    // a committed-size selection; sub-threshold drags count as clicks
+    fn selection_rect(&self) -> Option<Rectangle> {
+        match self.phase {
+            DragPhase::Dragging { start, end } | DragPhase::Standing { start, end }
+                if (end.0 - start.0).abs() > 5.0 || (end.1 - start.1).abs() > 5.0 =>
+            {
+                Some(selection_rectangle(
+                    start.0, start.1, end.0, end.1, self.shift,
+                ))
+            }
+            _ => None,
+        }
+    }
+
+    // 1px arrow fine-tuning with the windows modifier matrix
+    fn nudge(&mut self, key: u32) {
+        let delta = match key {
+            105 => (-1.0, 0.0),
+            106 => (1.0, 0.0),
+            103 => (0.0, -1.0),
+            108 => (0.0, 1.0),
+            _ => return,
+        };
+        let moved = |point: (f64, f64)| (point.0 + delta.0, point.1 + delta.1);
+        self.phase = match self.phase {
+            DragPhase::Dragging { start, end } => {
+                if self.ctrl && self.shift {
+                    DragPhase::Dragging {
+                        start: moved(start),
+                        end,
+                    }
+                } else if self.ctrl {
+                    DragPhase::Dragging {
+                        start: moved(start),
+                        end: moved(end),
+                    }
+                } else {
+                    DragPhase::Dragging {
+                        start,
+                        end: moved(end),
+                    }
+                }
+            }
+            DragPhase::Standing { start, end } => {
+                if self.ctrl && self.shift {
+                    DragPhase::Standing {
+                        start: moved(start),
+                        end,
+                    }
+                } else if self.ctrl {
+                    DragPhase::Standing {
+                        start: moved(start),
+                        end: moved(end),
+                    }
+                } else if self.shift {
+                    DragPhase::Standing {
+                        start,
+                        end: moved(end),
+                    }
+                } else {
+                    return;
+                }
+            }
+            DragPhase::Idle => {
+                // shift+arrow seeds a selection at the pointer for
+                // keyboard-only picking
+                if self.shift && !self.ctrl {
+                    DragPhase::Standing {
+                        start: (self.pointer_x, self.pointer_y),
+                        end: moved((self.pointer_x, self.pointer_y)),
+                    }
+                } else {
+                    return;
+                }
+            }
+        };
+        self.repaint();
     }
 
     fn button(&mut self, button: u32, state: wl_pointer::ButtonState) {
@@ -537,34 +642,36 @@ impl State {
                     }
                     return;
                 }
-                self.start = Some((self.pointer_x, self.pointer_y));
-                self.paint_outline(Some(Rectangle::new(
-                    self.pointer_x.round() as i32,
-                    self.pointer_y.round() as i32,
-                    1,
-                    1,
-                )));
+                // a fresh press replaces any standing selection
+                self.phase = DragPhase::Dragging {
+                    start: (self.pointer_x, self.pointer_y),
+                    end: (self.pointer_x, self.pointer_y),
+                };
+                self.repaint();
             }
             wl_pointer::ButtonState::Released => {
-                let Some((start_x, start_y)) = self.start.take() else {
+                let DragPhase::Dragging { start, end } = self.phase else {
                     return;
                 };
-                let raw_width = (start_x - self.pointer_x).abs();
-                let raw_height = (start_y - self.pointer_y).abs();
+                let raw_width = (start.0 - end.0).abs();
+                let raw_height = (start.1 - end.1).abs();
                 if raw_width <= 5.0 && raw_height <= 5.0 {
+                    self.phase = DragPhase::Idle;
                     if let Some(window) = self.hovered.clone() {
                         self.finish(NativeOutcome::Window(window));
                     } else if let Some(index) = self.current_output {
                         let output = &self.outputs[index];
                         self.finish(NativeOutcome::Monitor(output.rect, output.name.clone()));
                     }
+                } else if self.ctrl {
+                    // ctrl on release parks the selection for arrow
+                    // fine-tuning; enter or space commits it
+                    self.phase = DragPhase::Standing { start, end };
+                    self.repaint();
                 } else {
+                    self.phase = DragPhase::Idle;
                     self.finish(NativeOutcome::Region(selection_rectangle(
-                        start_x,
-                        start_y,
-                        self.pointer_x,
-                        self.pointer_y,
-                        self.shift,
+                        start.0, start.1, end.0, end.1, self.shift,
                     )));
                 }
             }
@@ -573,7 +680,7 @@ impl State {
     }
 
     fn paint_outline(&mut self, rect: Option<Rectangle>) {
-        let dragging = self.start.is_some();
+        let dragging = !matches!(self.phase, DragPhase::Idle);
         let pointer = (self.pointer_x, self.pointer_y);
         let current = self.current_output;
         for (index, output) in self.outputs.iter_mut().enumerate() {
@@ -886,10 +993,12 @@ fn run(
         current_output: None,
         pointer_x: 0.0,
         pointer_y: 0.0,
-        start: None,
+        phase: DragPhase::Idle,
+        repeat: None,
         hovered: None,
         shift: false,
         alt: false,
+        ctrl: false,
         cursor,
         outcome,
         done: false,
@@ -1000,6 +1109,15 @@ fn run(
     let _ = ready.send(Ok(()));
 
     while !state.done && shutdown.try_recv().is_err() {
+        // client-side key repeat for the arrow fine-tuning (wl_keyboard has
+        // no server-side repeat); the 50ms poll below bounds the tick jitter
+        if let Some((key, due)) = state.repeat {
+            if std::time::Instant::now() >= due {
+                state.nudge(key);
+                state.repeat =
+                    Some((key, std::time::Instant::now() + Duration::from_millis(40)));
+            }
+        }
         event_queue.flush()?;
         event_queue.dispatch_pending(&mut state)?;
         let Some(read_guard) = event_queue.prepare_read() else {
