@@ -5,11 +5,8 @@
 // `X-KDE-DBUS-Restricted-Interfaces=org.kde.KWin.ScreenShot2` on our .desktop,
 // otherwise kwin answers with NoAuthorized.
 use std::collections::HashMap;
-use std::fs::OpenOptions;
 use std::io::Read;
 use std::os::fd::AsFd;
-use std::sync::mpsc::{channel, Sender};
-use std::time::Duration;
 
 use anyhow::{anyhow, Result};
 use image::RgbaImage;
@@ -22,65 +19,6 @@ pub struct KwinWindow {
     pub y: i32,
     pub width: u32,
     pub height: u32,
-}
-
-struct WindowStack(Sender<Vec<String>>);
-
-#[zbus::interface(name = "io.rot.capscr.WindowStack")]
-impl WindowStack {
-    fn report(&self, handles: Vec<String>) {
-        let _ = self.0.send(handles);
-    }
-}
-
-fn stacking_order() -> Result<Vec<String>> {
-    let service = format!("io.rot.capscr.WindowStack.p{}", std::process::id());
-    let path = format!("/tmp/capscr-window-stack-{}.js", std::process::id());
-    let plugin = format!("capscr-window-stack-{}", std::process::id());
-    let script = format!(
-        "callDBus('{service}', '/io/rot/capscr/WindowStack', 'io.rot.capscr.WindowStack', 'Report', workspace.stackingOrder.map(window => window.internalId.toString()));"
-    );
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .open(&path)?;
-    std::io::Write::write_all(&mut file, script.as_bytes())?;
-    drop(file);
-
-    let (tx, rx) = channel();
-    let _receiver = zbus::blocking::connection::Builder::session()?
-        .serve_at("/io/rot/capscr/WindowStack", WindowStack(tx))?
-        .name(service.as_str())?
-        .build()?;
-    let kwin = zbus::blocking::Connection::session()?;
-    let loaded = kwin.call_method(
-        Some("org.kde.KWin"),
-        "/Scripting",
-        Some("org.kde.kwin.Scripting"),
-        "loadScript",
-        &(path.as_str(), plugin.as_str()),
-    );
-    let _ = std::fs::remove_file(&path);
-    let id: i32 = loaded?.body().deserialize()?;
-    kwin.call_method(
-        Some("org.kde.KWin"),
-        format!("/Scripting/Script{id}"),
-        Some("org.kde.kwin.Script"),
-        "run",
-        &(),
-    )?;
-    let order = rx
-        .recv_timeout(Duration::from_millis(500))
-        .map_err(|_| anyhow!("KWin window stack query timed out"));
-    let _ = kwin.call_method(
-        Some("org.kde.KWin"),
-        "/Scripting",
-        Some("org.kde.kwin.Scripting"),
-        "unloadScript",
-        &(plugin.as_str(),),
-    );
-    order
 }
 
 fn result_u32(results: &HashMap<String, OwnedValue>, key: &str) -> Result<u32> {
@@ -260,22 +198,7 @@ pub fn list_windows() -> Result<Vec<KwinWindow>> {
             height: height.round() as u32,
         });
     }
-    match stacking_order() {
-        Ok(order) => {
-            let positions: HashMap<_, _> = order
-                .into_iter()
-                .enumerate()
-                .map(|(position, handle)| (handle, position))
-                .collect();
-            windows.sort_by_key(|window| {
-                std::cmp::Reverse(positions.get(&window.handle).copied().unwrap_or_default())
-            });
-        }
-        Err(error) => {
-            tracing::debug!("KWin stacking order unavailable: {error:#}");
-            windows.reverse();
-        }
-    }
+    windows.reverse();
     Ok(windows)
 }
 

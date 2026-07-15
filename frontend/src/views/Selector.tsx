@@ -46,6 +46,7 @@ export function Selector() {
   let ctxInfo: SelectorContext | null = null;
   let frame: ImageBitmap | null = null;
   let frameData: ImageData | null = null;
+  let frameLoading: Promise<void> | null = null;
   let cursorX = -1;
   let cursorY = -1;
   let startX = 0;
@@ -130,10 +131,10 @@ export function Selector() {
     };
   };
 
-  const windowAt = (x: number, y: number) => {
+  const windowAt = (clientX: number, clientY: number) => {
     if (!ctxInfo) return null;
-    const vx = x + ctxInfo.origin_x;
-    const vy = y + ctxInfo.origin_y;
+    const vx = clientX + ctxInfo.origin_x;
+    const vy = clientY + ctxInfo.origin_y;
     return (
       ctxInfo.windows.find(
         (candidate) =>
@@ -165,6 +166,28 @@ export function Selector() {
     backdrop.width = ctxInfo.frame_width;
     backdrop.height = ctxInfo.frame_height;
     backdrop.getContext("2d")?.drawImage(frame, 0, 0);
+  };
+
+  const loadFrame = () => {
+    if (frame) return Promise.resolve();
+    if (frameLoading) return frameLoading;
+    frameLoading = (async () => {
+      if (!ctxInfo) return;
+      const raw = await invoke<ArrayBuffer>("selector_frame");
+      frameData = new ImageData(
+        new Uint8ClampedArray(raw),
+        ctxInfo.frame_width,
+        ctxInfo.frame_height,
+      );
+      frame = await createImageBitmap(frameData);
+      paintBackdrop();
+      schedule();
+    })();
+    return frameLoading;
+  };
+
+  const requestFrame = () => {
+    void loadFrame().catch((error) => console.error("selector frame load failed", error));
   };
 
   const drawLoupe = (screenX: number, screenY: number) => {
@@ -213,9 +236,10 @@ export function Selector() {
     if (cursorX >= 0 && cursorY >= 0) {
       const screenX = cursorX / sx;
       const screenY = cursorY / sy;
-      loupe.style.display = altHeld ? "block" : "none";
-      colorLabel.style.display = altHeld ? "block" : "none";
-      if (altHeld) drawLoupe(screenX, screenY);
+      const showLoupe = altHeld && frame !== null;
+      loupe.style.display = showLoupe ? "block" : "none";
+      colorLabel.style.display = showLoupe ? "block" : "none";
+      if (showLoupe) drawLoupe(screenX, screenY);
     } else {
       [loupe, colorLabel].forEach((element) => (element.style.display = "none"));
     }
@@ -233,10 +257,10 @@ export function Selector() {
       label = `${Math.round(selected.width * selectionScaleX)}x${Math.round(selected.height * selectionScaleY)}`;
     } else if (hovered) {
       rect = {
-        left: (hovered.x - ctxInfo.origin_x) / sx,
-        top: (hovered.y - ctxInfo.origin_y) / sy,
-        width: hovered.width / sx,
-        height: hovered.height / sy,
+        left: hovered.x - ctxInfo.origin_x,
+        top: hovered.y - ctxInfo.origin_y,
+        width: hovered.width,
+        height: hovered.height,
       };
     }
 
@@ -286,23 +310,30 @@ export function Selector() {
     cursorY = point.y;
     shiftHeld = e.shiftKey;
     altHeld = e.altKey;
+    if (altHeld) requestFrame();
     if (mouseDown) {
       const desktop = toDesktop(e);
       endX = desktop.x;
       endY = desktop.y;
       shareDrag();
     } else if (!hasSelection()) {
-      const nextHovered = windowAt(point.x, point.y);
+      const nextHovered = windowAt(e.clientX, e.clientY);
       if (nextHovered === hovered && !altHeld) return;
       hovered = nextHovered;
     }
     schedule();
   };
 
-  const onMouseDown = (e: MouseEvent) => {
+  const onMouseDown = async (e: MouseEvent) => {
     if (e.button !== 0) return;
     const point = toFrame(e);
     if (e.altKey) {
+      try {
+        await loadFrame();
+      } catch (error) {
+        console.error("selector frame load failed", error);
+        return;
+      }
       const [r, g, b] = pixelAt(point.x, point.y);
       finish({ kind: "color", r, g, b });
       return;
@@ -323,16 +354,16 @@ export function Selector() {
 
   const onMouseUp = (e: MouseEvent) => {
     if (e.button !== 0 || !mouseDown) return;
-    const point = toFrame(e);
     const desktop = toDesktop(e);
     endX = desktop.x;
     endY = desktop.y;
     mouseDown = false;
     shiftHeld = e.shiftKey;
     altHeld = e.altKey;
+    if (altHeld) requestFrame();
     shareDrag();
     if (Math.abs(endX - startX) <= CLICK_THRESHOLD && Math.abs(endY - startY) <= CLICK_THRESHOLD) {
-      const target = windowAt(point.x, point.y);
+      const target = windowAt(e.clientX, e.clientY);
       finish(
         target
           ? {
@@ -354,6 +385,7 @@ export function Selector() {
   const onKeyDown = (e: KeyboardEvent) => {
     shiftHeld = e.shiftKey;
     altHeld = e.altKey;
+    if (altHeld) requestFrame();
     if (e.key === "Escape") return finish({ kind: "cancelled" });
     if (e.key === "Enter" || e.key === " ") {
       return hasSelection() ? commitRegion() : finish({ kind: "full_screen" });
@@ -436,10 +468,7 @@ export function Selector() {
     try {
       ctxInfo = await invoke<SelectorContext>("selector_context");
       document.documentElement.classList.toggle("selector-native-backdrop", ctxInfo.native_backdrop);
-      const raw = await invoke<ArrayBuffer>("selector_frame");
-      frameData = new ImageData(new Uint8ClampedArray(raw), ctxInfo.frame_width, ctxInfo.frame_height);
-      frame = await createImageBitmap(frameData);
-      paintBackdrop();
+      if (!ctxInfo.native_backdrop) await loadFrame();
       render();
       await invoke("selector_ready");
     } catch (error) {
