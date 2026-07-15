@@ -6,8 +6,15 @@ use crate::capture::Rectangle;
 pub enum SelectionResult {
     Region(Rectangle),
     Window(u32),
-    WaylandWindow { handle: String, x: i32, y: i32 },
-    Monitor(Rectangle),
+    WaylandWindow {
+        handle: String,
+        x: i32,
+        y: i32,
+    },
+    Monitor {
+        rect: Rectangle,
+        output_name: Option<String>,
+    },
     FullScreen,
     Cancelled,
     PickedColor(u8, u8, u8),

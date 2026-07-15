@@ -34,6 +34,78 @@ pub use kwin::capture_area_native as capture_wayland_area;
 #[cfg(target_os = "linux")]
 pub use kwin::capture_interactive_window as capture_wayland_window;
 #[cfg(target_os = "linux")]
+pub use kwin::capture_screen as capture_wayland_screen;
+
+#[cfg(target_os = "linux")]
+pub fn capture_wayland_region(region: Rectangle) -> Result<RgbaImage> {
+    let monitors = list_monitors()?;
+    let right = region.x.saturating_add_unsigned(region.width);
+    let bottom = region.y.saturating_add_unsigned(region.height);
+    let mut pieces = Vec::new();
+    for monitor in monitors {
+        let monitor_right = monitor.x.saturating_add_unsigned(monitor.width);
+        let monitor_bottom = monitor.y.saturating_add_unsigned(monitor.height);
+        let x0 = region.x.max(monitor.x);
+        let y0 = region.y.max(monitor.y);
+        let x1 = right.min(monitor_right);
+        let y1 = bottom.min(monitor_bottom);
+        if x0 >= x1 || y0 >= y1 {
+            continue;
+        }
+        let frame = capture_wayland_screen(&monitor.name)?;
+        let scale_x = frame.width() as f64 / monitor.width as f64;
+        let scale_y = frame.height() as f64 / monitor.height as f64;
+        pieces.push((monitor, frame, (x0, y0, x1, y1), scale_x, scale_y));
+    }
+    if pieces.is_empty() {
+        return Err(anyhow::anyhow!(
+            "capture region does not intersect an output"
+        ));
+    }
+
+    let target_scale_x = pieces.iter().map(|piece| piece.3).fold(1.0f64, f64::max);
+    let target_scale_y = pieces.iter().map(|piece| piece.4).fold(1.0f64, f64::max);
+    let target_width = (region.width as f64 * target_scale_x).round().max(1.0) as u32;
+    let target_height = (region.height as f64 * target_scale_y).round().max(1.0) as u32;
+    let mut captured = RgbaImage::new(target_width, target_height);
+
+    for (monitor, frame, (x0, y0, x1, y1), scale_x, scale_y) in pieces {
+        let source_x = ((x0 - monitor.x) as f64 * scale_x).round() as u32;
+        let source_y = ((y0 - monitor.y) as f64 * scale_y).round() as u32;
+        let source_right = ((x1 - monitor.x) as f64 * scale_x).round() as u32;
+        let source_bottom = ((y1 - monitor.y) as f64 * scale_y).round() as u32;
+        let source_width = source_right.saturating_sub(source_x);
+        let source_height = source_bottom.saturating_sub(source_y);
+        if source_width == 0 || source_height == 0 {
+            continue;
+        }
+        let piece = image::imageops::crop_imm(
+            &frame,
+            source_x,
+            source_y,
+            source_width.min(frame.width().saturating_sub(source_x)),
+            source_height.min(frame.height().saturating_sub(source_y)),
+        )
+        .to_image();
+        let destination_width = ((x1 - x0) as f64 * target_scale_x).round() as u32;
+        let destination_height = ((y1 - y0) as f64 * target_scale_y).round() as u32;
+        let piece = if piece.width() == destination_width && piece.height() == destination_height {
+            piece
+        } else {
+            image::imageops::resize(
+                &piece,
+                destination_width.max(1),
+                destination_height.max(1),
+                image::imageops::FilterType::CatmullRom,
+            )
+        };
+        let destination_x = ((x0 - region.x) as f64 * target_scale_x).round() as i64;
+        let destination_y = ((y0 - region.y) as f64 * target_scale_y).round() as i64;
+        image::imageops::overlay(&mut captured, &piece, destination_x, destination_y);
+    }
+    Ok(captured)
+}
+#[cfg(target_os = "linux")]
 pub use kwin::{
     capture_window as capture_wayland_window_handle, list_windows as list_wayland_windows,
 };

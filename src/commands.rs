@@ -448,12 +448,7 @@ fn run_capture_pipeline_inner(
             *gate_state.last_region.lock().unwrap() = Some(rect);
             #[cfg(target_os = "linux")]
             let native_wayland = if crate::capture::is_wayland_session() {
-                Some(crate::capture::capture_wayland_area(
-                    rect.x,
-                    rect.y,
-                    rect.width,
-                    rect.height,
-                )?)
+                Some(crate::capture::capture_wayland_region(rect)?)
             } else {
                 None
             };
@@ -617,10 +612,18 @@ fn run_capture_pipeline_inner(
         }
         #[cfg(not(target_os = "linux"))]
         SelectionResult::WaylandWindow { .. } => return Ok(()),
-        SelectionResult::Monitor(rect) => {
+        SelectionResult::Monitor { rect, output_name } => {
             #[cfg(target_os = "linux")]
             let image = if crate::capture::is_wayland_session() {
-                crate::capture::capture_wayland_area(rect.x, rect.y, rect.width, rect.height)?
+                match output_name {
+                    Some(name) => crate::capture::capture_wayland_screen(&name)?,
+                    None => crate::capture::capture_wayland_area(
+                        rect.x,
+                        rect.y,
+                        rect.width,
+                        rect.height,
+                    )?,
+                }
             } else {
                 RegionCapture::new(rect).capture()?
             };

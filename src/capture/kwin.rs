@@ -46,6 +46,21 @@ pub fn capture_area_native(x: i32, y: i32, width: u32, height: u32) -> Result<Rg
     capture_area_with_resolution(x, y, width, height, true)
 }
 
+pub fn capture_screen(output_name: &str) -> Result<RgbaImage> {
+    capture_request(|conn, output| {
+        let mut options: HashMap<&str, Value> = HashMap::new();
+        options.insert("include-cursor", Value::from(false));
+        options.insert("native-resolution", Value::from(true));
+        Ok(conn.call_method(
+            Some("org.kde.KWin.ScreenShot2"),
+            "/org/kde/KWin/ScreenShot2",
+            Some("org.kde.KWin.ScreenShot2"),
+            "CaptureScreen",
+            &(output_name, options, output),
+        )?)
+    })
+}
+
 fn capture_area_with_resolution(
     x: i32,
     y: i32,
