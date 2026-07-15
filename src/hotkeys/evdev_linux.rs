@@ -1,11 +1,9 @@
-//! wayland-capable global mouse-button hotkeys via raw evdev reads.
+//! wayland-capable global hotkeys via raw evdev reads.
 //!
 //! the global-hotkey crate only grabs on x11, so under a wayland session the
-//! side buttons (mouse4/mouse5) never reach us — the compositor owns input and
-//! won't hand an unfocused app a global grab. read the button edges straight
-//! off /dev/input/event* instead: that sits below the display server and works
-//! on both session types. keyboard modifier state is tracked off the same
-//! streams so "Ctrl+Mouse5"-style bindings still resolve.
+//! shortcuts never reach us reliably because the compositor owns input. read
+//! key and button edges straight off /dev/input/event* instead: that sits below
+//! the display server and works regardless of which application has focus.
 
 use crate::hotkeys::{MOD_ALT, MOD_CTRL, MOD_SHIFT, MOD_WIN};
 use std::collections::HashMap;
@@ -172,6 +170,72 @@ fn button_code(name_upper: &str) -> Option<u16> {
     }
 }
 
+fn keyboard_code(name_upper: &str) -> Option<u16> {
+    if name_upper.len() == 1 {
+        let byte = name_upper.as_bytes()[0];
+        if byte.is_ascii_uppercase() {
+            const LETTERS: [u16; 26] = [
+                30, 48, 46, 32, 18, 33, 34, 35, 23, 36, 37, 38, 50, 49, 24, 25, 16, 19, 31, 20, 22,
+                47, 17, 45, 21, 44,
+            ];
+            return Some(LETTERS[(byte - b'A') as usize]);
+        }
+        if byte.is_ascii_digit() {
+            const DIGITS: [u16; 10] = [11, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+            return Some(DIGITS[(byte - b'0') as usize]);
+        }
+    }
+    if let Some(number) = name_upper
+        .strip_prefix('F')
+        .and_then(|number| number.parse::<u16>().ok())
+    {
+        return match number {
+            1..=10 => Some(58 + number),
+            11 => Some(87),
+            12 => Some(88),
+            13..=24 => Some(170 + number),
+            _ => None,
+        };
+    }
+    match name_upper {
+        "SPACE" => Some(57),
+        "ENTER" | "RETURN" => Some(28),
+        "TAB" => Some(15),
+        "ESCAPE" | "ESC" => Some(1),
+        "BACKSPACE" => Some(14),
+        "DELETE" | "DEL" => Some(111),
+        "INSERT" | "INS" => Some(110),
+        "HOME" => Some(102),
+        "END" => Some(107),
+        "PAGEUP" | "PGUP" => Some(104),
+        "PAGEDOWN" | "PGDN" => Some(109),
+        "UP" => Some(103),
+        "DOWN" => Some(108),
+        "LEFT" => Some(105),
+        "RIGHT" => Some(106),
+        "PRINTSCREEN" | "PRTSC" | "PRINT" => Some(99),
+        "PAUSE" | "PAUSEBREAK" | "BREAK" => Some(119),
+        "SCROLLLOCK" | "SCROLL" => Some(70),
+        "NUMPAD0" | "NUM0" | "KP0" => Some(82),
+        "NUMPAD1" | "NUM1" | "KP1" => Some(79),
+        "NUMPAD2" | "NUM2" | "KP2" => Some(80),
+        "NUMPAD3" | "NUM3" | "KP3" => Some(81),
+        "NUMPAD4" | "NUM4" | "KP4" => Some(75),
+        "NUMPAD5" | "NUM5" | "KP5" => Some(76),
+        "NUMPAD6" | "NUM6" | "KP6" => Some(77),
+        "NUMPAD7" | "NUM7" | "KP7" => Some(71),
+        "NUMPAD8" | "NUM8" | "KP8" => Some(72),
+        "NUMPAD9" | "NUM9" | "KP9" => Some(73),
+        "NUMPADADD" | "NUMADD" | "KPADD" => Some(78),
+        "NUMPADSUB" | "NUMSUB" | "KPSUB" | "NUMPADSUBTRACT" => Some(74),
+        "NUMPADMUL" | "NUMMUL" | "KPMUL" | "NUMPADMULTIPLY" => Some(55),
+        "NUMPADDIV" | "NUMDIV" | "KPDIV" | "NUMPADDIVIDE" => Some(98),
+        "NUMPADDOT" | "NUMDOT" | "KPDOT" | "NUMPADDECIMAL" => Some(83),
+        "NUMPADENTER" | "KPENTER" => Some(96),
+        _ => None,
+    }
+}
+
 fn normalize_button(code: u16) -> Option<u16> {
     match code {
         BTN_SIDE | BTN_BACK => Some(BTN_SIDE),
@@ -180,9 +244,7 @@ fn normalize_button(code: u16) -> Option<u16> {
     }
 }
 
-/// parse a hotkey string into (modifier mask, button code) when it targets a
-/// mouse side button; None for anything the x11/global-hotkey path should own.
-pub fn parse_mouse_binding(s: &str) -> Option<(u8, u16)> {
+pub fn parse_evdev_binding(s: &str) -> Option<(u8, u16)> {
     let mut mods = 0u8;
     let mut code = None;
     for part in s.split('+').map(str::trim) {
@@ -192,13 +254,29 @@ pub fn parse_mouse_binding(s: &str) -> Option<(u8, u16)> {
             "ALT" => mods |= MOD_ALT,
             "SHIFT" => mods |= MOD_SHIFT,
             "SUPER" | "WIN" | "META" | "CMD" => mods |= MOD_WIN,
-            other => code = button_code(other),
+            other if code.is_none() => code = button_code(other).or_else(|| keyboard_code(other)),
+            _ => return None,
+        }
+        if code.is_none()
+            && !matches!(
+                up.as_str(),
+                "CTRL" | "CONTROL" | "ALT" | "SHIFT" | "SUPER" | "WIN" | "META" | "CMD"
+            )
+        {
+            return None;
         }
     }
     code.map(|c| (mods, c))
 }
 
+/// parse a mouse binding for the x11 path, where keyboard shortcuts retain
+/// their compositor-level grab
+pub fn parse_mouse_binding(s: &str) -> Option<(u8, u16)> {
+    parse_evdev_binding(s).filter(|(_, code)| matches!(*code, BTN_SIDE | BTN_EXTRA))
+}
+
 pub fn set_bindings(map: HashMap<(u8, u16), String>) {
+    tracing::info!("evdev: loaded {} global hotkey binding(s)", map.len());
     *BINDINGS.lock().unwrap() = Some(map);
 }
 
@@ -219,14 +297,14 @@ pub fn start(app: AppHandle) {
     let devices = readable_devices();
     if devices.is_empty() {
         tracing::warn!(
-            "evdev: no readable input devices — mouse-button hotkeys need read \
+            "evdev: no readable input devices — global hotkeys need read \
              access to /dev/input. add yourself to the 'input' group \
              (sudo usermod -aG input $USER) and re-login."
         );
         return;
     }
     tracing::info!(
-        "evdev: watching {} input device(s) for mouse hotkeys",
+        "evdev: watching {} input device(s) for global hotkeys",
         devices.len()
     );
     for path in devices {
@@ -292,7 +370,6 @@ fn read_device(path: PathBuf, app: AppHandle) {
         }
         let code = u16::from_ne_bytes([buf[18], buf[19]]);
         let value = i32::from_ne_bytes([buf[20], buf[21], buf[22], buf[23]]);
-
         if let Some(bit) = mod_bit(code) {
             match value {
                 1 => {
@@ -311,25 +388,21 @@ fn read_device(path: PathBuf, app: AppHandle) {
             continue;
         }
 
-        let normalized = normalize_button(code);
+        let normalized = normalize_button(code).unwrap_or(code);
         let consume = if value == 1 {
-            normalized
-                .map(|button| {
-                    let consumed = dispatch(&app, button, &mut last_fire);
-                    if consumed {
-                        consumed_button = Some(button);
-                    }
-                    consumed
-                })
-                .unwrap_or(false)
+            let consumed = dispatch(&app, normalized, &mut last_fire);
+            if consumed {
+                consumed_button = Some(normalized);
+            }
+            consumed
         } else if value == 0 {
-            let consumed = normalized == consumed_button;
+            let consumed = Some(normalized) == consumed_button;
             if consumed {
                 consumed_button = None;
             }
             consumed
         } else {
-            normalized == consumed_button
+            Some(normalized) == consumed_button
         };
         if !consume {
             if let Some(mirror) = &mut mirror {
@@ -366,6 +439,7 @@ fn dispatch(app: &AppHandle, code: u16, last_fire: &mut HashMap<String, Instant>
         return true;
     }
     last_fire.insert(task_id.clone(), now);
+    tracing::debug!("evdev: triggering task '{task_id}'");
     crate::commands::trigger_task(app, &task_id);
     true
 }
@@ -400,5 +474,22 @@ mod tests {
     fn ignores_keyboard_hotkeys() {
         assert_eq!(parse_mouse_binding("Ctrl+Shift+S"), None);
         assert_eq!(parse_mouse_binding("F12"), None);
+    }
+
+    #[test]
+    fn parses_wayland_keyboard_bindings() {
+        assert_eq!(
+            parse_evdev_binding("Ctrl+Shift+G"),
+            Some((MOD_CTRL | MOD_SHIFT, 34))
+        );
+        assert_eq!(parse_evdev_binding("F12"), Some((0, 88)));
+        assert_eq!(parse_evdev_binding("PrintScreen"), Some((0, 99)));
+        assert_eq!(parse_evdev_binding("NumpadEnter"), Some((0, 96)));
+    }
+
+    #[test]
+    fn rejects_unknown_or_multiple_keys() {
+        assert_eq!(parse_evdev_binding("Ctrl+Nope"), None);
+        assert_eq!(parse_evdev_binding("Ctrl+G+H"), None);
     }
 }

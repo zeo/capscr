@@ -362,42 +362,54 @@ impl HotkeyManager {
     // shows an honest per-task status instead of a silently dead binding.
     #[cfg(target_os = "linux")]
     pub fn flush_to_hook(&mut self) {
-        // mouse side buttons (mouse4/mouse5) are served by the evdev backend,
-        // which works on both x11 and wayland. pull them out of the x11 grab
-        // path entirely: push their bindings to evdev and leave them in
-        // `registered` so the hub reports them active. everything below only
-        // deals with the remaining keyboard bindings.
-        let mut mouse_map: HashMap<(u8, u16), String> = HashMap::new();
+        let wayland = std::env::var("WAYLAND_DISPLAY").is_ok()
+            || std::env::var("XDG_SESSION_TYPE")
+                .map(|t| t == "wayland")
+                .unwrap_or(false);
+        // evdev owns every binding on wayland and only mouse side buttons on
+        // x11, where keyboard shortcuts retain their compositor-level grabs
+        let mut evdev_map: HashMap<(u8, u16), String> = HashMap::new();
         for (task_id, (_, hotkey_str)) in &self.registered {
-            if let Some(key) = evdev_linux::parse_mouse_binding(hotkey_str) {
-                mouse_map.insert(key, task_id.clone());
+            let binding = if wayland {
+                evdev_linux::parse_evdev_binding(hotkey_str)
+            } else {
+                evdev_linux::parse_mouse_binding(hotkey_str)
+            };
+            if let Some(binding) = binding {
+                evdev_map.insert(binding, task_id.clone());
             }
         }
-        evdev_linux::set_bindings(mouse_map);
+        evdev_linux::set_bindings(evdev_map);
         let is_mouse = |s: &str| evdev_linux::parse_mouse_binding(s).is_some();
+
+        if wayland {
+            let unsupported: Vec<String> = self
+                .registered
+                .iter()
+                .filter(|(_, (_, hotkey))| evdev_linux::parse_evdev_binding(hotkey).is_none())
+                .map(|(id, _)| id.clone())
+                .collect();
+            for task_id in unsupported {
+                if let Some((_, hotkey)) = self.registered.remove(&task_id) {
+                    self.registration_errors.push(HotkeyRegistrationError {
+                        task_id,
+                        hotkey,
+                        reason: "this key has no Linux input-event mapping".into(),
+                    });
+                }
+            }
+            return;
+        }
 
         // two hard constraints gate X11 registration:
         // - global-hotkey's X11 backend dereferences a null display whenever
         //   XOpenDisplay fails (segfaults the process), so it must never be
         //   constructed unless an X server actually answers — DISPLAY being
         //   set is not enough, it can point at a dead socket
-        // - under a wayland session, grabs land on XWayland and only fire
-        //   while an X client is focused; a binding that works one window in
-        //   three is worse than an honest failure. wayland-native keyboard
-        //   hotkeys need the GlobalShortcuts portal, which isn't wired up yet.
-        let wayland = std::env::var("WAYLAND_DISPLAY").is_ok()
-            || std::env::var("XDG_SESSION_TYPE")
-                .map(|t| t == "wayland")
-                .unwrap_or(false);
         let x11_reachable = std::env::var("DISPLAY").is_ok() && x11rb::connect(None).is_ok();
-        if wayland || !x11_reachable {
-            let reason = if wayland {
-                "keyboard global hotkeys aren't available on wayland sessions yet; \
-                 use a mouse-button binding, the tray menu, or capscr --jump instead"
-            } else {
-                "no X11 display — keyboard global hotkeys need a running X server; \
-                 use a mouse-button binding, the tray menu, or capscr --jump instead"
-            };
+        if !x11_reachable {
+            let reason = "no X11 display — keyboard global hotkeys need a running X server; \
+                          use a mouse-button binding, the tray menu, or capscr --jump instead";
             // move only keyboard bindings to errors; mouse bindings stay
             // registered and are handled by evdev
             let keyboard_ids: Vec<String> = self
