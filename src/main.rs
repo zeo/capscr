@@ -1040,6 +1040,12 @@ fn dispatch_jump(app: &tauri::AppHandle, kind: Option<&str>) {
         "hub" => {
             let _ = commands::open_hub_window(app);
         }
+        // fire any configured task by id, same entry the global hotkeys use
+        other if other.starts_with("task:") => {
+            let task_id = other.trim_start_matches("task:").to_string();
+            let app = app.clone();
+            std::thread::spawn(move || commands::trigger_task(&app, &task_id));
+        }
         other => {
             tracing::warn!("unknown --jump= kind: {other}");
         }
