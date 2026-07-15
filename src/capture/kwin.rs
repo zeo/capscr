@@ -247,6 +247,105 @@ pub fn list_windows() -> Result<Vec<KwinWindow>> {
     Ok(windows.into_iter().map(|(_, window)| window).collect())
 }
 
+// best-effort keep-above for this process's windows with exactly `title`,
+// via the same restricted window-management interface stacking_order uses.
+// xdg always_on_top is a no-op on wayland; this is kde's designed mechanism
+// (what taskbar keep-above toggles send). returns how many windows matched.
+pub fn keep_own_windows_above(title: &str) -> Result<usize> {
+    use wayland_client::globals::{registry_queue_init, GlobalListContents};
+    use wayland_client::protocol::wl_registry;
+    use wayland_client::{Connection, Dispatch, QueueHandle};
+    use wayland_protocols_plasma::plasma_window_management::client::{
+        org_kde_plasma_window::{self, OrgKdePlasmaWindow},
+        org_kde_plasma_window_management::{self, OrgKdePlasmaWindowManagement},
+    };
+
+    #[derive(Default)]
+    struct KeepAbove {
+        uuids: Vec<String>,
+        info: HashMap<String, (Option<u32>, Option<String>)>,
+    }
+
+    impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for KeepAbove {
+        fn event(
+            _: &mut Self,
+            _: &wl_registry::WlRegistry,
+            _: wl_registry::Event,
+            _: &GlobalListContents,
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+        }
+    }
+
+    impl Dispatch<OrgKdePlasmaWindowManagement, ()> for KeepAbove {
+        fn event(
+            state: &mut Self,
+            _: &OrgKdePlasmaWindowManagement,
+            event: org_kde_plasma_window_management::Event,
+            _: &(),
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+            if let org_kde_plasma_window_management::Event::WindowWithUuid { uuid, .. } = event {
+                state.uuids.push(uuid);
+            }
+        }
+    }
+
+    impl Dispatch<OrgKdePlasmaWindow, String> for KeepAbove {
+        fn event(
+            state: &mut Self,
+            _: &OrgKdePlasmaWindow,
+            event: org_kde_plasma_window::Event,
+            uuid: &String,
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+            let entry = state.info.entry(uuid.clone()).or_default();
+            match event {
+                org_kde_plasma_window::Event::PidChanged { pid } => entry.0 = Some(pid),
+                org_kde_plasma_window::Event::TitleChanged { title } => entry.1 = Some(title),
+                _ => {}
+            }
+        }
+    }
+
+    let connection = Connection::connect_to_env()?;
+    let (globals, mut event_queue) = registry_queue_init::<KeepAbove>(&connection)?;
+    let queue = event_queue.handle();
+    // v13 = window_with_uuid announcements
+    let manager = globals.bind::<OrgKdePlasmaWindowManagement, _, _>(&queue, 13..=16, ())?;
+    let mut state = KeepAbove::default();
+    event_queue.roundtrip(&mut state)?;
+    let windows: Vec<(String, OrgKdePlasmaWindow)> = state
+        .uuids
+        .clone()
+        .into_iter()
+        .map(|uuid| {
+            let window = manager.get_window_by_uuid(uuid.clone(), &queue, uuid.clone());
+            (uuid, window)
+        })
+        .collect();
+    // each window streams its initial pid/title events after creation
+    event_queue.roundtrip(&mut state)?;
+    event_queue.roundtrip(&mut state)?;
+    let own_pid = std::process::id();
+    let mut flagged = 0usize;
+    for (uuid, window) in &windows {
+        let matched = state.info.get(uuid).is_some_and(|(pid, window_title)| {
+            *pid == Some(own_pid) && window_title.as_deref() == Some(title)
+        });
+        if matched {
+            const KEEP_ABOVE: u32 = 0x10;
+            window.set_state(KEEP_ABOVE, KEEP_ABOVE);
+            flagged += 1;
+        }
+    }
+    event_queue.roundtrip(&mut state)?;
+    Ok(flagged)
+}
+
 // the compositor announces the full window stacking order (bottom to top,
 // `;`-separated internal uuids) once on bind
 fn stacking_order() -> Result<Vec<String>> {

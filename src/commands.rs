@@ -3624,6 +3624,29 @@ pub async fn pin_image(
 
     let window = builder.build().map_err(|e| e.to_string())?;
     watch_pin_navigation(&app, window);
+
+    // always_on_top is a no-op on wayland; flag the pin keep-above through
+    // kwin once its window maps (the frontend shows it asynchronously)
+    #[cfg(target_os = "linux")]
+    if crate::capture::gui_is_wayland() {
+        std::thread::spawn(|| {
+            for _ in 0..10 {
+                std::thread::sleep(Duration::from_millis(300));
+                match crate::capture::keep_own_windows_above("capscr — pinned") {
+                    Ok(count) if count > 0 => {
+                        tracing::debug!("flagged {count} pinned window(s) keep-above");
+                        return;
+                    }
+                    Ok(_) => continue,
+                    Err(e) => {
+                        tracing::debug!("keep-above unavailable: {e:#}");
+                        return;
+                    }
+                }
+            }
+            tracing::warn!("pin window never appeared in the window list");
+        });
+    }
     Ok(())
 }
 
