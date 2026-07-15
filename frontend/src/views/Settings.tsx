@@ -11,15 +11,16 @@ import { IS_LINUX } from "../keys";
 
 type Pane = "general" | "capture" | "hdr" | "hotkeys" | "ssh" | "notify";
 
-const PANES: { id: Pane; label: string }[] = [
+const ALL_PANES: { id: Pane; label: string }[] = [
   { id: "general", label: "general" },
   { id: "capture", label: "capture" },
   { id: "hdr", label: "hdr" },
   { id: "hotkeys", label: "hotkeys" },
   { id: "ssh", label: "ssh" },
   { id: "notify", label: "notify" },
-  // no hdr pixel source exists on linux; the pane would be inert
-].filter((pane) => !(IS_LINUX && pane.id === "hdr"));
+];
+// no hdr pixel source exists on linux; the pane would be inert
+const PANES = ALL_PANES.filter((pane) => !(IS_LINUX && pane.id === "hdr"));
 
 export function Settings() {
   const [pane, setPane] = createSignal<Pane>("general");
