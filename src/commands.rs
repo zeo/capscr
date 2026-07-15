@@ -2212,18 +2212,6 @@ fn run_gif_task(task: &CaptureTask, app: &AppHandle) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    #[cfg(target_os = "linux")]
-    if std::env::var("WAYLAND_DISPLAY").is_ok()
-        || std::env::var("XDG_SESSION_TYPE").is_ok_and(|session| session == "wayland")
-    {
-        emit_error(
-            app,
-            "recording",
-            "recording needs an X11 session; Wayland screen streaming is not available yet",
-        );
-        return Ok(());
-    }
-
     if matches!(task.capture_mode, TaskCaptureMode::RegionMp4)
         && !crate::recording::is_ffmpeg_available()
     {
@@ -2247,6 +2235,9 @@ fn run_gif_task(task: &CaptureTask, app: &AppHandle) -> anyhow::Result<()> {
 
     let region = match selection {
         SelectionResult::Region(r) => r,
+        // the selector hands back frozen pixels with the rect; recording only
+        // needs the rect
+        SelectionResult::FrozenRegion { rect, .. } => rect,
         SelectionResult::Cancelled => return Ok(()),
         _ => {
             tracing::info!("gif task '{}' aborted: needs a region selection", task.id);
