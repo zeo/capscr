@@ -12,7 +12,7 @@ use std::io::Read;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Mutex;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Manager};
 
 // linux/input-event-codes.h — event types and the codes we react to
@@ -167,9 +167,40 @@ fn mod_bit(code: u16) -> Option<u8> {
     })
 }
 
-/// start one reader thread per readable input device. safe to call once at
-/// startup; bindings are read live from BINDINGS so a later config reload just
-/// updates the map without restarting the threads.
+// paths with a live reader thread; readers deregister on exit so a replugged
+// device gets a fresh reader
+static LIVE: Mutex<Option<std::collections::HashSet<PathBuf>>> = Mutex::new(None);
+
+fn live() -> std::sync::MutexGuard<'static, Option<std::collections::HashSet<PathBuf>>> {
+    let mut guard = LIVE.lock().unwrap();
+    if guard.is_none() {
+        *guard = Some(std::collections::HashSet::new());
+    }
+    guard
+}
+
+fn spawn_reader(path: PathBuf, app: AppHandle) {
+    if !live().as_mut().unwrap().insert(path.clone()) {
+        return;
+    }
+    std::thread::Builder::new()
+        .name("capscr-evdev".into())
+        .spawn(move || {
+            struct Deregister(PathBuf);
+            impl Drop for Deregister {
+                fn drop(&mut self) {
+                    live().as_mut().unwrap().remove(&self.0);
+                }
+            }
+            let _guard = Deregister(path.clone());
+            read_device(path, app);
+        })
+        .ok();
+}
+
+/// start one reader thread per readable input device plus a hotplug monitor;
+/// bindings are read live from BINDINGS so a later config reload just updates
+/// the map without restarting the threads.
 pub fn start(app: AppHandle) {
     let devices = readable_devices();
     if devices.is_empty() {
@@ -178,18 +209,88 @@ pub fn start(app: AppHandle) {
              access to /dev/input. add yourself to the 'input' group \
              (sudo usermod -aG input $USER) and re-login."
         );
-        return;
+        // keep going: the hotplug monitor picks up devices that appear later
+    } else {
+        tracing::info!(
+            "evdev: watching {} input device(s) for global hotkeys",
+            devices.len()
+        );
     }
-    tracing::info!(
-        "evdev: watching {} input device(s) for global hotkeys",
-        devices.len()
-    );
     for path in devices {
-        let app = app.clone();
-        std::thread::Builder::new()
-            .name("capscr-evdev".into())
-            .spawn(move || read_device(path, app))
-            .ok();
+        spawn_reader(path, app.clone());
+    }
+    std::thread::Builder::new()
+        .name("capscr-evdev-hotplug".into())
+        .spawn(move || watch_hotplug(app))
+        .ok();
+}
+
+// pull the event-node names out of a raw inotify read buffer
+fn parse_inotify_names(buf: &[u8]) -> Vec<String> {
+    const HEADER: usize = 16; // wd i32, mask u32, cookie u32, len u32
+    let mut names = Vec::new();
+    let mut offset = 0usize;
+    while offset + HEADER <= buf.len() {
+        let len = u32::from_ne_bytes([
+            buf[offset + 12],
+            buf[offset + 13],
+            buf[offset + 14],
+            buf[offset + 15],
+        ]) as usize;
+        let end = match offset.checked_add(HEADER + len) {
+            Some(end) if end <= buf.len() => end,
+            _ => break,
+        };
+        let name = &buf[offset + HEADER..end];
+        let name = &name[..name.iter().position(|&b| b == 0).unwrap_or(name.len())];
+        if !name.is_empty() {
+            if let Ok(name) = std::str::from_utf8(name) {
+                names.push(name.to_string());
+            }
+        }
+        offset = end;
+    }
+    names
+}
+
+// watch /dev/input for new event nodes. IN_ATTRIB fires when udev applies the
+// acl after plug, which sidesteps most of the permission race; a slow rescan
+// loop stands in when inotify isn't available.
+fn watch_hotplug(app: AppHandle) {
+    let fd = unsafe { libc::inotify_init1(libc::IN_CLOEXEC) };
+    if fd < 0
+        || unsafe {
+            libc::inotify_add_watch(
+                fd,
+                c"/dev/input".as_ptr(),
+                libc::IN_CREATE | libc::IN_ATTRIB,
+            )
+        } < 0
+    {
+        tracing::debug!("evdev: inotify unavailable; rescanning /dev/input every 30s");
+        if fd >= 0 {
+            unsafe { libc::close(fd) };
+        }
+        loop {
+            std::thread::sleep(Duration::from_secs(30));
+            for path in readable_devices() {
+                spawn_reader(path, app.clone());
+            }
+        }
+    }
+    let mut buf = [0u8; 4096];
+    loop {
+        let n = unsafe { libc::read(fd, buf.as_mut_ptr().cast(), buf.len()) };
+        if n <= 0 {
+            tracing::warn!("evdev: inotify read failed; hotplug monitoring stopped");
+            unsafe { libc::close(fd) };
+            return;
+        }
+        for name in parse_inotify_names(&buf[..n as usize]) {
+            if name.starts_with("event") {
+                spawn_reader(PathBuf::from("/dev/input").join(name), app.clone());
+            }
+        }
     }
 }
 
@@ -213,9 +314,22 @@ fn readable_devices() -> Vec<PathBuf> {
 }
 
 fn read_device(path: PathBuf, app: AppHandle) {
-    let Ok(mut file) = File::open(&path) else {
+    // udev applies the acl a beat after a hotplugged node appears; retry
+    // briefly before giving up (the IN_ATTRIB event re-spawns us anyway)
+    let mut opened = None;
+    for delay_ms in [0u64, 50, 100, 200, 400, 800] {
+        if delay_ms > 0 {
+            std::thread::sleep(Duration::from_millis(delay_ms));
+        }
+        if let Ok(file) = File::open(&path) {
+            opened = Some(file);
+            break;
+        }
+    }
+    let Some(mut file) = opened else {
         return;
     };
+    tracing::debug!("evdev: reading {}", path.display());
     let mut buf = [0u8; EVENT_SIZE];
     // per-thread dedupe so a fast double-report of one press fires once
     let mut last_fire: HashMap<String, Instant> = HashMap::new();
@@ -281,6 +395,29 @@ fn dispatch(app: &AppHandle, code: u16, last_fire: &mut HashMap<String, Instant>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn inotify_record(name: &str, pad: usize) -> Vec<u8> {
+        let mut record = vec![0u8; 16];
+        record[12..16].copy_from_slice(&((name.len() + pad) as u32).to_ne_bytes());
+        record.extend_from_slice(name.as_bytes());
+        record.extend(std::iter::repeat_n(0u8, pad));
+        record
+    }
+
+    #[test]
+    fn parses_padded_inotify_records() {
+        let mut buf = inotify_record("event27", 9);
+        buf.extend(inotify_record("mouse3", 2));
+        assert_eq!(parse_inotify_names(&buf), vec!["event27", "mouse3"]);
+    }
+
+    #[test]
+    fn ignores_nameless_and_truncated_records() {
+        let mut buf = inotify_record("", 0);
+        buf.extend(inotify_record("event5", 2));
+        buf.truncate(buf.len() - 1);
+        assert_eq!(parse_inotify_names(&buf), Vec::<String>::new());
+    }
 
     #[test]
     fn parses_bare_mouse_buttons() {
