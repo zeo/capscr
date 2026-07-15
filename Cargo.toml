@@ -131,6 +131,9 @@ zbus = "5"
 # wayland clipboard with arbitrary mime types (file copy as text/uri-list).
 # already a transitive dep of arboard — no new compiled code
 wl-clipboard-rs = "0.9"
+# statvfs for the recording spool's free-space probe. already a transitive
+# dep of the whole unix stack — no new compiled code
+libc = "0.2"
 # wlroots output enumeration + screencopy for wayland sessions without
 # XWayland (xcap's enumeration is XCB-only). already a transitive dep of xcap
 libwayshot-xcap = "0.3"

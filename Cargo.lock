@@ -821,6 +821,7 @@ dependencies = [
  "hmac 0.12.1",
  "image",
  "jxl-encoder",
+ "libc",
  "libwayshot-xcap",
  "notify-rust",
  "png 0.17.16",

@@ -145,7 +145,18 @@ fn free_disk_space(path: &std::path::Path) -> Option<u64> {
     Some(available)
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
+fn free_disk_space(path: &std::path::Path) -> Option<u64> {
+    use std::os::unix::ffi::OsStrExt;
+    let dir = std::ffi::CString::new(path.parent()?.as_os_str().as_bytes()).ok()?;
+    let mut stats: libc::statvfs = unsafe { std::mem::zeroed() };
+    // f_bavail = blocks available to unprivileged users, matching the windows
+    // call's lpFreeBytesAvailable semantics
+    (unsafe { libc::statvfs(dir.as_ptr(), &mut stats) } == 0)
+        .then(|| stats.f_bavail as u64 * stats.f_frsize as u64)
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
 fn free_disk_space(_path: &std::path::Path) -> Option<u64> {
     None
 }
@@ -177,6 +188,13 @@ mod tests {
             assert_eq!(frame.get_pixel(3, 3)[0], i as u8 * 40);
         }
         assert_eq!(spool.metas()[3].at, Duration::from_millis(300));
+    }
+
+    #[cfg(any(windows, target_os = "linux"))]
+    #[test]
+    fn free_disk_space_reports_a_nonzero_figure() {
+        let probe = std::env::temp_dir().join("capscr-spool-probe");
+        assert!(free_disk_space(&probe).is_some_and(|bytes| bytes > 0));
     }
 
     #[test]
