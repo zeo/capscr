@@ -111,6 +111,32 @@ struct Border {
     viewport: wp_viewport::WpViewport,
 }
 
+// a full-resolution shm image kept alive for the selector's lifetime
+struct Plane {
+    buffer: wl_buffer::WlBuffer,
+    _pool: wl_shm_pool::WlShmPool,
+    _file: File,
+}
+
+// subsurface that reveals the undimmed frozen pixels under the selection or
+// the hovered window — the wayland analog of the windows selector's bright
+// SCREEN_BITMAP blit over the pre-dimmed backdrop
+struct Highlight {
+    surface: wl_surface::WlSurface,
+    subsurface: wl_subsurface::WlSubsurface,
+    viewport: wp_viewport::WpViewport,
+    visible: bool,
+}
+
+struct Label {
+    surface: wl_surface::WlSurface,
+    subsurface: wl_subsurface::WlSubsurface,
+    buffer: wl_buffer::WlBuffer,
+    _pool: wl_shm_pool::WlShmPool,
+    file: File,
+    visible: bool,
+}
+
 struct OutputSurface {
     name: String,
     rect: Rectangle,
@@ -118,6 +144,11 @@ struct OutputSurface {
     image: Arc<RgbaImage>,
     surface: wl_surface::WlSurface,
     layer_surface: zwlr_layer_surface_v1::ZwlrLayerSurfaceV1,
+    dim: Plane,
+    bright: Plane,
+    highlight: Highlight,
+    label: Label,
+    crosshair: Vec<Border>,
     borders: Vec<Border>,
     viewport: wp_viewport::WpViewport,
 }
@@ -412,14 +443,17 @@ impl State {
     }
 
     fn paint_outline(&mut self, rect: Option<Rectangle>) {
-        for output in &mut self.outputs {
+        let dragging = self.start.is_some();
+        let pointer = (self.pointer_x, self.pointer_y);
+        let current = self.current_output;
+        for (index, output) in self.outputs.iter_mut().enumerate() {
             let clipped = rect.and_then(|rect| intersect(rect, output.rect));
-            for (index, border) in output.borders.iter().enumerate() {
+            for (side, border) in output.borders.iter().enumerate() {
                 let (x, y, width, height) = match clipped {
                     Some(rect) => {
                         let left = rect.x - output.rect.x;
                         let top = rect.y - output.rect.y;
-                        match index {
+                        match side {
                             0 => (left, top, rect.width, 1),
                             1 => (
                                 left,
@@ -442,6 +476,115 @@ impl State {
                 border.viewport.set_destination(width as i32, height as i32);
                 border.surface.commit();
             }
+
+            // undimmed frozen pixels inside the outline
+            match clipped {
+                Some(clip) => {
+                    let scale_x = output.image.width() as f64 / output.rect.width as f64;
+                    let scale_y = output.image.height() as f64 / output.rect.height as f64;
+                    let local_x = clip.x - output.rect.x;
+                    let local_y = clip.y - output.rect.y;
+                    let source_x = (local_x as f64 * scale_x)
+                        .clamp(0.0, output.image.width().saturating_sub(1) as f64);
+                    let source_y = (local_y as f64 * scale_y)
+                        .clamp(0.0, output.image.height().saturating_sub(1) as f64);
+                    let source_width =
+                        (clip.width as f64 * scale_x).min(output.image.width() as f64 - source_x);
+                    let source_height =
+                        (clip.height as f64 * scale_y).min(output.image.height() as f64 - source_y);
+                    output.highlight.subsurface.set_position(local_x, local_y);
+                    output
+                        .highlight
+                        .viewport
+                        .set_source(source_x, source_y, source_width, source_height);
+                    output
+                        .highlight
+                        .viewport
+                        .set_destination(clip.width as i32, clip.height as i32);
+                    output
+                        .highlight
+                        .surface
+                        .attach(Some(&output.bright.buffer), 0, 0);
+                    output.highlight.surface.damage_buffer(
+                        0,
+                        0,
+                        output.image.width() as i32,
+                        output.image.height() as i32,
+                    );
+                    output.highlight.surface.commit();
+                    output.highlight.visible = true;
+                }
+                None if output.highlight.visible => {
+                    output.highlight.surface.attach(None, 0, 0);
+                    output.highlight.surface.commit();
+                    output.highlight.visible = false;
+                }
+                None => {}
+            }
+
+            // size label on the output holding the selection's top-left corner
+            let show_label = dragging
+                && rect
+                    .zip(clipped)
+                    .is_some_and(|(rect, clip)| rect.x == clip.x && rect.y == clip.y);
+            if show_label {
+                let rect = rect.unwrap();
+                let text = format!("{}x{}", rect.width, rect.height);
+                if draw_label(&mut output.label.file, &text).is_ok() {
+                    let local_x = rect.x - output.rect.x + 5;
+                    let local_top = rect.y - output.rect.y;
+                    let local_y = if local_top >= LABEL_HEIGHT as i32 + 4 {
+                        local_top - LABEL_HEIGHT as i32 - 4
+                    } else {
+                        local_top + 5
+                    };
+                    output.label.subsurface.set_position(local_x, local_y);
+                    output.label.surface.attach(Some(&output.label.buffer), 0, 0);
+                    output.label.surface.damage_buffer(
+                        0,
+                        0,
+                        LABEL_WIDTH as i32,
+                        LABEL_HEIGHT as i32,
+                    );
+                    output.label.surface.commit();
+                    output.label.visible = true;
+                }
+            } else if output.label.visible {
+                output.label.surface.attach(None, 0, 0);
+                output.label.surface.commit();
+                output.label.visible = false;
+            }
+
+            // crosshair guides around the pointer on the hovered output
+            let local_pointer = (current == Some(index)).then(|| {
+                (
+                    (pointer.0 - output.rect.x as f64).round() as i32,
+                    (pointer.1 - output.rect.y as f64).round() as i32,
+                )
+            });
+            const GAP: i32 = 20;
+            let output_width = output.rect.width as i32;
+            let output_height = output.rect.height as i32;
+            for (line, guide) in output.crosshair.iter().enumerate() {
+                let (x, y, width, height) = match local_pointer {
+                    Some((px, py)) => match line {
+                        0 => (0, py, (px - GAP).max(0), 1),
+                        1 => (px + GAP, py, (output_width - px - GAP).max(0), 1),
+                        2 => (px, 0, 1, (py - GAP).max(0)),
+                        _ => (px, py + GAP, 1, (output_height - py - GAP).max(0)),
+                    },
+                    None => (-2, -2, 1, 1),
+                };
+                if width <= 0 || height <= 0 {
+                    guide.subsurface.set_position(-2, -2);
+                    guide.viewport.set_destination(1, 1);
+                } else {
+                    guide.subsurface.set_position(x, y);
+                    guide.viewport.set_destination(width.max(1), height.max(1));
+                }
+                guide.surface.commit();
+            }
+
             output.surface.commit();
         }
     }
@@ -459,6 +602,65 @@ impl State {
         let pixel = output.image.get_pixel(x, y);
         Some((pixel[0], pixel[1], pixel[2]))
     }
+}
+
+// size label geometry: up to 9 glyphs ("3840x2160") of 5x7 dots at 3x scale
+// with 3px tracking and 6px padding
+const LABEL_WIDTH: u32 = 176;
+const LABEL_HEIGHT: u32 = 33;
+const GLYPH_SCALE: u32 = 3;
+
+fn glyph(c: char) -> Option<[u8; 7]> {
+    Some(match c {
+        '0' => [0b01110, 0b10001, 0b10011, 0b10101, 0b11001, 0b10001, 0b01110],
+        '1' => [0b00100, 0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110],
+        '2' => [0b01110, 0b10001, 0b00001, 0b00010, 0b00100, 0b01000, 0b11111],
+        '3' => [0b11111, 0b00010, 0b00100, 0b00010, 0b00001, 0b10001, 0b01110],
+        '4' => [0b00010, 0b00110, 0b01010, 0b10010, 0b11111, 0b00010, 0b00010],
+        '5' => [0b11111, 0b10000, 0b11110, 0b00001, 0b00001, 0b10001, 0b01110],
+        '6' => [0b00110, 0b01000, 0b10000, 0b11110, 0b10001, 0b10001, 0b01110],
+        '7' => [0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b01000, 0b01000],
+        '8' => [0b01110, 0b10001, 0b10001, 0b01110, 0b10001, 0b10001, 0b01110],
+        '9' => [0b01110, 0b10001, 0b10001, 0b01111, 0b00001, 0b00010, 0b01100],
+        'x' => [0b00000, 0b00000, 0b10001, 0b01010, 0b00100, 0b01010, 0b10001],
+        _ => return None,
+    })
+}
+
+// white text on an opaque black chip, same look as the windows selector label
+fn draw_label(file: &mut File, text: &str) -> std::io::Result<()> {
+    let mut pixels = vec![0u8; (LABEL_WIDTH * LABEL_HEIGHT * 4) as usize];
+    for pixel in pixels.chunks_exact_mut(4) {
+        pixel[3] = 255;
+    }
+    let advance = 5 * GLYPH_SCALE + GLYPH_SCALE;
+    let mut pen_x = 6u32;
+    for c in text.chars() {
+        if let Some(rows) = glyph(c) {
+            for (row, bits) in rows.iter().enumerate() {
+                for column in 0..5u32 {
+                    if bits & (1 << (4 - column)) == 0 {
+                        continue;
+                    }
+                    for dy in 0..GLYPH_SCALE {
+                        for dx in 0..GLYPH_SCALE {
+                            let x = pen_x + column * GLYPH_SCALE + dx;
+                            let y = 6 + row as u32 * GLYPH_SCALE + dy;
+                            if x < LABEL_WIDTH && y < LABEL_HEIGHT {
+                                let i = ((y * LABEL_WIDTH + x) * 4) as usize;
+                                pixels[i] = 255;
+                                pixels[i + 1] = 255;
+                                pixels[i + 2] = 255;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        pen_x += advance;
+    }
+    file.seek(SeekFrom::Start(0))?;
+    file.write_all(&pixels)
 }
 
 fn selection_rectangle(
@@ -535,8 +737,8 @@ fn run(
         .context("bind wl_seat")?;
     let (white_pool, white_buffer, white_file) =
         solid_buffer(&shm, &queue, [255; 4]).context("allocate border buffer")?;
-    let (clear_pool, clear_buffer, clear_file) =
-        solid_buffer(&shm, &queue, [0; 4]).context("allocate clear buffer")?;
+    let (gray_pool, gray_buffer, gray_file) =
+        solid_buffer(&shm, &queue, [128, 128, 128, 255]).context("allocate guide buffer")?;
     let cursor = cursor(&compositor, &shm, &queue).context("build cursor surface")?;
     let empty_region = compositor.create_region(&queue, ());
     let mut state = State {
@@ -623,9 +825,11 @@ fn run(
                 &subcompositor,
                 &layer_shell,
                 &viewporter,
+                &shm,
                 &wl_output,
                 output,
                 &white_buffer,
+                &gray_buffer,
                 &empty_region,
             )
             .with_context(|| format!("map selector surface on {output_name}"))?,
@@ -667,8 +871,13 @@ fn run(
                 output.viewport.set_destination(width as i32, height as i32);
             }
         }
-        output.surface.attach(Some(&clear_buffer), 0, 0);
-        output.surface.damage_buffer(0, 0, 1, 1);
+        output.surface.attach(Some(&output.dim.buffer), 0, 0);
+        output.surface.damage_buffer(
+            0,
+            0,
+            output.image.width() as i32,
+            output.image.height() as i32,
+        );
         output.surface.commit();
     }
     event_queue
@@ -694,9 +903,9 @@ fn run(
     drop(white_buffer);
     drop(white_pool);
     drop(white_file);
-    drop(clear_buffer);
-    drop(clear_pool);
-    drop(clear_file);
+    drop(gray_buffer);
+    drop(gray_pool);
+    drop(gray_file);
     Ok(())
 }
 
@@ -730,9 +939,11 @@ fn map_output(
     subcompositor: &wl_subcompositor::WlSubcompositor,
     layer_shell: &zwlr_layer_shell_v1::ZwlrLayerShellV1,
     viewporter: &wp_viewporter::WpViewporter,
+    shm: &wl_shm::WlShm,
     wl_output: &WlOutput,
     output: NativeOutput,
     white_buffer: &wl_buffer::WlBuffer,
+    gray_buffer: &wl_buffer::WlBuffer,
     empty_region: &wl_region::WlRegion,
 ) -> Result<OutputSurface> {
     let surface = compositor.create_surface(queue, ());
@@ -740,7 +951,7 @@ fn map_output(
     viewport.set_destination(output.rect.width as i32, output.rect.height as i32);
     // no buffer may touch the surface before the first configure — the
     // compositor treats that as a fatal protocol error. run() attaches the
-    // content buffer only after every surface acked its configure.
+    // dimmed frame only after every surface acked its configure.
     let layer_surface = layer_shell.get_layer_surface(
         &surface,
         Some(wl_output),
@@ -760,6 +971,44 @@ fn map_output(
     layer_surface.set_keyboard_interactivity(keyboard);
     layer_surface.set_size(0, 0);
 
+    // same retained fraction as the windows selector's pre-dimmed bitmap
+    let dim = image_buffer(shm, queue, &output.image, Some(95), &output.output_name)?;
+    let bright = image_buffer(shm, queue, &output.image, None, &output.output_name)?;
+
+    // stacking is creation order: highlight below crosshair below borders
+    // below label
+    let highlight = {
+        let hl_surface = compositor.create_surface(queue, ());
+        hl_surface.set_input_region(Some(empty_region));
+        let hl_viewport = viewporter.get_viewport(&hl_surface, queue, ());
+        let subsurface = subcompositor.get_subsurface(&hl_surface, &surface, queue, ());
+        subsurface.set_position(0, 0);
+        hl_surface.commit();
+        Highlight {
+            surface: hl_surface,
+            subsurface,
+            viewport: hl_viewport,
+            visible: false,
+        }
+    };
+
+    let mut crosshair = Vec::with_capacity(4);
+    for _ in 0..4 {
+        let line_surface = compositor.create_surface(queue, ());
+        line_surface.set_input_region(Some(empty_region));
+        line_surface.attach(Some(gray_buffer), 0, 0);
+        let line_viewport = viewporter.get_viewport(&line_surface, queue, ());
+        line_viewport.set_destination(1, 1);
+        let subsurface = subcompositor.get_subsurface(&line_surface, &surface, queue, ());
+        subsurface.set_position(-2, -2);
+        line_surface.commit();
+        crosshair.push(Border {
+            surface: line_surface,
+            subsurface,
+            viewport: line_viewport,
+        });
+    }
+
     let mut borders = Vec::with_capacity(4);
     for _ in 0..4 {
         let border_surface = compositor.create_surface(queue, ());
@@ -777,6 +1026,37 @@ fn map_output(
         });
     }
 
+    let label = {
+        let size = LABEL_WIDTH * LABEL_HEIGHT * 4;
+        let (mut file, path) = create_shm_file("label", size)?;
+        file.write_all(&vec![0u8; size as usize])?;
+        file.seek(SeekFrom::Start(0))?;
+        let _ = std::fs::remove_file(path);
+        let pool = shm.create_pool(file.as_fd(), size as i32, queue, ());
+        let buffer = pool.create_buffer(
+            0,
+            LABEL_WIDTH as i32,
+            LABEL_HEIGHT as i32,
+            (LABEL_WIDTH * 4) as i32,
+            wl_shm::Format::Argb8888,
+            queue,
+            (),
+        );
+        let label_surface = compositor.create_surface(queue, ());
+        label_surface.set_input_region(Some(empty_region));
+        let subsurface = subcompositor.get_subsurface(&label_surface, &surface, queue, ());
+        subsurface.set_position(-(LABEL_WIDTH as i32) - 4, -(LABEL_HEIGHT as i32) - 4);
+        label_surface.commit();
+        Label {
+            surface: label_surface,
+            subsurface,
+            buffer,
+            _pool: pool,
+            file,
+            visible: false,
+        }
+    };
+
     Ok(OutputSurface {
         name: output.output_name,
         rect: output.rect,
@@ -784,8 +1064,59 @@ fn map_output(
         image: output.image,
         surface,
         layer_surface,
+        dim,
+        bright,
+        highlight,
+        label,
+        crosshair,
         borders,
         viewport,
+    })
+}
+
+// full-frame shm plane in the ARGB byte order wl_shm expects; dim is the
+// retained brightness numerator out of 255, None keeps the pixels untouched
+fn image_buffer(
+    shm: &wl_shm::WlShm,
+    queue: &QueueHandle<State>,
+    image: &RgbaImage,
+    dim: Option<u32>,
+    tag: &str,
+) -> Result<Plane> {
+    let width = image.width();
+    let height = image.height();
+    let stride = width.checked_mul(4).context("selector frame is too wide")?;
+    let size = stride
+        .checked_mul(height)
+        .context("selector frame is too large")?;
+    let (mut file, path) = create_shm_file(tag, size)?;
+    let mut bgra = vec![0u8; size as usize];
+    match dim {
+        Some(keep) => crate::capture::par_convert(image.as_raw(), &mut bgra, move |pixel| {
+            let dimmed = |v: u8| ((v as u32 * keep) / 255) as u8;
+            [dimmed(pixel[2]), dimmed(pixel[1]), dimmed(pixel[0]), 255]
+        }),
+        None => crate::capture::par_convert(image.as_raw(), &mut bgra, |pixel| {
+            [pixel[2], pixel[1], pixel[0], 255]
+        }),
+    }
+    file.write_all(&bgra)?;
+    file.seek(SeekFrom::Start(0))?;
+    let _ = std::fs::remove_file(path);
+    let pool = shm.create_pool(file.as_fd(), size as i32, queue, ());
+    let buffer = pool.create_buffer(
+        0,
+        width as i32,
+        height as i32,
+        stride as i32,
+        wl_shm::Format::Argb8888,
+        queue,
+        (),
+    );
+    Ok(Plane {
+        buffer,
+        _pool: pool,
+        _file: file,
     })
 }
 

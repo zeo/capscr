@@ -403,6 +403,7 @@ pub fn select(frozen_frame: Option<Arc<RgbaImage>>) -> SelectionResult {
         return SelectionResult::Cancelled;
     }
 
+    let selector_started = std::time::Instant::now();
     let monitors = crate::capture::list_monitors().unwrap_or_default();
     if monitors.is_empty() {
         return SelectionResult::Cancelled;
@@ -499,7 +500,18 @@ pub fn select(frozen_frame: Option<Arc<RgbaImage>>) -> SelectionResult {
         }]
     };
 
-    if pure_wayland {
+    // a freeze source that ignored the output transform would compose rotated
+    // pixels; route those to the webview selector instead of showing garbage
+    let frames_oriented = surfaces.iter().all(|surface| {
+        let (frame_w, frame_h) = (surface.frame.width(), surface.frame.height());
+        frame_w == frame_h
+            || surface.rect.2 == surface.rect.3
+            || (frame_w > frame_h) == (surface.rect.2 > surface.rect.3)
+    });
+    if pure_wayland && !frames_oriented {
+        tracing::error!("frozen frame orientation mismatches its output; using webview selector");
+    }
+    if pure_wayland && frames_oriented {
         let outputs = surfaces
             .iter()
             .filter_map(|surface| {
@@ -526,6 +538,10 @@ pub fn select(frozen_frame: Option<Arc<RgbaImage>>) -> SelectionResult {
             .collect();
         match super::wayland_native_selector::NativeSelector::show(outputs) {
             Ok(selector) => {
+                tracing::info!(
+                    "native selector interactive in {}ms",
+                    selector_started.elapsed().as_millis()
+                );
                 let outcome = selector.recv_timeout(SELECT_TIMEOUT);
                 return match outcome {
                     Ok(super::wayland_native_selector::NativeOutcome::Region(rect))
