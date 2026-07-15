@@ -33,8 +33,6 @@ pub use hdr_png::{encode_hdr_png, read_cicp, HdrBitmap, HdrTransfer};
 pub use kwin::capture_area_native as capture_wayland_area;
 #[cfg(target_os = "linux")]
 pub use kwin::capture_interactive_window as capture_wayland_window;
-#[cfg(target_os = "linux")]
-pub use kwin::capture_screen as capture_wayland_screen;
 
 #[cfg(target_os = "linux")]
 pub fn capture_wayland_region(region: Rectangle) -> Result<RgbaImage> {
@@ -52,7 +50,7 @@ pub fn capture_wayland_region(region: Rectangle) -> Result<RgbaImage> {
         if x0 >= x1 || y0 >= y1 {
             continue;
         }
-        let frame = capture_wayland_screen(&monitor.name)?;
+        let frame = wayland_freeze_output(&monitor.name)?;
         let scale_x = frame.width() as f64 / monitor.width as f64;
         let scale_y = frame.height() as f64 / monitor.height as f64;
         pieces.push((monitor, frame, (x0, y0, x1, y1), scale_x, scale_y));
@@ -110,7 +108,7 @@ pub use kwin::{
     capture_window as capture_wayland_window_handle, list_windows as list_wayland_windows,
 };
 #[cfg(target_os = "linux")]
-pub use portal::is_wayland_session;
+pub use portal::{gui_is_wayland, is_wayland_session};
 pub use region::RegionCapture;
 pub use screen::ScreenCapture;
 pub use tonemapping::TonemapParams;
@@ -472,7 +470,22 @@ fn wayland_list_monitors() -> Result<Vec<MonitorInfo>> {
     let primary_index = primary_name
         .as_ref()
         .and_then(|name| outputs.iter().position(|output| output.name == *name))
-        .unwrap_or(0);
+        .or_else(|| {
+            // without xwayland, fall back to the output holding the pointer
+            pointer_position().and_then(|(x, y)| {
+                outputs.iter().position(|output| {
+                    let region = output.logical_region.inner;
+                    x >= region.position.x
+                        && x < region.position.x.saturating_add_unsigned(region.size.width)
+                        && y >= region.position.y
+                        && y < region.position.y.saturating_add_unsigned(region.size.height)
+                })
+            })
+        })
+        .unwrap_or_else(|| {
+            tracing::info!("no primary-output signal from xwayland or pointer; using output 0");
+            0
+        });
 
     Ok(outputs
         .iter()
@@ -560,6 +573,45 @@ fn wlroots_grab(monitor: &MonitorInfo) -> Result<RgbaImage> {
     };
     // libwayshot is on image 0.24; rewrap the raw bytes into our image 0.25
     let img = conn.screenshot(region, false)?;
+    let rgba = img.to_rgba8();
+    RgbaImage::from_raw(rgba.width(), rgba.height(), rgba.into_vec())
+        .ok_or_else(|| anyhow::anyhow!("screencopy buffer size mismatch"))
+}
+
+// freeze one output at native resolution for the selector. same fallback
+// chain as wayland_grab_monitor, but by output name and at the compositor's
+// full pixel density so the overlay maps 1:1 onto physical pixels.
+#[cfg(target_os = "linux")]
+pub fn wayland_freeze_output(name: &str) -> Result<RgbaImage> {
+    match kwin::capture_screen(name) {
+        Ok(img) if !is_black_frame(&img) => return Ok(img),
+        Ok(_) => tracing::warn!("kwin ScreenShot2 froze all-black; trying screencopy"),
+        Err(e) => tracing::debug!("kwin ScreenShot2 unavailable ({e:#}); trying screencopy"),
+    }
+    match wlroots_freeze_output(name) {
+        Ok(img) if !is_black_frame(&img) => return Ok(img),
+        Ok(_) => tracing::warn!("wlr screencopy froze all-black; using the screenshot portal"),
+        Err(e) => tracing::warn!("wlroots screencopy freeze failed ({e:#}); using the portal"),
+    }
+    // the portal covers the whole desktop; crop needs the output's rect
+    let monitor = list_monitors()?
+        .into_iter()
+        .find(|monitor| monitor.name == name)
+        .ok_or_else(|| anyhow::anyhow!("output {name} is not in the monitor list"))?;
+    portal_grab_monitor(&monitor)
+}
+
+// native-resolution single-output screencopy; libwayshot applies the output
+// transform, so rotated outputs come back in logical orientation
+#[cfg(target_os = "linux")]
+fn wlroots_freeze_output(name: &str) -> Result<RgbaImage> {
+    let conn = libwayshot_xcap::WayshotConnection::new()?;
+    let outputs = conn.get_all_outputs();
+    let output = outputs
+        .iter()
+        .find(|output| output.name == name)
+        .ok_or_else(|| anyhow::anyhow!("wayland output {name} disappeared"))?;
+    let img = conn.screenshot_single_output(output, false)?;
     let rgba = img.to_rgba8();
     RgbaImage::from_raw(rgba.width(), rgba.height(), rgba.into_vec())
         .ok_or_else(|| anyhow::anyhow!("screencopy buffer size mismatch"))

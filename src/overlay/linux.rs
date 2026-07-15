@@ -19,7 +19,7 @@ use image::RgbaImage;
 use serde::Serialize;
 use tauri::{AppHandle, Manager};
 
-use crate::capture::Rectangle;
+use crate::capture::{gui_is_wayland as is_wayland_session, Rectangle};
 
 use super::SelectionResult;
 
@@ -35,7 +35,6 @@ struct ActiveSelection {
     ready: HashSet<String>,
     focus_label: String,
     tx: Sender<SelectionResult>,
-    native_backdrop: Option<super::wayland_backdrop::NativeBackdrop>,
 }
 
 struct SelectorSurface {
@@ -278,12 +277,7 @@ pub fn cancel_active_selection() {
 fn finish(result: SelectionResult) {
     let active = ACTIVE.lock().unwrap().take();
     let Some(active) = active else { return };
-    let ActiveSelection {
-        surfaces,
-        tx,
-        native_backdrop,
-        ..
-    } = active;
+    let ActiveSelection { surfaces, tx, .. } = active;
     let labels: Vec<_> = surfaces.into_iter().map(|surface| surface.label).collect();
     if let Some(app) = APP.get() {
         for label in &labels {
@@ -301,7 +295,6 @@ fn finish(result: SelectionResult) {
             }
         });
     }
-    drop(native_backdrop);
     let _ = tx.send(result);
 }
 
@@ -376,24 +369,6 @@ fn compose_frozen_region(rect: Rectangle, surfaces: &[SelectorSurface]) -> Optio
     Some(captured)
 }
 
-// a wayland session also exposes DISPLAY via xwayland, so DISPLAY being set does
-// not mean x11. the gtk/webview toolkit runs as a wayland client whenever the
-// session is wayland and the backend isn't pinned to x11 — match that, otherwise
-// the overlay takes the x11 absolute-positioning path and lands misplaced,
-// showing both monitors crammed into one window
-fn is_wayland_session() -> bool {
-    if std::env::var("GDK_BACKEND")
-        .map(|b| b.eq_ignore_ascii_case("x11"))
-        .unwrap_or(false)
-    {
-        return false;
-    }
-    std::env::var("WAYLAND_DISPLAY").is_ok()
-        || std::env::var("XDG_SESSION_TYPE")
-            .map(|t| t.eq_ignore_ascii_case("wayland"))
-            .unwrap_or(false)
-}
-
 pub fn select(frozen_frame: Option<Arc<RgbaImage>>) -> SelectionResult {
     let Some(app) = APP.get() else {
         tracing::warn!("selector invoked before app handle registration");
@@ -424,7 +399,7 @@ pub fn select(frozen_frame: Option<Arc<RgbaImage>>) -> SelectionResult {
             monitors
                 .iter()
                 .map(|monitor| {
-                    scope.spawn(|| crate::capture::capture_wayland_screen(&monitor.name))
+                    scope.spawn(|| crate::capture::wayland_freeze_output(&monitor.name))
                 })
                 .collect::<Vec<_>>()
                 .into_iter()
@@ -511,7 +486,8 @@ pub fn select(frozen_frame: Option<Arc<RgbaImage>>) -> SelectionResult {
     if pure_wayland && !frames_oriented {
         tracing::error!("frozen frame orientation mismatches its output; using webview selector");
     }
-    if pure_wayland && frames_oriented {
+    let force_webview = std::env::var_os("CAPSCR_FORCE_WEBVIEW_SELECTOR").is_some();
+    if pure_wayland && frames_oriented && !force_webview {
         let outputs = surfaces
             .iter()
             .filter_map(|surface| {
@@ -595,33 +571,12 @@ pub fn select(frozen_frame: Option<Arc<RgbaImage>>) -> SelectionResult {
         })
         .unwrap_or_else(|| surfaces[0].label.clone());
 
-    let native_backdrop = pure_wayland
-        .then(|| {
-            let frames = surfaces
-                .iter()
-                .filter_map(|surface| {
-                    Some(super::wayland_backdrop::BackdropFrame {
-                        output_name: surface.output_name.clone()?,
-                        image: surface.frame.clone(),
-                    })
-                })
-                .collect();
-            super::wayland_backdrop::NativeBackdrop::show(frames)
-        })
-        .transpose()
-        .unwrap_or_else(|error| {
-            tracing::warn!("using webview selector backdrop: {error:#}");
-            None
-        });
-    let native_backdrop_active = native_backdrop.is_some();
-
     let (tx, rx): (Sender<SelectionResult>, Receiver<SelectionResult>) = channel();
     *ACTIVE.lock().unwrap() = Some(ActiveSelection {
         surfaces,
         ready: HashSet::new(),
         focus_label,
         tx,
-        native_backdrop,
     });
 
     let app_for_build = app.clone();
@@ -637,9 +592,7 @@ pub fn select(frozen_frame: Option<Arc<RgbaImage>>) -> SelectionResult {
     let built = app.run_on_main_thread(move || {
         for (label, rect) in windows {
             let rect = (rect.0 as f64, rect.1 as f64, rect.2 as f64, rect.3 as f64);
-            if let Err(error) =
-                build_selector_window(&app_for_build, &label, rect, native_backdrop_active)
-            {
+            if let Err(error) = build_selector_window(&app_for_build, &label, rect) {
                 tracing::error!("selector window build failed: {error}");
                 finish(SelectionResult::Cancelled);
                 break;
@@ -665,7 +618,6 @@ fn build_selector_window(
     app: &AppHandle,
     label: &str,
     (x, y, w, h): (f64, f64, f64, f64),
-    transparent: bool,
 ) -> tauri::Result<()> {
     if let Some(stale) = app.get_webview_window(label) {
         let _ = stale.destroy();
@@ -677,22 +629,44 @@ fn build_selector_window(
         .resizable(false)
         .always_on_top(true)
         .skip_taskbar(true)
-        .transparent(transparent)
         .visible(false)
         .position(x, y)
         .inner_size(w, h)
         .build()?;
+    use gtk::gdk::prelude::MonitorExt;
     use gtk::prelude::{Cast, GtkWindowExt, WidgetExt};
     if let Ok(gtk_window) = window.gtk_window() {
         gtk_window.set_type_hint(gtk::gdk::WindowTypeHint::Notification);
         if is_wayland_session() {
             if let Some(screen) = WidgetExt::screen(&gtk_window) {
                 let display = gtk_window.display();
+                // gdk's invented wayland layout can disagree with the
+                // compositor's logical coordinates on mixed-dpi setups, so
+                // trust exact geometry first and points only as a fallback
+                let expected = (
+                    x.round() as i32,
+                    y.round() as i32,
+                    w.round() as i32,
+                    h.round() as i32,
+                );
+                let by_geometry = (0..display.n_monitors()).find(|index| {
+                    display.monitor(*index).is_some_and(|monitor| {
+                        let geometry = monitor.geometry();
+                        (
+                            geometry.x(),
+                            geometry.y(),
+                            geometry.width(),
+                            geometry.height(),
+                        ) == expected
+                    })
+                });
                 let center_x = (x + w / 2.0).round() as i32;
                 let center_y = (y + h / 2.0).round() as i32;
-                let target = display.monitor_at_point(center_x, center_y);
-                let monitor_index = (0..display.n_monitors())
-                    .find(|index| display.monitor(*index) == target)
+                let monitor_index = by_geometry
+                    .or_else(|| {
+                        let target = display.monitor_at_point(center_x, center_y);
+                        (0..display.n_monitors()).find(|index| display.monitor(*index) == target)
+                    })
                     .or_else(|| {
                         let primary = display.primary_monitor();
                         (0..display.n_monitors()).find(|index| display.monitor(*index) == primary)
@@ -704,7 +678,10 @@ fn build_selector_window(
                 if !layered {
                     gtk_window.fullscreen_on_monitor(&screen, monitor_index);
                 }
-                tracing::info!("selector {label} using layer shell: {layered}");
+                tracing::info!(
+                    "selector {label} on gdk monitor {monitor_index} (geometry match: {}), layer shell: {layered}",
+                    by_geometry.is_some(),
+                );
             }
         }
     }
@@ -771,7 +748,6 @@ pub struct SelectorContext {
     pub frame_width: u32,
     pub frame_height: u32,
     pub windows: Vec<WindowRect>,
-    pub native_backdrop: bool,
 }
 
 #[tauri::command]
@@ -789,7 +765,6 @@ pub fn selector_context(window: tauri::WebviewWindow) -> Result<SelectorContext,
         frame_width: surface.frame.width(),
         frame_height: surface.frame.height(),
         windows: surface.windows.clone(),
-        native_backdrop: active.native_backdrop.is_some(),
     })
 }
 

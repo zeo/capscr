@@ -17,8 +17,24 @@ static REQUEST_COUNTER: AtomicU32 = AtomicU32::new(0);
 pub fn is_wayland_session() -> bool {
     std::env::var("WAYLAND_DISPLAY").is_ok()
         || std::env::var("XDG_SESSION_TYPE")
-            .map(|t| t == "wayland")
+            .map(|t| t.eq_ignore_ascii_case("wayland"))
             .unwrap_or(false)
+}
+
+// a wayland session also exposes DISPLAY via xwayland, so DISPLAY being set
+// does not mean x11. the gtk/webview toolkit runs as a wayland client whenever
+// the session is wayland and the backend isn't pinned to x11 — overlay
+// placement must match the toolkit, otherwise it takes the x11
+// absolute-positioning path and lands misplaced, showing both monitors
+// crammed into one window
+pub fn gui_is_wayland() -> bool {
+    if std::env::var("GDK_BACKEND")
+        .map(|backend| backend.eq_ignore_ascii_case("x11"))
+        .unwrap_or(false)
+    {
+        return false;
+    }
+    is_wayland_session()
 }
 
 pub fn portal_screenshot() -> Result<RgbaImage> {

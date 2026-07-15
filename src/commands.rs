@@ -629,7 +629,7 @@ fn run_capture_pipeline_inner(
             #[cfg(target_os = "linux")]
             let image = if crate::capture::is_wayland_session() {
                 match output_name {
-                    Some(name) => crate::capture::capture_wayland_screen(&name)?,
+                    Some(name) => crate::capture::wayland_freeze_output(&name)?,
                     None => crate::capture::capture_wayland_area(
                         rect.x,
                         rect.y,

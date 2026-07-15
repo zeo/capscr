@@ -2131,16 +2131,6 @@ kbd {
   background: transparent;
 }
 
-html.selector-native-backdrop,
-html.selector-native-backdrop body,
-html.selector-native-backdrop #root {
-  background: transparent;
-}
-
-.selector-native-backdrop .selector-backdrop {
-  display: none;
-}
-
 .selector-backdrop {
   position: absolute;
   inset: 0;
