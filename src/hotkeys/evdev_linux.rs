@@ -46,7 +46,9 @@ const UI_SET_EVBIT: usize = 0x4004_5564;
 const UI_SET_KEYBIT: usize = 0x4004_5565;
 const UI_SET_RELBIT: usize = 0x4004_5566;
 const UI_SET_MSCBIT: usize = 0x4004_5568;
+const UI_SET_PROPBIT: usize = 0x4004_556e;
 const EVIOCGRAB: usize = 0x4004_4590;
+const INPUT_PROP_POINTER: u16 = 0x00;
 
 unsafe extern "C" {
     fn ioctl(fd: i32, request: usize, ...) -> i32;
@@ -97,6 +99,7 @@ impl MouseMirror {
             || !set(UI_SET_EVBIT, EV_KEY)
             || !set(UI_SET_EVBIT, EV_REL)
             || !set(UI_SET_EVBIT, EV_MSC)
+            || !set(UI_SET_PROPBIT, INPUT_PROP_POINTER)
         {
             return Err(std::io::Error::last_os_error());
         }
@@ -134,7 +137,7 @@ impl MouseMirror {
             return Err(std::io::Error::last_os_error());
         }
 
-        std::thread::sleep(std::time::Duration::from_millis(250));
+        std::thread::sleep(std::time::Duration::from_secs(1));
         if unsafe { ioctl(input_fd, EVIOCGRAB, 1usize) } != 0 {
             unsafe {
                 ioctl(fd, UI_DEV_DESTROY);
@@ -280,6 +283,14 @@ pub fn set_bindings(map: HashMap<(u8, u16), String>) {
     *BINDINGS.lock().unwrap() = Some(map);
 }
 
+pub fn has_mouse_binding() -> bool {
+    BINDINGS.lock().unwrap().as_ref().is_some_and(|bindings| {
+        bindings
+            .keys()
+            .any(|(_, code)| matches!(*code, BTN_SIDE | BTN_EXTRA))
+    })
+}
+
 fn mod_bit(code: u16) -> Option<u8> {
     Some(match code {
         KEY_LEFTCTRL | KEY_RIGHTCTRL => MOD_CTRL,
@@ -293,7 +304,7 @@ fn mod_bit(code: u16) -> Option<u8> {
 /// start one reader thread per readable input device. safe to call once at
 /// startup; bindings are read live from BINDINGS so a later config reload just
 /// updates the map without restarting the threads.
-pub fn start(app: AppHandle) {
+pub fn start(app: AppHandle, consume_mouse_bindings: bool) {
     let devices = readable_devices();
     if devices.is_empty() {
         tracing::warn!(
@@ -311,7 +322,7 @@ pub fn start(app: AppHandle) {
         let app = app.clone();
         std::thread::Builder::new()
             .name("capscr-evdev".into())
-            .spawn(move || read_device(path, app))
+            .spawn(move || read_device(path, app, consume_mouse_bindings))
             .ok();
     }
 }
@@ -335,11 +346,11 @@ fn readable_devices() -> Vec<PathBuf> {
     out
 }
 
-fn read_device(path: PathBuf, app: AppHandle) {
+fn read_device(path: PathBuf, app: AppHandle, consume_mouse_bindings: bool) {
     let Ok(mut file) = File::open(&path) else {
         return;
     };
-    let mut mirror = if std::env::var_os("CAPSCR_EXCLUSIVE_MOUSE").is_some() {
+    let mut mirror = if consume_mouse_bindings {
         match MouseMirror::create(&path, file.as_raw_fd()) {
             Ok(mirror) => mirror,
             Err(error) => {

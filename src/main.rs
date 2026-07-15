@@ -780,8 +780,6 @@ fn spawn_hotkey_thread(
     #[cfg(target_os = "linux")]
     {
         use std::sync::atomic::Ordering;
-        // wayland-capable mouse-button hotkeys read straight off /dev/input
-        hotkeys::evdev_linux::start(app.clone());
         let app_dispatch = app.clone();
         std::thread::Builder::new()
             .name("capscr-hotkey-dispatch".into())
@@ -837,6 +835,8 @@ fn spawn_hotkey_thread(
             hm.try_register(task.id.clone(), &task.hotkey);
         }
         hm.flush_to_hook();
+        #[cfg(target_os = "linux")]
+        hotkeys::evdev_linux::start(app.clone(), hotkeys::evdev_linux::has_mouse_binding());
         let startup_errors = hm.take_errors();
         for err in &startup_errors {
             tracing::warn!(
