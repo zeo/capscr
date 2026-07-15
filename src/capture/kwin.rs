@@ -190,16 +190,20 @@ pub fn list_windows() -> Result<Vec<KwinWindow>> {
         if width <= 5.0 || height <= 5.0 {
             continue;
         }
-        windows.push(KwinWindow {
-            handle: handle.to_owned(),
-            x: x.round() as i32,
-            y: y.round() as i32,
-            width: width.round() as u32,
-            height: height.round() as u32,
-        });
+        windows.push((
+            integer("layer").unwrap_or_default(),
+            KwinWindow {
+                handle: handle.to_owned(),
+                x: x.round() as i32,
+                y: y.round() as i32,
+                width: width.round() as u32,
+                height: height.round() as u32,
+            },
+        ));
     }
+    windows.sort_by_key(|(layer, _)| *layer);
     windows.reverse();
-    Ok(windows)
+    Ok(windows.into_iter().map(|(_, window)| window).collect())
 }
 
 fn capture_request(
