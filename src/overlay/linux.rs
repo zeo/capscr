@@ -488,8 +488,15 @@ pub fn select(frozen_frame: Option<Arc<RgbaImage>>) -> SelectionResult {
     }
     let force_webview = std::env::var_os("CAPSCR_FORCE_WEBVIEW_SELECTOR").is_some();
     if pure_wayland && frames_oriented && !force_webview {
+        // debugging aid: map only the named output's selector surface
+        let only_output = std::env::var("CAPSCR_SELECTOR_OUTPUT").ok();
         let outputs = surfaces
             .iter()
+            .filter(|surface| {
+                only_output
+                    .as_deref()
+                    .is_none_or(|name| surface.output_name.as_deref() == Some(name))
+            })
             .filter_map(|surface| {
                 Some(super::wayland_native_selector::NativeOutput {
                     output_name: surface.output_name.clone()?,

@@ -140,7 +140,10 @@ libwayshot-xcap = "0.3"
 # native selector preview surfaces; already compiled through libwayshot-xcap
 wayland-client = "0.31"
 wayland-protocols = { version = "0.32", features = ["client"] }
-wayland-protocols-wlr = { version = "0.3", features = ["client"] }
+# kde's plasma-shell surface role pins each selector window to its output at
+# exact global coordinates — kwin re-places both layer-shell and fullscreen
+# xdg windows bound to a rotated output onto the active output otherwise
+wayland-protocols-plasma = { version = "0.3", features = ["client"] }
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = [

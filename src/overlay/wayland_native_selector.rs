@@ -16,10 +16,8 @@ use wayland_client::protocol::{
 };
 use wayland_client::{delegate_noop, Dispatch, Proxy, QueueHandle, WEnum};
 use wayland_protocols::wp::viewporter::client::{wp_viewport, wp_viewporter};
-use wayland_protocols_wlr::layer_shell::v1::client::{
-    zwlr_layer_shell_v1::{self, Layer},
-    zwlr_layer_surface_v1::{self, Anchor, KeyboardInteractivity},
-};
+use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base};
+use wayland_protocols_plasma::plasma_shell::client::{org_kde_plasma_shell, org_kde_plasma_surface};
 
 use crate::capture::Rectangle;
 
@@ -143,7 +141,13 @@ struct OutputSurface {
     windows: Vec<NativeWindow>,
     image: Arc<RgbaImage>,
     surface: wl_surface::WlSurface,
-    layer_surface: zwlr_layer_surface_v1::ZwlrLayerSurfaceV1,
+    xdg_surface: xdg_surface::XdgSurface,
+    toplevel: xdg_toplevel::XdgToplevel,
+    _plasma: Option<org_kde_plasma_surface::OrgKdePlasmaSurface>,
+    wl_output: WlOutput,
+    mapped: bool,
+    fullscreen_retries: u8,
+    last_assert: Option<std::time::Instant>,
     dim: Plane,
     bright: Plane,
     highlight: Highlight,
@@ -155,6 +159,7 @@ struct OutputSurface {
 
 struct State {
     configured: HashMap<String, (u32, u32)>,
+    pending_size: HashMap<String, (u32, u32)>,
     output_globals: HashMap<String, u32>,
     outputs: Vec<OutputSurface>,
     pointer: Option<wl_pointer::WlPointer>,
@@ -187,9 +192,27 @@ delegate_noop!(State: ignore wl_region::WlRegion);
 delegate_noop!(State: ignore wl_subcompositor::WlSubcompositor);
 delegate_noop!(State: ignore wl_subsurface::WlSubsurface);
 delegate_noop!(State: ignore wayland_client::protocol::wl_output::WlOutput);
-delegate_noop!(State: ignore zwlr_layer_shell_v1::ZwlrLayerShellV1);
 delegate_noop!(State: ignore wp_viewporter::WpViewporter);
 delegate_noop!(State: ignore wp_viewport::WpViewport);
+delegate_noop!(State: ignore org_kde_plasma_shell::OrgKdePlasmaShell);
+delegate_noop!(State: ignore org_kde_plasma_surface::OrgKdePlasmaSurface);
+
+impl
+    Dispatch<
+        wayland_client::protocol::wl_registry::WlRegistry,
+        wayland_client::globals::GlobalListContents,
+    > for State
+{
+    fn event(
+        _state: &mut Self,
+        _registry: &wayland_client::protocol::wl_registry::WlRegistry,
+        _event: wayland_client::protocol::wl_registry::Event,
+        _data: &wayland_client::globals::GlobalListContents,
+        _connection: &wayland_client::Connection,
+        _queue: &QueueHandle<Self>,
+    ) {
+    }
+}
 
 impl Dispatch<wayland_client::protocol::wl_output::WlOutput, u32> for State {
     fn event(
@@ -206,28 +229,129 @@ impl Dispatch<wayland_client::protocol::wl_output::WlOutput, u32> for State {
     }
 }
 
-impl Dispatch<zwlr_layer_surface_v1::ZwlrLayerSurfaceV1, String> for State {
+impl Dispatch<xdg_wm_base::XdgWmBase, ()> for State {
+    fn event(
+        _state: &mut Self,
+        wm_base: &xdg_wm_base::XdgWmBase,
+        event: xdg_wm_base::Event,
+        _data: &(),
+        _connection: &wayland_client::Connection,
+        _queue: &QueueHandle<Self>,
+    ) {
+        if let xdg_wm_base::Event::Ping { serial } = event {
+            wm_base.pong(serial);
+        }
+    }
+}
+
+impl Dispatch<xdg_toplevel::XdgToplevel, String> for State {
     fn event(
         state: &mut Self,
-        surface: &zwlr_layer_surface_v1::ZwlrLayerSurfaceV1,
-        event: zwlr_layer_surface_v1::Event,
+        _toplevel: &xdg_toplevel::XdgToplevel,
+        event: xdg_toplevel::Event,
         output_name: &String,
         _connection: &wayland_client::Connection,
         _queue: &QueueHandle<Self>,
     ) {
         match event {
-            zwlr_layer_surface_v1::Event::Configure {
-                serial,
-                width,
-                height,
-            } => {
-                surface.ack_configure(serial);
-                state.configured.insert(output_name.clone(), (width, height));
+            xdg_toplevel::Event::Configure { width, height, .. } => {
+                state
+                    .pending_size
+                    .insert(output_name.clone(), (width.max(0) as u32, height.max(0) as u32));
             }
-            zwlr_layer_surface_v1::Event::Closed => {
-                state.configured.remove(output_name);
+            xdg_toplevel::Event::Close => {
+                tracing::warn!("selector window {output_name} closed by the compositor");
+                state.finish(NativeOutcome::Cancelled);
             }
             _ => {}
+        }
+    }
+}
+
+impl Dispatch<xdg_surface::XdgSurface, String> for State {
+    fn event(
+        state: &mut Self,
+        surface: &xdg_surface::XdgSurface,
+        event: xdg_surface::Event,
+        output_name: &String,
+        _connection: &wayland_client::Connection,
+        _queue: &QueueHandle<Self>,
+    ) {
+        if let xdg_surface::Event::Configure { serial } = event {
+            surface.ack_configure(serial);
+            let size = state
+                .pending_size
+                .get(output_name)
+                .copied()
+                .unwrap_or((0, 0));
+            tracing::debug!(
+                "selector window {output_name} configured at {}x{}",
+                size.0,
+                size.1,
+            );
+            state.configured.insert(output_name.clone(), size);
+            // kwin moves a freshly mapped fullscreen window to the active
+            // output and reconfigures it; asserting the target output again
+            // makes it settle where it was asked to go (qt clients win the
+            // same tug of war this way)
+            let Some(output) = state
+                .outputs
+                .iter_mut()
+                .find(|output| &output.name == output_name)
+            else {
+                return;
+            };
+            if !output.mapped || size.0 == 0 || size.1 == 0 {
+                return;
+            }
+            let intended = (output.rect.width, output.rect.height);
+            if size == intended {
+                output.fullscreen_retries = 0;
+                output
+                    .viewport
+                    .set_destination(intended.0 as i32, intended.1 as i32);
+                output
+                    .xdg_surface
+                    .set_window_geometry(0, 0, intended.0 as i32, intended.1 as i32);
+                output.surface.commit();
+            } else if output.fullscreen_retries < 8 {
+                // don't conform to the wrong grant: keep committing at the
+                // intended size and re-assert the target output — kwin then
+                // re-evaluates and settles the window where it was asked to
+                // go (qt clients win the same tug of war by never conforming).
+                // kwin answers a burst instantly with the same grant, so the
+                // re-asserts are spaced out instead of spent at once
+                let now = std::time::Instant::now();
+                let spaced = output
+                    .last_assert
+                    .is_none_or(|at| now.duration_since(at) >= Duration::from_millis(100));
+                if spaced {
+                    output.fullscreen_retries += 1;
+                    output.last_assert = Some(now);
+                    tracing::debug!(
+                        "re-asserting fullscreen for {output_name} (compositor granted {}x{})",
+                        size.0,
+                        size.1,
+                    );
+                    output.toplevel.set_fullscreen(Some(&output.wl_output));
+                }
+                output.surface.commit();
+            } else {
+                // compositor won't budge; show the frame at the granted size
+                // rather than leaving a displaced window
+                tracing::warn!(
+                    "compositor pinned selector {output_name} at {}x{}, expected {}x{}",
+                    size.0,
+                    size.1,
+                    intended.0,
+                    intended.1,
+                );
+                output.viewport.set_destination(size.0 as i32, size.1 as i32);
+                output
+                    .xdg_surface
+                    .set_window_geometry(0, 0, size.0 as i32, size.1 as i32);
+                output.surface.commit();
+            }
         }
     }
 }
@@ -324,6 +448,12 @@ impl Dispatch<wl_pointer::WlPointer, ()> for State {
                     .outputs
                     .iter()
                     .position(|output| output.surface.id() == surface.id());
+                if let Some(index) = state.current_output {
+                    tracing::debug!(
+                        "pointer entered selector surface {} at {surface_x},{surface_y}",
+                        state.outputs[index].name,
+                    );
+                }
                 state.update_pointer(surface_x, surface_y);
             }
             wl_pointer::Event::Motion {
@@ -470,7 +600,7 @@ impl State {
                             ),
                         }
                     }
-                    None => (-2, -2, 1, 1),
+                    None => (-10000, -10000, 1, 1),
                 };
                 border.subsurface.set_position(x, y);
                 border.viewport.set_destination(width as i32, height as i32);
@@ -573,10 +703,10 @@ impl State {
                         2 => (px, 0, 1, (py - GAP).max(0)),
                         _ => (px, py + GAP, 1, (output_height - py - GAP).max(0)),
                     },
-                    None => (-2, -2, 1, 1),
+                    None => (-10000, -10000, 1, 1),
                 };
                 if width <= 0 || height <= 0 {
-                    guide.subsurface.set_position(-2, -2);
+                    guide.subsurface.set_position(-10000, -10000);
                     guide.viewport.set_destination(1, 1);
                 } else {
                     guide.subsurface.set_position(x, y);
@@ -708,33 +838,38 @@ fn run(
     outcome: Sender<NativeOutcome>,
     ready: &Sender<Result<()>>,
 ) -> Result<()> {
-    let wayshot = libwayshot_xcap::WayshotConnection::new().context("connect to wayland")?;
-    let mut event_queue = wayshot.conn.new_event_queue::<State>();
+    // a dedicated connection: sharing libwayshot's confuses kwin's per-client
+    // output bookkeeping (its screencopy setup binds and releases outputs),
+    // which made kwin resolve our wl_output handles to the active output
+    let connection =
+        wayland_client::Connection::connect_to_env().context("connect to wayland")?;
+    let (globals, mut event_queue) =
+        wayland_client::globals::registry_queue_init::<State>(&connection)
+            .context("enumerate globals")?;
     let queue = event_queue.handle();
-    let compositor = wayshot
-        .globals
+    let compositor = globals
         .bind::<wl_compositor::WlCompositor, _, _>(&queue, 1..=6, ())
         .context("bind wl_compositor")?;
-    let subcompositor = wayshot
-        .globals
+    let subcompositor = globals
         .bind::<wl_subcompositor::WlSubcompositor, _, _>(&queue, 1..=1, ())
         .context("bind wl_subcompositor")?;
-    let shm = wayshot
-        .globals
+    let shm = globals
         .bind::<wl_shm::WlShm, _, _>(&queue, 1..=1, ())
         .context("bind wl_shm")?;
-    let layer_shell = wayshot
-        .globals
-        .bind::<zwlr_layer_shell_v1::ZwlrLayerShellV1, _, _>(&queue, 1..=5, ())
-        .context("bind zwlr_layer_shell_v1")?;
-    let viewporter = wayshot
-        .globals
+    let wm_base = globals
+        .bind::<xdg_wm_base::XdgWmBase, _, _>(&queue, 1..=6, ())
+        .context("bind xdg_wm_base")?;
+    let viewporter = globals
         .bind::<wp_viewporter::WpViewporter, _, _>(&queue, 1..=1, ())
         .context("bind wp_viewporter")?;
-    let _seat = wayshot
-        .globals
+    let _seat = globals
         .bind::<wl_seat::WlSeat, _, _>(&queue, 1..=9, ())
         .context("bind wl_seat")?;
+    // kde's plasma shell can pin a surface at exact global coordinates; on
+    // other compositors the xdg fullscreen hint is honored as-is
+    let plasma_shell = globals
+        .bind::<org_kde_plasma_shell::OrgKdePlasmaShell, _, _>(&queue, 1..=8, ())
+        .ok();
     let (white_pool, white_buffer, white_file) =
         solid_buffer(&shm, &queue, [255; 4]).context("allocate border buffer")?;
     let (gray_pool, gray_buffer, gray_file) =
@@ -743,6 +878,7 @@ fn run(
     let empty_region = compositor.create_region(&queue, ());
     let mut state = State {
         configured: HashMap::new(),
+        pending_size: HashMap::new(),
         output_globals: HashMap::new(),
         outputs: Vec::with_capacity(outputs.len()),
         pointer: None,
@@ -759,14 +895,13 @@ fn run(
         done: false,
     };
 
-    for global in wayshot
-        .globals
+    for global in globals
         .contents()
         .clone_list()
         .into_iter()
         .filter(|global| global.interface == "wl_output")
     {
-        let _: WlOutput = wayshot.globals.registry().bind(
+        let _: WlOutput = globals.registry().bind(
             global.name,
             global.version.min(4),
             &queue,
@@ -778,52 +913,23 @@ fn run(
         .context("roundtrip after wl_output binds")?;
 
     for output in outputs {
-        let output_index = wayshot
-            .get_all_outputs()
-            .iter()
-            .position(|candidate| {
-                let region = candidate.logical_region.inner;
-                region.position.x == output.rect.x
-                    && region.position.y == output.rect.y
-                    && region.size.width == output.rect.width
-                    && region.size.height == output.rect.height
-            })
-            .or_else(|| {
-                wayshot
-                    .get_all_outputs()
-                    .iter()
-                    .position(|candidate| candidate.name == output.output_name)
-            })
-            .ok_or_else(|| anyhow!("wayland output {} disappeared", output.output_name))?;
-        let wayland_output = &wayshot.get_all_outputs()[output_index];
-        tracing::debug!(
-            "native selector frame {} at {},{} {}x{} mapped to wayland output {} at {},{} {}x{}",
-            output.output_name,
-            output.rect.x,
-            output.rect.y,
-            output.rect.width,
-            output.rect.height,
-            wayland_output.name,
-            wayland_output.logical_region.inner.position.x,
-            wayland_output.logical_region.inner.position.y,
-            wayland_output.logical_region.inner.size.width,
-            wayland_output.logical_region.inner.size.height,
-        );
         let output_global = *state
             .output_globals
             .get(&output.output_name)
             .ok_or_else(|| anyhow!("wayland output global {} disappeared", output.output_name))?;
-        let wl_output: WlOutput = wayshot
-            .globals
-            .registry()
-            .bind(output_global, 4, &queue, ());
+        tracing::debug!(
+            "binding selector surface for {} to wl_output global {output_global}",
+            output.output_name,
+        );
+        let wl_output: WlOutput = globals.registry().bind(output_global, 4, &queue, ());
         let output_name = output.output_name.clone();
         state.outputs.push(
             map_output(
                 &queue,
                 &compositor,
                 &subcompositor,
-                &layer_shell,
+                &wm_base,
+                plasma_shell.as_ref(),
                 &viewporter,
                 &shm,
                 &wl_output,
@@ -856,7 +962,8 @@ fn run(
             }
         }
     }
-    for output in &state.outputs {
+    for output in &mut state.outputs {
+        output.mapped = true;
         if let Some(&(width, height)) = state.configured.get(&output.name) {
             if width != 0
                 && height != 0
@@ -869,6 +976,9 @@ fn run(
                     output.rect.height,
                 );
                 output.viewport.set_destination(width as i32, height as i32);
+                output
+                    .xdg_surface
+                    .set_window_geometry(0, 0, width as i32, height as i32);
             }
         }
         output.surface.attach(Some(&output.dim.buffer), 0, 0);
@@ -937,7 +1047,8 @@ fn map_output(
     queue: &QueueHandle<State>,
     compositor: &wl_compositor::WlCompositor,
     subcompositor: &wl_subcompositor::WlSubcompositor,
-    layer_shell: &zwlr_layer_shell_v1::ZwlrLayerShellV1,
+    wm_base: &xdg_wm_base::XdgWmBase,
+    plasma_shell: Option<&org_kde_plasma_shell::OrgKdePlasmaShell>,
     viewporter: &wp_viewporter::WpViewporter,
     shm: &wl_shm::WlShm,
     wl_output: &WlOutput,
@@ -952,24 +1063,37 @@ fn map_output(
     // no buffer may touch the surface before the first configure — the
     // compositor treats that as a fatal protocol error. run() attaches the
     // dimmed frame only after every surface acked its configure.
-    let layer_surface = layer_shell.get_layer_surface(
-        &surface,
-        Some(wl_output),
-        Layer::Overlay,
-        format!("capscr-native-selector-{}", output.output_name),
-        queue,
-        output.output_name.clone(),
-    );
-    layer_surface.set_exclusive_zone(-1);
-    layer_surface.set_anchor(Anchor::Top | Anchor::Right | Anchor::Bottom | Anchor::Left);
-    // the on-demand keyboard value only exists from layer-shell v4 on
-    let keyboard = if layer_shell.version() >= 4 {
-        KeyboardInteractivity::OnDemand
-    } else {
-        KeyboardInteractivity::Exclusive
-    };
-    layer_surface.set_keyboard_interactivity(keyboard);
-    layer_surface.set_size(0, 0);
+    // xdg toplevels instead of layer-shell: kwin (6.7) re-arranges layer
+    // surfaces bound to a rotated output into the active output's work area
+    let xdg_surface = wm_base.get_xdg_surface(&surface, queue, output.output_name.clone());
+    let toplevel = xdg_surface.get_toplevel(queue, output.output_name.clone());
+    toplevel.set_app_id("capscr".into());
+    toplevel.set_title(format!("capscr selector {}", output.output_name));
+    // kwin also moves fullscreen toplevels onto the active output no matter
+    // which wl_output the request names; its plasma-shell panel role is the
+    // one placement path that honors exact global coordinates. other
+    // compositors get the plain fullscreen hint.
+    let plasma = plasma_shell.map(|shell| {
+        let plasma = shell.get_surface(&surface, queue, ());
+        plasma.set_role(org_kde_plasma_surface::Role::Panel as u32);
+        plasma.set_position(output.rect.x, output.rect.y);
+        plasma.set_panel_behavior(org_kde_plasma_surface::PanelBehavior::WindowsGoBelow as u32);
+        plasma.set_panel_takes_focus(1);
+        if plasma.version() >= 5 {
+            plasma.set_skip_taskbar(1);
+        }
+        if plasma.version() >= 6 {
+            plasma.set_skip_switcher(1);
+        }
+        plasma
+    });
+    if plasma.is_none() {
+        toplevel.set_fullscreen(Some(wl_output));
+    }
+    // without an explicit window geometry the offscreen-parked subsurfaces
+    // inflate the toplevel's bounding box and the compositor sizes the
+    // "fullscreen" window around them, displacing the visible content
+    xdg_surface.set_window_geometry(0, 0, output.rect.width as i32, output.rect.height as i32);
 
     // same retained fraction as the windows selector's pre-dimmed bitmap
     let dim = image_buffer(shm, queue, &output.image, Some(95), &output.output_name)?;
@@ -1000,7 +1124,7 @@ fn map_output(
         let line_viewport = viewporter.get_viewport(&line_surface, queue, ());
         line_viewport.set_destination(1, 1);
         let subsurface = subcompositor.get_subsurface(&line_surface, &surface, queue, ());
-        subsurface.set_position(-2, -2);
+        subsurface.set_position(-10000, -10000);
         line_surface.commit();
         crosshair.push(Border {
             surface: line_surface,
@@ -1017,7 +1141,7 @@ fn map_output(
         let border_viewport = viewporter.get_viewport(&border_surface, queue, ());
         border_viewport.set_destination(1, 1);
         let subsurface = subcompositor.get_subsurface(&border_surface, &surface, queue, ());
-        subsurface.set_position(-2, -2);
+        subsurface.set_position(-10000, -10000);
         border_surface.commit();
         borders.push(Border {
             surface: border_surface,
@@ -1063,7 +1187,13 @@ fn map_output(
         windows: output.windows,
         image: output.image,
         surface,
-        layer_surface,
+        xdg_surface,
+        toplevel,
+        _plasma: plasma,
+        wl_output: wl_output.clone(),
+        mapped: false,
+        fullscreen_retries: 0,
+        last_assert: None,
         dim,
         bright,
         highlight,
