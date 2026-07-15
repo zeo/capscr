@@ -139,6 +139,36 @@ fn main() {
         )
         .manage(app_state)
         .setup(move |app| {
+            // dev builds resolve every webview url to the vite dev server; a
+            // standalone launch of one yields blank selector and hub windows
+            // with no other symptom, so make the misbuild impossible to miss
+            if tauri::is_dev() {
+                let dev_url = app.config().build.dev_url.clone();
+                let unreachable = dev_url
+                    .as_ref()
+                    .and_then(|url| url.socket_addrs(|| Some(1420)).ok())
+                    .map(|addrs| {
+                        !addrs.iter().any(|addr| {
+                            std::net::TcpStream::connect_timeout(
+                                addr,
+                                std::time::Duration::from_millis(300),
+                            )
+                            .is_ok()
+                        })
+                    })
+                    .unwrap_or(true);
+                if unreachable {
+                    tracing::error!(
+                        "built with cfg(dev) but no dev server answers on {dev_url:?}; every \
+                         window will be blank. run `cargo tauri dev`, or build a real release \
+                         with the custom-protocol feature (linux/install.sh does)."
+                    );
+                    let _ = clipboard::show_notification(
+                        "capscr misbuilt",
+                        "dev binary without a dev server — windows will be blank",
+                    );
+                }
+            }
             // the linux selector overlay builds its webview through a stored
             // AppHandle; register it before any capture can fire
             #[cfg(target_os = "linux")]
