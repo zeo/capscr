@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::{Seek, SeekFrom, Write};
 use std::os::fd::{AsFd, AsRawFd};
@@ -57,15 +57,19 @@ impl NativeSelector {
         let (ready_tx, ready_rx) = channel();
         let (outcome_tx, outcome_rx) = channel();
         let (shutdown_tx, shutdown_rx) = channel();
+        // a failure after ready was acked leaves select() waiting on the
+        // outcome channel; a cancelled outcome resolves it immediately
+        let outcome_on_failure = outcome_tx.clone();
         let thread = std::thread::Builder::new()
             .name("capscr-wayland-selector".into())
             .spawn(move || {
                 if let Err(error) = run(outputs, shutdown_rx, outcome_tx, &ready_tx) {
                     tracing::warn!("native wayland selector unavailable: {error:#}");
+                    let _ = outcome_on_failure.send(NativeOutcome::Cancelled);
                     let _ = ready_tx.send(Err(error));
                 }
             })?;
-        match ready_rx.recv() {
+        match ready_rx.recv_timeout(Duration::from_secs(5)) {
             Ok(Ok(())) => Ok(Self {
                 shutdown: shutdown_tx,
                 outcome: outcome_rx,
@@ -75,7 +79,12 @@ impl NativeSelector {
                 let _ = thread.join();
                 Err(error)
             }
-            Err(_) => {
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                let _ = shutdown_tx.send(());
+                let _ = thread.join();
+                Err(anyhow!("native selector timed out before mapping"))
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
                 let _ = thread.join();
                 Err(anyhow!("native selector stopped before mapping"))
             }
@@ -110,11 +119,11 @@ struct OutputSurface {
     surface: wl_surface::WlSurface,
     layer_surface: zwlr_layer_surface_v1::ZwlrLayerSurfaceV1,
     borders: Vec<Border>,
-    _viewport: wp_viewport::WpViewport,
+    viewport: wp_viewport::WpViewport,
 }
 
 struct State {
-    configured: HashSet<String>,
+    configured: HashMap<String, (u32, u32)>,
     output_globals: HashMap<String, u32>,
     outputs: Vec<OutputSurface>,
     pointer: Option<wl_pointer::WlPointer>,
@@ -176,9 +185,13 @@ impl Dispatch<zwlr_layer_surface_v1::ZwlrLayerSurfaceV1, String> for State {
         _queue: &QueueHandle<Self>,
     ) {
         match event {
-            zwlr_layer_surface_v1::Event::Configure { serial, .. } => {
+            zwlr_layer_surface_v1::Event::Configure {
+                serial,
+                width,
+                height,
+            } => {
                 surface.ack_configure(serial);
-                state.configured.insert(output_name.clone());
+                state.configured.insert(output_name.clone(), (width, height));
             }
             zwlr_layer_surface_v1::Event::Closed => {
                 state.configured.remove(output_name);
@@ -527,7 +540,7 @@ fn run(
     let cursor = cursor(&compositor, &shm, &queue).context("build cursor surface")?;
     let empty_region = compositor.create_region(&queue, ());
     let mut state = State {
-        configured: HashSet::new(),
+        configured: HashMap::new(),
         output_globals: HashMap::new(),
         outputs: Vec::with_capacity(outputs.len()),
         pointer: None,
@@ -612,7 +625,6 @@ fn run(
                 &viewporter,
                 &wl_output,
                 output,
-                &clear_buffer,
                 &white_buffer,
                 &empty_region,
             )
@@ -622,12 +634,39 @@ fn run(
     for output in &state.outputs {
         output.surface.commit();
     }
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
     while state.configured.len() != state.outputs.len() {
+        if std::time::Instant::now() > deadline {
+            return Err(anyhow!("compositor never configured the selector surfaces"));
+        }
+        event_queue.flush()?;
         event_queue
-            .blocking_dispatch(&mut state)
+            .dispatch_pending(&mut state)
             .context("dispatch while waiting for layer surface configure")?;
+        if let Some(read_guard) = event_queue.prepare_read() {
+            if poll_readable(read_guard.connection_fd().as_raw_fd(), 100)? {
+                read_guard.read()?;
+                event_queue
+                    .dispatch_pending(&mut state)
+                    .context("dispatch while waiting for layer surface configure")?;
+            }
+        }
     }
     for output in &state.outputs {
+        if let Some(&(width, height)) = state.configured.get(&output.name) {
+            if width != 0
+                && height != 0
+                && (width, height) != (output.rect.width, output.rect.height)
+            {
+                tracing::warn!(
+                    "compositor sized selector on {} to {width}x{height}, expected {}x{}",
+                    output.name,
+                    output.rect.width,
+                    output.rect.height,
+                );
+                output.viewport.set_destination(width as i32, height as i32);
+            }
+        }
         output.surface.attach(Some(&clear_buffer), 0, 0);
         output.surface.damage_buffer(0, 0, 1, 1);
         output.surface.commit();
@@ -693,14 +732,15 @@ fn map_output(
     viewporter: &wp_viewporter::WpViewporter,
     wl_output: &WlOutput,
     output: NativeOutput,
-    clear_buffer: &wl_buffer::WlBuffer,
     white_buffer: &wl_buffer::WlBuffer,
     empty_region: &wl_region::WlRegion,
 ) -> Result<OutputSurface> {
     let surface = compositor.create_surface(queue, ());
     let viewport = viewporter.get_viewport(&surface, queue, ());
     viewport.set_destination(output.rect.width as i32, output.rect.height as i32);
-    surface.attach(Some(clear_buffer), 0, 0);
+    // no buffer may touch the surface before the first configure — the
+    // compositor treats that as a fatal protocol error. run() attaches the
+    // content buffer only after every surface acked its configure.
     let layer_surface = layer_shell.get_layer_surface(
         &surface,
         Some(wl_output),
@@ -711,8 +751,14 @@ fn map_output(
     );
     layer_surface.set_exclusive_zone(-1);
     layer_surface.set_anchor(Anchor::Top | Anchor::Right | Anchor::Bottom | Anchor::Left);
-    layer_surface.set_keyboard_interactivity(KeyboardInteractivity::OnDemand);
-    layer_surface.set_size(output.rect.width, output.rect.height);
+    // the on-demand keyboard value only exists from layer-shell v4 on
+    let keyboard = if layer_shell.version() >= 4 {
+        KeyboardInteractivity::OnDemand
+    } else {
+        KeyboardInteractivity::Exclusive
+    };
+    layer_surface.set_keyboard_interactivity(keyboard);
+    layer_surface.set_size(0, 0);
 
     let mut borders = Vec::with_capacity(4);
     for _ in 0..4 {
@@ -739,7 +785,7 @@ fn map_output(
         surface,
         layer_surface,
         borders,
-        _viewport: viewport,
+        viewport,
     })
 }
 
