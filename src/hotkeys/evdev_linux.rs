@@ -137,18 +137,37 @@ impl MouseMirror {
             return Err(std::io::Error::last_os_error());
         }
 
-        std::thread::sleep(std::time::Duration::from_secs(1));
+        let mirror = Self { output, input_fd };
+        mirror.wait_until_ready()?;
         if unsafe { ioctl(input_fd, EVIOCGRAB, 1usize) } != 0 {
-            unsafe {
-                ioctl(fd, UI_DEV_DESTROY);
-            }
             return Err(std::io::Error::last_os_error());
         }
-        Ok(Some(Self { output, input_fd }))
+        Ok(Some(mirror))
     }
 
     fn forward(&mut self, event: &[u8; EVENT_SIZE]) -> std::io::Result<()> {
         self.output.write_all(event)
+    }
+
+    fn wait_until_ready(&self) -> std::io::Result<()> {
+        for _ in 0..30 {
+            let ready = std::fs::read_dir("/sys/class/input")?
+                .flatten()
+                .any(|entry| {
+                    entry.file_name().to_string_lossy().starts_with("event")
+                        && std::fs::read_to_string(entry.path().join("device/name"))
+                            .is_ok_and(|name| name.trim() == "capscr mouse passthrough")
+                });
+            if ready {
+                std::thread::sleep(std::time::Duration::from_secs(1));
+                return Ok(());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        Err(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "virtual mouse did not become ready",
+        ))
     }
 }
 
@@ -352,9 +371,13 @@ fn read_device(path: PathBuf, app: AppHandle, consume_mouse_bindings: bool) {
     };
     let mut mirror = if consume_mouse_bindings {
         match MouseMirror::create(&path, file.as_raw_fd()) {
-            Ok(mirror) => mirror,
+            Ok(Some(mirror)) => {
+                tracing::info!("evdev: consuming bound buttons from {}", path.display());
+                Some(mirror)
+            }
+            Ok(None) => None,
             Err(error) => {
-                tracing::debug!("evdev: couldn't mirror {}: {error}", path.display());
+                tracing::warn!("evdev: couldn't mirror {}: {error}", path.display());
                 None
             }
         }
