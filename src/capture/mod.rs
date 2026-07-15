@@ -642,6 +642,73 @@ fn wlroots_freeze_output(name: &str) -> Result<RgbaImage> {
         .ok_or_else(|| anyhow::anyhow!("screencopy buffer size mismatch"))
 }
 
+// persistent per-recording grabber for wayland sessions, mirroring
+// X11RegionGrabber's role: kwin ScreenShot2 over a reused bus connection, with
+// a persistent screencopy connection as the non-kde fallback. the constructor
+// probes one frame so a broken backend fails the whole grabber and the
+// recording loop falls back to the generic grab-and-crop path.
+#[cfg(target_os = "linux")]
+pub enum WaylandRegionGrabber {
+    Kwin(kwin::KwinRegionGrabber),
+    Screencopy(libwayshot_xcap::WayshotConnection),
+}
+
+#[cfg(target_os = "linux")]
+impl WaylandRegionGrabber {
+    pub fn new(probe: Rectangle, include_cursor: bool) -> Result<Self> {
+        match kwin::KwinRegionGrabber::new() {
+            Ok(grabber) => {
+                match grabber.grab(
+                    probe.x,
+                    probe.y,
+                    probe.width,
+                    probe.height,
+                    include_cursor,
+                ) {
+                    Ok(img) if !is_black_frame(&img) => return Ok(Self::Kwin(grabber)),
+                    Ok(_) => tracing::warn!("kwin recording grab is all-black; trying screencopy"),
+                    Err(e) => {
+                        tracing::debug!("kwin recording grab unavailable ({e:#}); trying screencopy")
+                    }
+                }
+            }
+            Err(e) => tracing::debug!("session bus unavailable ({e:#}); trying screencopy"),
+        }
+        let grabber = Self::Screencopy(libwayshot_xcap::WayshotConnection::new()?);
+        let img = grabber.grab(probe.x, probe.y, probe.width, probe.height, include_cursor)?;
+        if is_black_frame(&img) {
+            return Err(anyhow::anyhow!("screencopy recording grab is all-black"));
+        }
+        Ok(grabber)
+    }
+
+    pub fn grab(
+        &self,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+        include_cursor: bool,
+    ) -> Result<RgbaImage> {
+        match self {
+            Self::Kwin(grabber) => grabber.grab(x, y, width, height, include_cursor),
+            Self::Screencopy(conn) => {
+                use libwayshot_xcap::region::{LogicalRegion, Position, Region, Size};
+                let region = LogicalRegion {
+                    inner: Region {
+                        position: Position { x, y },
+                        size: Size { width, height },
+                    },
+                };
+                let img = conn.screenshot(region, include_cursor)?;
+                let rgba = img.to_rgba8();
+                RgbaImage::from_raw(rgba.width(), rgba.height(), rgba.into_vec())
+                    .ok_or_else(|| anyhow::anyhow!("screencopy buffer size mismatch"))
+            }
+        }
+    }
+}
+
 // portal screenshots cover the whole desktop; crop this monitor's rect out
 #[cfg(target_os = "linux")]
 fn portal_grab_monitor(monitor: &MonitorInfo) -> Result<RgbaImage> {

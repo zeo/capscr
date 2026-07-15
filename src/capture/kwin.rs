@@ -219,7 +219,55 @@ pub fn list_windows() -> Result<Vec<KwinWindow>> {
     Ok(windows.into_iter().map(|(_, window)| window).collect())
 }
 
+// persistent-connection region grabber for recording loops: one session-bus
+// connection and region-sized logical captures, instead of a fresh connection
+// plus a full-monitor native-resolution grab per frame
+pub struct KwinRegionGrabber {
+    conn: zbus::blocking::Connection,
+}
+
+impl KwinRegionGrabber {
+    pub fn new() -> Result<Self> {
+        Ok(Self {
+            conn: zbus::blocking::Connection::session()?,
+        })
+    }
+
+    pub fn grab(
+        &self,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+        include_cursor: bool,
+    ) -> Result<RgbaImage> {
+        if width == 0 || height == 0 {
+            return Err(anyhow!("refusing to capture a zero-sized area"));
+        }
+        capture_request_on(&self.conn, |conn, output| {
+            let mut options: HashMap<&str, Value> = HashMap::new();
+            options.insert("include-cursor", Value::from(include_cursor));
+            options.insert("native-resolution", Value::from(false));
+            Ok(conn.call_method(
+                Some("org.kde.KWin.ScreenShot2"),
+                "/org/kde/KWin/ScreenShot2",
+                Some("org.kde.KWin.ScreenShot2"),
+                "CaptureArea",
+                &(x, y, width, height, options, output),
+            )?)
+        })
+    }
+}
+
 fn capture_request(
+    call: impl FnOnce(&zbus::blocking::Connection, Fd<'_>) -> Result<zbus::Message>,
+) -> Result<RgbaImage> {
+    let conn = zbus::blocking::Connection::session()?;
+    capture_request_on(&conn, call)
+}
+
+fn capture_request_on(
+    conn: &zbus::blocking::Connection,
     call: impl FnOnce(&zbus::blocking::Connection, Fd<'_>) -> Result<zbus::Message>,
 ) -> Result<RgbaImage> {
     let (mut reader, writer) = std::io::pipe()?;
@@ -232,8 +280,7 @@ fn capture_request(
         reader.read_to_end(&mut buf).map(|_| buf)
     });
 
-    let conn = zbus::blocking::Connection::session()?;
-    let reply = call(&conn, Fd::from(writer.as_fd()))?;
+    let reply = call(conn, Fd::from(writer.as_fd()))?;
     // drop our write end so the reader sees EOF once kwin closes its copy
     drop(writer);
 
