@@ -328,7 +328,7 @@ function CapturePane(props: { c: AppConfig; patch: Patch }) {
 
       <Section title="recording (gif + mp4)">
         <div class="field">
-          <label class="field-label">frame rate</label>
+          <label class="field-label">gif frame rate</label>
           <div class="field-control">
             <input
               type="number"
@@ -348,6 +348,48 @@ function CapturePane(props: { c: AppConfig; patch: Patch }) {
               }
             />
             <span class="field-hint">fps, 1-60</span>
+          </div>
+        </div>
+        <div class="field">
+          <label class="field-label">video frame rate</label>
+          <div class="field-control">
+            <input
+              type="number"
+              min={1}
+              max={60}
+              value={c().capture.video_fps}
+              onInput={(e) => {
+                const v = parseInt(e.currentTarget.value || "30");
+                if (!isNaN(v) && v >= 1 && v <= 60)
+                  props.patch("capture", { ...c().capture, video_fps: v });
+              }}
+              onChange={(e) =>
+                props.patch("capture", {
+                  ...c().capture,
+                  video_fps: commitNumber(e.currentTarget, { min: 1, max: 60, fallback: c().capture.video_fps, int: true }),
+                })
+              }
+            />
+            <span class="field-hint">fps for mp4 recordings, 1-60</span>
+          </div>
+        </div>
+        <div class="field">
+          <label class="field-label">video quality</label>
+          <div class="field-control">
+            <select
+              value={c().capture.video_quality}
+              onChange={(e) =>
+                props.patch("capture", {
+                  ...c().capture,
+                  video_quality: e.currentTarget.value as never,
+                })
+              }
+            >
+              <option value="High">high — near-lossless, biggest files</option>
+              <option value="Balanced">balanced</option>
+              <option value="Compact">compact — smallest files</option>
+            </select>
+            <span class="field-hint">mp4 encode quality; gifs are unaffected</span>
           </div>
         </div>
         <div class="field">

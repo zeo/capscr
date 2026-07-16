@@ -39,6 +39,8 @@ pub struct RecordingSettings {
     pub fps: u32,
     pub max_duration: Duration,
     pub quality: u8,
+    // x264 crf for mp4 recordings; ignored by the gif sink
+    pub video_crf: u8,
     // composite the live system cursor into each frame, mirroring the
     // capture.show_cursor toggle used by still captures
     pub show_cursor: bool,
@@ -54,6 +56,7 @@ impl Default for RecordingSettings {
             fps: 15,
             max_duration: Duration::from_secs(30),
             quality: 80,
+            video_crf: 23,
             show_cursor: false,
             record_audio: false,
             format: RecordingFormat::Gif,
@@ -71,6 +74,7 @@ mod tests {
             fps: 30,
             max_duration: Duration::from_secs(10),
             quality: 90,
+            video_crf: 18,
             show_cursor: false,
             record_audio: false,
             format: RecordingFormat::Mp4,

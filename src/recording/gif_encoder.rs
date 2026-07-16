@@ -222,7 +222,9 @@ impl GifRecorder {
                     return Err(e);
                 }
             },
-            RecordingFormat::Mp4 => FrameSink::Mp4(Mp4Streamer::new(self.settings.fps)),
+            RecordingFormat::Mp4 => {
+                FrameSink::Mp4(Mp4Streamer::new(self.settings.fps, self.settings.video_crf))
+            }
         };
         *self.sink.lock().unwrap_or_else(|e| e.into_inner()) = Some(new_sink);
         *self.stop_reason.lock().unwrap_or_else(|e| e.into_inner()) = None;

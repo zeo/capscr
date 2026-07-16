@@ -278,6 +278,10 @@ pub struct CaptureConfig {
     pub delay_ms: u32,
     pub gif_fps: u32,
     pub gif_max_duration_secs: u32,
+    #[serde(default = "default_video_fps")]
+    pub video_fps: u32,
+    #[serde(default)]
+    pub video_quality: VideoQuality,
     #[serde(default)]
     pub hdr: HdrConfig,
     #[serde(default = "default_record_audio")]
@@ -288,6 +292,29 @@ fn default_record_audio() -> bool {
     false
 }
 
+fn default_video_fps() -> u32 {
+    30
+}
+
+/// x264 crf tier for mp4 recordings; gifs are palette-bound and unaffected
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum VideoQuality {
+    #[default]
+    High,
+    Balanced,
+    Compact,
+}
+
+impl VideoQuality {
+    pub fn crf(self) -> u8 {
+        match self {
+            VideoQuality::High => 18,
+            VideoQuality::Balanced => 23,
+            VideoQuality::Compact => 28,
+        }
+    }
+}
+
 impl Default for CaptureConfig {
     fn default() -> Self {
         Self {
@@ -295,6 +322,8 @@ impl Default for CaptureConfig {
             delay_ms: 0,
             gif_fps: 15,
             gif_max_duration_secs: 30,
+            video_fps: 30,
+            video_quality: VideoQuality::default(),
             hdr: HdrConfig::default(),
             record_audio: false,
         }
@@ -841,6 +870,13 @@ impl Config {
                 MAX_GIF_FPS
             ));
         }
+        if self.capture.video_fps < MIN_GIF_FPS || self.capture.video_fps > MAX_GIF_FPS {
+            return Err(anyhow!(
+                "video_fps must be between {} and {}",
+                MIN_GIF_FPS,
+                MAX_GIF_FPS
+            ));
+        }
         if self.capture.gif_max_duration_secs > MAX_GIF_DURATION_SECS {
             return Err(anyhow!(
                 "gif_max_duration_secs must be <= {}",
@@ -998,6 +1034,7 @@ impl Config {
     fn sanitize(&mut self) {
         self.output.quality = self.output.quality.min(MAX_QUALITY);
         self.capture.gif_fps = self.capture.gif_fps.clamp(MIN_GIF_FPS, MAX_GIF_FPS);
+        self.capture.video_fps = self.capture.video_fps.clamp(MIN_GIF_FPS, MAX_GIF_FPS);
         self.capture.gif_max_duration_secs = self
             .capture
             .gif_max_duration_secs
@@ -1386,6 +1423,28 @@ mod tests {
         assert_eq!(config.performance.renderer, RendererBackend::TinySkia);
         assert!(config.performance.lazy_init_upload);
         assert!(config.performance.lazy_init_plugins);
+    }
+
+    #[test]
+    fn video_quality_settings_default_and_repair() {
+        let config = Config::default();
+        assert_eq!(config.capture.video_fps, 30);
+        assert_eq!(config.capture.video_quality.crf(), 18);
+        assert_eq!(VideoQuality::Balanced.crf(), 23);
+        assert_eq!(VideoQuality::Compact.crf(), 28);
+
+        // configs written before the fields existed must deserialize to defaults
+        let old: CaptureConfig = toml::from_str(
+            "show_cursor = true\ndelay_ms = 0\ngif_fps = 15\ngif_max_duration_secs = 30\n",
+        )
+        .unwrap();
+        assert_eq!(old.video_fps, 30);
+        assert_eq!(old.video_quality, VideoQuality::High);
+
+        let mut config = Config::default();
+        config.capture.video_fps = 500;
+        config.sanitize();
+        assert_eq!(config.capture.video_fps, 60);
     }
 
     #[test]

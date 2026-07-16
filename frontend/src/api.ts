@@ -30,6 +30,8 @@ export interface CaptureConfig {
   delay_ms: number;
   gif_fps: number;
   gif_max_duration_secs: number;
+  video_fps: number;
+  video_quality: "High" | "Balanced" | "Compact";
   hdr: HdrConfig;
   record_audio: boolean;
 }

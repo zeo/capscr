@@ -2346,13 +2346,19 @@ fn start_gif_recording(
     let state = app.state::<AppState>();
     let cfg = state.config.lock().unwrap().clone();
 
+    let is_mp4 = matches!(task.capture_mode, TaskCaptureMode::RegionMp4);
     let settings = RecordingSettings {
-        fps: cfg.capture.gif_fps,
+        fps: if is_mp4 {
+            cfg.capture.video_fps
+        } else {
+            cfg.capture.gif_fps
+        },
         max_duration: Duration::from_secs(cfg.capture.gif_max_duration_secs as u64),
         quality: cfg.output.quality,
+        video_crf: cfg.capture.video_quality.crf(),
         show_cursor: cfg.capture.show_cursor,
         record_audio: cfg.capture.record_audio,
-        format: if matches!(task.capture_mode, TaskCaptureMode::RegionMp4) {
+        format: if is_mp4 {
             crate::recording::RecordingFormat::Mp4
         } else {
             crate::recording::RecordingFormat::Gif

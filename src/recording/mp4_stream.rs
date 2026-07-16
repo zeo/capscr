@@ -13,6 +13,7 @@ use super::gif_encoder::find_ffmpeg;
 // the pipe needs pixel dimensions up front
 pub struct Mp4Streamer {
     fps: u32,
+    crf: u8,
     temp_path: PathBuf,
     child: Option<Child>,
     stdin: Option<ChildStdin>,
@@ -27,13 +28,14 @@ pub struct Mp4Streamer {
 }
 
 impl Mp4Streamer {
-    pub fn new(fps: u32) -> Self {
+    pub fn new(fps: u32, crf: u8) -> Self {
         let temp_path = std::env::temp_dir().join(format!(
             "capscr_video_{}.mp4",
             uuid::Uuid::new_v4().as_simple()
         ));
         Self {
             fps: fps.clamp(1, 60),
+            crf: crf.min(51),
             temp_path,
             child: None,
             stdin: None,
@@ -90,6 +92,7 @@ impl Mp4Streamer {
     fn spawn_encoder(&mut self, width: u32, height: u32) -> Result<()> {
         (self.width, self.height) = even_dims(width, height);
 
+        let crf = self.crf.to_string();
         let args = [
             "-f",
             "rawvideo",
@@ -109,7 +112,7 @@ impl Mp4Streamer {
             "-pix_fmt",
             "yuv420p",
             "-crf",
-            "23",
+            &crf,
             "-y",
             &self.temp_path.to_string_lossy(),
         ];
@@ -228,7 +231,7 @@ mod tests {
     fn abandoned_streamer_leaves_no_temp_file() {
         let path;
         {
-            let s = Mp4Streamer::new(15);
+            let s = Mp4Streamer::new(15, 23);
             path = s.temp_path.clone();
         }
         assert!(!path.exists());
@@ -262,7 +265,7 @@ mod tests {
         }
         // 40 frames every 100ms: per-frame rounding at 15fps used to stretch
         // this to 5.3s; the cumulative schedule must land on 4.0s
-        let mut streamer = Mp4Streamer::new(15);
+        let mut streamer = Mp4Streamer::new(15, 23);
         for i in 0..40u32 {
             let shade = (i * 6) as u8;
             let img = RgbaImage::from_pixel(64, 48, image::Rgba([shade, 30, 60, 255]));
