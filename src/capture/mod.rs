@@ -12,7 +12,11 @@ mod hdr_png;
 #[cfg(target_os = "linux")]
 mod kwin;
 #[cfg(target_os = "linux")]
+mod pipewire_stream;
+#[cfg(target_os = "linux")]
 mod portal;
+#[cfg(target_os = "linux")]
+mod portal_screencast;
 mod region;
 mod screen;
 mod tonemapping;
@@ -145,7 +149,7 @@ pub use kwin::{
     capture_window as capture_wayland_window_handle, list_windows as list_wayland_windows,
 };
 #[cfg(target_os = "linux")]
-pub use portal::{gui_is_wayland, is_wayland_session};
+pub use portal::{gui_is_wayland, is_wayland_session, portal_screenshot_interactive};
 pub use region::RegionCapture;
 pub use screen::ScreenCapture;
 pub use tonemapping::TonemapParams;

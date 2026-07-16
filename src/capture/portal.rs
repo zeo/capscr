@@ -37,8 +37,21 @@ pub fn gui_is_wayland() -> bool {
     is_wayland_session()
 }
 
-pub fn portal_screenshot() -> Result<RgbaImage> {
-    let conn = zbus::blocking::Connection::session()?;
+// run one portal request/response roundtrip on the given interface. the
+// request object path is derivable up front, so the Response signal is
+// subscribed to before the call — otherwise a fast portal could reply before
+// the subscription lands. build_body receives the handle token and returns
+// the full argument tuple (its options dict must carry that token). returns
+// the raw Response message so callers deserialize their own result shape.
+pub(crate) fn portal_request<B>(
+    conn: &zbus::blocking::Connection,
+    interface: &str,
+    method: &str,
+    build_body: impl FnOnce(String) -> B,
+) -> Result<zbus::Message>
+where
+    B: serde::Serialize + zbus::zvariant::DynamicType,
+{
     let unique = conn
         .unique_name()
         .ok_or_else(|| anyhow!("session bus connection has no unique name"))?
@@ -49,38 +62,56 @@ pub fn portal_screenshot() -> Result<RgbaImage> {
         std::process::id(),
         REQUEST_COUNTER.fetch_add(1, Ordering::SeqCst)
     );
-    // the request object path is derivable up front, so the Response signal
-    // can be subscribed to before the call — otherwise a fast portal could
-    // reply before the subscription lands
     let request_path = format!("/org/freedesktop/portal/desktop/request/{unique}/{token}");
     let request_proxy = zbus::blocking::Proxy::new(
-        &conn,
+        conn,
         "org.freedesktop.portal.Desktop",
         request_path.as_str(),
         "org.freedesktop.portal.Request",
     )?;
     let mut responses = request_proxy.receive_signal("Response")?;
 
-    let mut options: HashMap<&str, Value> = HashMap::new();
-    options.insert("handle_token", Value::from(token.as_str()));
-    options.insert("interactive", Value::from(false));
     let _handle: OwnedObjectPath = conn
         .call_method(
             Some("org.freedesktop.portal.Desktop"),
             "/org/freedesktop/portal/desktop",
-            Some("org.freedesktop.portal.Screenshot"),
-            "Screenshot",
-            &("", options),
+            Some(interface),
+            method,
+            &build_body(token.clone()),
         )?
         .body()
         .deserialize()?;
 
-    // the portal always answers the request — with code 1 when the user
-    // dismisses the permission prompt — so this blocks only for as long as
-    // the prompt is on screen
-    let msg = responses
+    // the portal always answers the request — with a nonzero code when the
+    // user dismisses its dialog — so this blocks only while one is on screen
+    responses
         .next()
-        .ok_or_else(|| anyhow!("portal connection closed before responding"))?;
+        .ok_or_else(|| anyhow!("portal connection closed before responding"))
+}
+
+pub fn portal_screenshot() -> Result<RgbaImage> {
+    screenshot_request(false)
+}
+
+// interactive mode surfaces the desktop's own screenshot dialog (on gnome
+// that includes its window picker); the result is whatever the user chose
+pub fn portal_screenshot_interactive() -> Result<RgbaImage> {
+    screenshot_request(true)
+}
+
+fn screenshot_request(interactive: bool) -> Result<RgbaImage> {
+    let conn = zbus::blocking::Connection::session()?;
+    let msg = portal_request(
+        &conn,
+        "org.freedesktop.portal.Screenshot",
+        "Screenshot",
+        |token| {
+            let mut options: HashMap<&str, Value> = HashMap::new();
+            options.insert("handle_token", Value::from(token));
+            options.insert("interactive", Value::from(interactive));
+            ("", options)
+        },
+    )?;
     let (code, results): (u32, HashMap<String, OwnedValue>) = msg.body().deserialize()?;
     if code != 0 {
         return Err(anyhow!("screenshot request was denied or cancelled"));

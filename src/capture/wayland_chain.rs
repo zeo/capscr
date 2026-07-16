@@ -175,6 +175,7 @@ pub(crate) enum RecordingSource {
     Kwin(kwin::KwinRegionGrabber),
     ExtCopy(ExtCopySession),
     Screencopy(libwayshot_xcap::WayshotConnection),
+    PipeWire(super::pipewire_stream::PipeWireFrameStream),
 }
 
 impl RecordingSource {
@@ -200,10 +201,13 @@ impl RecordingSource {
                 SourceKind::WlrScreencopy => libwayshot_xcap::WayshotConnection::new()
                     .map(Self::Screencopy)
                     .map_err(Into::into),
-                // a one-shot screenshot dialog per frame is no recording
-                // source; the generic fallback path handles portal-only
-                // desktops until the screencast source lands
-                SourceKind::PortalScreenshot => continue,
+                // portal-only desktops (gnome) record through a screencast
+                // session: pipewire frames, cursor embedded by the
+                // compositor, restore token skipping the picker after the
+                // first run
+                SourceKind::PortalScreenshot => {
+                    super::pipewire_stream::PipeWireFrameStream::open(cursor).map(Self::PipeWire)
+                }
             };
             let mut candidate = match candidate {
                 Ok(candidate) => candidate,
@@ -236,6 +240,7 @@ impl RecordingSource {
             Self::X11(grabber) => grabber.grab(x, y, width, height),
             Self::Kwin(grabber) => grabber.grab(x, y, width, height, cursor),
             Self::ExtCopy(session) => session.grab_area(x, y, width, height, cursor),
+            Self::PipeWire(stream) => stream.grab(x, y, width, height),
             Self::Screencopy(conn) => {
                 use libwayshot_xcap::region::{LogicalRegion, Position, Region, Size};
                 let region = LogicalRegion {

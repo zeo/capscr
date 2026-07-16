@@ -356,6 +356,18 @@ fn run_capture_pipeline_inner(
             match crate::capture::capture_wayland_window(include_cursor) {
                 Ok(image) => Some(image),
                 Err(error) if format!("{error:#}").contains("Cancelled") => return Ok(()),
+                // gnome offers no window list to ordinary apps; its own
+                // picker through the portal's interactive mode is the only
+                // sanctioned window-pick there
+                Err(_) if crate::shell::desktop() == crate::shell::DesktopEnv::Gnome => {
+                    match crate::capture::portal_screenshot_interactive() {
+                        Ok(image) => Some(image),
+                        Err(error) => {
+                            tracing::info!("portal interactive pick declined ({error:#})");
+                            return Ok(());
+                        }
+                    }
+                }
                 Err(error) => {
                     tracing::debug!(
                     "compositor window selection unavailable ({error:#}); using capscr selector"

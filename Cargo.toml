@@ -137,6 +137,10 @@ libc = "0.2"
 # wlroots output enumeration + screencopy for wayland sessions without
 # XWayland (xcap's enumeration is XCB-only). already a transitive dep of xcap
 libwayshot-xcap = "0.3"
+# portal screencast consumer for recording on portal-only desktops (gnome).
+# already a transitive dep of xcap — no new compiled code; xcap's own
+# recorder can't do restore tokens, cursor embedding, or the portal fd
+pipewire = "0.9"
 # native selector preview surfaces; already compiled through libwayshot-xcap
 wayland-client = "0.31"
 # system libwayland backend: required to wrap gtk's existing connection so
