@@ -2190,16 +2190,17 @@ use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(any(windows, target_os = "linux"))]
 static FFMPEG_DOWNLOADING: AtomicBool = AtomicBool::new(false);
 
-// a repacked static ffmpeg for linux, hosted on the same origin capscr
-// already trusts for the marketplace registry, pinned to a sha256 that ships
-// in this build. LINUX_FFMPEG_SHA256 stays empty until a build is uploaded;
-// while empty the download offer is hidden and users get package-manager
-// instructions (a distro ffmpeg is preferred anyway). fill both together per
-// release.
+// a repacked static ffmpeg for linux (johnvansickle 7.0.2, md5-verified
+// against the vendor before repack), hosted on the same origin capscr
+// already trusts for the marketplace registry and pinned to a sha256 that
+// ships in this build, which makes the mirror untrusted storage. when the
+// hosted zip is replaced, update both constants together; while the hash is
+// empty the download offer is hidden and users get package-manager
+// instructions (a distro ffmpeg is preferred anyway).
 #[cfg(target_os = "linux")]
 const LINUX_FFMPEG_URL: &str = "https://rot.lt/capscr/ffmpeg/ffmpeg-linux-x64.zip";
 #[cfg(target_os = "linux")]
-const LINUX_FFMPEG_SHA256: &str = "";
+const LINUX_FFMPEG_SHA256: &str = "98aaf9bae2daf2f731aa1b1bc4b22eb458caa3d89061c5b94e1e3c39e41a61e8";
 
 // download a zip over TLS, verify it against an expected sha256, extract the
 // ffmpeg binary into data_dir, and mark it executable. shared by the windows
@@ -2295,7 +2296,8 @@ fn handle_missing_ffmpeg(app: &AppHandle) -> anyhow::Result<()> {
          sudo apt install ffmpeg   (Debian/Ubuntu)\n\
          sudo dnf install ffmpeg   (Fedora)";
 
-    if LINUX_FFMPEG_SHA256.is_empty() {
+    // the hosted build is x86_64 only; other arches get the instructions
+    if LINUX_FFMPEG_SHA256.is_empty() || !cfg!(target_arch = "x86_64") {
         app.dialog()
             .message(instructions)
             .title("FFmpeg Required")
