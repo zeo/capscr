@@ -255,6 +255,7 @@ pub fn copy_file_to_clipboard(path: &Path) -> Result<()> {
 }
 
 const WINDOWS_INVALID_CHARS: &[char] = &['<', '>', ':', '"', '/', '\\', '|', '?', '*'];
+#[cfg(windows)]
 const WINDOWS_RESERVED_NAMES: &[&str] = &[
     "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
     "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
@@ -335,14 +336,19 @@ fn validate_filename(filename: &str) -> Result<()> {
         }
     }
 
-    if filename.ends_with('.') || filename.ends_with(' ') {
-        return Err(anyhow!("Filename cannot end with '.' or space"));
-    }
+    // the char and traversal checks above keep names portable everywhere;
+    // these two only reject names the windows filesystem itself refuses
+    #[cfg(windows)]
+    {
+        if filename.ends_with('.') || filename.ends_with(' ') {
+            return Err(anyhow!("Filename cannot end with '.' or space"));
+        }
 
-    let base_name = filename.split('.').next().unwrap_or("");
-    let upper = base_name.to_uppercase();
-    if WINDOWS_RESERVED_NAMES.contains(&upper.as_str()) {
-        return Err(anyhow!("'{}' is a reserved filename on Windows", base_name));
+        let base_name = filename.split('.').next().unwrap_or("");
+        let upper = base_name.to_uppercase();
+        if WINDOWS_RESERVED_NAMES.contains(&upper.as_str()) {
+            return Err(anyhow!("'{}' is a reserved filename on Windows", base_name));
+        }
     }
 
     Ok(())
@@ -471,6 +477,13 @@ pub fn show_notification(title: &str, body: &str) -> Result<()> {
     // fallback (the generic blue icon).
     #[cfg(windows)]
     n.app_id("io.rot.capscr");
+
+    // link the toast to the installed desktop entry so linux notification
+    // daemons show capscr's name and icon and per-app settings apply
+    #[cfg(target_os = "linux")]
+    n.appname("capscr")
+        .icon("capscr")
+        .hint(notify_rust::Hint::DesktopEntry("capscr".into()));
 
     n.show()?;
 
