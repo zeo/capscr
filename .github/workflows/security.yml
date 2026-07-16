@@ -169,23 +169,34 @@ jobs:
               mesa-libEGL-devel mesa-libgbm-devel libdrm-devel
           fi
 
+      # the rig needs kwin_wayland (plasma 6) and pipewire headers new enough
+      # for libspa 0.9 (>= 1.0, same floor as the release bundles). skip the
+      # remaining steps cleanly when the vm image lacks either, so this stays
+      # advisory instead of failing every push until the runner is
+      # reprovisioned
+      - name: Probe for a usable KDE environment
+        id: probe
+        run: |
+          if command -v kwin_wayland >/dev/null 2>&1 \
+             && pkg-config --atleast-version=1.0 libpipewire-0.3; then
+            echo "usable=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "usable=false" >> "$GITHUB_OUTPUT"
+            echo "no plasma 6 or pipewire >= 1.0 on this runner; skipping the KDE rig"
+          fi
+
       - name: Build frontend
+        if: steps.probe.outputs.usable == 'true'
         working-directory: frontend
         run: npm install && npm run build
 
       - name: Build capscr
+        if: steps.probe.outputs.usable == 'true'
         run: cargo build --bin capscr --features custom-protocol
 
-      # the runner provides a Plasma 6 container image with kwin_wayland +
-      # xdg-desktop-portal-kde; run the rig inside it. skip cleanly if the
-      # image isn't present rather than failing the whole workflow.
       - name: Run KDE diagnostic rig
-        run: |
-          if command -v kwin_wayland >/dev/null 2>&1; then
-            bash ci/compositors/kde-diag.sh target/debug/capscr
-          else
-            echo "kwin_wayland not on this runner; skipping the KDE rig"
-          fi
+        if: steps.probe.outputs.usable == 'true'
+        run: bash ci/compositors/kde-diag.sh target/debug/capscr
 
   lint-and-test:
     if: github.actor == 'zeo'
