@@ -74,6 +74,93 @@ jobs:
       - name: Run clippy
         run: cargo clippy --bin capscr --all-targets -- -D warnings
 
+  # headless-compositor smoke tests. advisory (continue-on-error) until they
+  # have a week of green: the rigs depend on distro compositor/portal versions
+  # that drift, and gnome/kwin headless can be flaky on shared runners. each
+  # runs `capscr --wayland-diag` inside a real session and asserts the source
+  # chain classifies the desktop correctly. scripts live in ci/compositors/.
+  compositor-wayland:
+    if: github.actor == 'zeo'
+    runs-on: ubuntu-24.04
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        rig: [sway, gnome]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential curl wget file pkg-config \
+            libssl-dev libgtk-3-dev libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev librsvg2-dev libxdo-dev \
+            libclang-dev libxcb1-dev libxcb-shm0-dev libxcb-randr0-dev \
+            libxrandr-dev libdbus-1-dev libpipewire-0.3-dev \
+            libwayland-dev libegl-dev libgbm-dev libdrm-dev dbus-user-session
+
+      - name: Install compositor (${{ matrix.rig }})
+        run: |
+          sudo apt-get update
+          if [ "${{ matrix.rig }}" = "sway" ]; then
+            sudo apt-get install -y sway
+          else
+            sudo apt-get install -y gnome-shell xdg-desktop-portal-gnome \
+              pipewire wireplumber
+          fi
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Build frontend
+        working-directory: frontend
+        run: npm install && npm run build
+
+      - name: Build capscr
+        run: cargo build --bin capscr --features custom-protocol
+
+      - name: Run ${{ matrix.rig }} diagnostic rig
+        run: bash ci/compositors/${{ matrix.rig }}-diag.sh target/debug/capscr
+
+  # KDE needs Plasma 6 (ubuntu-24.04 ships 5.27), so it runs on the self-hosted
+  # runner where a Plasma 6 container is available. advisory like the others.
+  compositor-kde:
+    if: github.actor == 'zeo'
+    runs-on: [self-hosted, linux-vm]
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build frontend
+        working-directory: frontend
+        run: npm install && npm run build
+
+      - name: Build capscr
+        run: cargo build --bin capscr --features custom-protocol
+
+      # the runner provides a Plasma 6 container image with kwin_wayland +
+      # xdg-desktop-portal-kde; run the rig inside it. skip cleanly if the
+      # image isn't present rather than failing the whole workflow.
+      - name: Run KDE diagnostic rig
+        run: |
+          if command -v kwin_wayland >/dev/null 2>&1; then
+            bash ci/compositors/kde-diag.sh target/debug/capscr
+          else
+            echo "kwin_wayland not on this runner; skipping the KDE rig"
+          fi
+
   lint-and-test:
     if: github.actor == 'zeo'
     runs-on: [self-hosted, windows-vm]
