@@ -102,14 +102,18 @@ impl Default for HdrDisplayInfo {
     }
 }
 
-// linux capture stays SDR for now: as of mid-2026 there is no HDR pixel
-// source to integrate — kwin's ScreenShot2 (v5) returns 8-bit frames with no
-// color metadata, kwin's pipewire screencast advertises 8-bit formats only,
-// and ext-image-copy-capture-v1 color-management integration is still in
-// progress upstream. when a source lands, a backend has to produce raw bytes
-// plus an HdrFormat and the display's sdr white level; tonemapping.rs and
-// hdr_png.rs already handle everything downstream and are test-covered with
-// synthetic buffers (hdr_png.rs, synthetic pipeline test).
+// linux capture stays SDR: verified 2026-07-16, there is no HDR pixel source
+// to integrate on any compositor — kwin's ScreenShot2 (v5) returns 8-bit
+// QImage frames with no color metadata (source-checked against v6.7.2), kde
+// rejected ext-image-copy-capture outright (bug 513785, portals-first), and
+// portal screencasts advertise 8-bit formats only. wlroots compositors do
+// expose ext-image-copy, so a future >8-bit shm format offer there is the
+// likeliest first opening; `capscr --wayland-diag`'s hdr-readiness section
+// (color_probe.rs + ExtCopySession::offered_formats) detects exactly that in
+// the field. when a source lands, a backend has to produce raw bytes plus an
+// HdrFormat and the display's sdr white level; tonemapping.rs and hdr_png.rs
+// already handle everything downstream and are test-covered with synthetic
+// buffers (hdr_png.rs, synthetic pipeline test).
 pub struct HdrCapture;
 
 impl HdrCapture {

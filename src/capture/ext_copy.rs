@@ -177,6 +177,20 @@ impl ExtCopySession {
         }
     }
 
+    // the shm formats the compositor offers for one output, for the
+    // hdr-readiness diagnostic (a >8-bit entry here is the signal that hdr
+    // capture became reachable)
+    pub fn offered_formats(&mut self, output_name: &str) -> Result<Vec<wl_shm::Format>> {
+        self.ensure_session(output_name, false)?;
+        let session_id = self.sessions[output_name].session.id();
+        Ok(self
+            .state
+            .sessions
+            .get(&session_id)
+            .map(|constraints| constraints.shm_formats.clone())
+            .unwrap_or_default())
+    }
+
     // logical-coordinate region grab composed from whole-output captures
     pub fn grab_area(
         &mut self,

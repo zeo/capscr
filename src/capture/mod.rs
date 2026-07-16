@@ -4,6 +4,8 @@ mod cursor;
 #[cfg(windows)]
 mod d2d_tonemap;
 #[cfg(target_os = "linux")]
+mod color_probe;
+#[cfg(target_os = "linux")]
 mod ext_copy;
 #[cfg(windows)]
 mod gdi;
@@ -755,6 +757,75 @@ pub fn wayland_diagnostic() {
             portal_grab_monitor(monitor)
         });
     }
+
+    // hdr readiness: what each output's signal looks like, and whether any
+    // capture source can hand over more than 8 bits per channel. the verdict
+    // flips the day a compositor starts offering deep buffers.
+    println!("hdr readiness:");
+    let mut hdr_signal = false;
+    match color_probe::probe_outputs() {
+        Ok(outputs) => {
+            for info in outputs {
+                hdr_signal |= info.is_hdr_signal();
+                match info.failed {
+                    Some(cause) => println!("  {}: color info unavailable ({cause})", info.output),
+                    None => println!(
+                        "  {}: tf={} primaries={} luminance={}{}",
+                        info.output,
+                        info.transfer.as_deref().unwrap_or("unknown"),
+                        info.primaries.as_deref().unwrap_or("unknown"),
+                        info.luminance
+                            .map(|(min, max, reference)| format!(
+                                "min {min} / max {max} / ref {reference} cd/m2"
+                            ))
+                            .unwrap_or_else(|| "unknown".to_string()),
+                        info.target_max_cll
+                            .map(|cll| format!(" target-max-cll={cll}"))
+                            .unwrap_or_default(),
+                    ),
+                }
+            }
+        }
+        Err(e) => println!("  color management: {e:#}"),
+    }
+    let mut deep_formats = false;
+    if let Some(session) = ext_session.as_mut() {
+        for monitor in &monitors {
+            match session.offered_formats(&monitor.name) {
+                Ok(formats) => {
+                    let deep: Vec<String> = formats
+                        .iter()
+                        .filter(|f| {
+                            let name = format!("{f:?}");
+                            name.contains("16161616") || name.contains("2101010")
+                        })
+                        .map(|f| format!("{f:?}"))
+                        .collect();
+                    deep_formats |= !deep.is_empty();
+                    println!(
+                        "  ext-copy formats on {}: {} deep, {} total{}",
+                        monitor.name,
+                        deep.len(),
+                        formats.len(),
+                        if deep.is_empty() {
+                            String::new()
+                        } else {
+                            format!(" ({})", deep.join(", "))
+                        },
+                    );
+                }
+                Err(e) => println!("  ext-copy formats on {}: {e:#}", monitor.name),
+            }
+        }
+    } else {
+        println!("  ext-copy formats: no session (source unavailable)");
+    }
+    let verdict = match (hdr_signal, deep_formats) {
+        (true, true) => "an hdr output AND a deep capture format exist — hdr capture is worth wiring up here",
+        (true, false) => "outputs run hdr but every capture source is 8-bit; captures stay sdr (compositor limitation)",
+        (false, _) => "no hdr signal on any output; sdr captures are lossless here",
+    };
+    println!("  verdict: {verdict}");
 }
 
 // the portal screenshot covers the whole desktop already; all_monitors uses
