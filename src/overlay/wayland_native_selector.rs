@@ -400,11 +400,25 @@ impl Dispatch<wl_seat::WlSeat, ()> for State {
         else {
             return;
         };
-        if capabilities.contains(wl_seat::Capability::Pointer) && state.pointer.is_none() {
-            state.pointer = Some(seat.get_pointer(queue, ()));
+        // a capability drop makes the old resource inert (all mice unplugged,
+        // or a virtual device going away); it must be re-acquired on re-add
+        if capabilities.contains(wl_seat::Capability::Pointer) {
+            if state.pointer.is_none() {
+                state.pointer = Some(seat.get_pointer(queue, ()));
+            }
+        } else if let Some(pointer) = state.pointer.take() {
+            if pointer.version() >= 3 {
+                pointer.release();
+            }
         }
-        if capabilities.contains(wl_seat::Capability::Keyboard) && state.keyboard.is_none() {
-            state.keyboard = Some(seat.get_keyboard(queue, ()));
+        if capabilities.contains(wl_seat::Capability::Keyboard) {
+            if state.keyboard.is_none() {
+                state.keyboard = Some(seat.get_keyboard(queue, ()));
+            }
+        } else if let Some(keyboard) = state.keyboard.take() {
+            if keyboard.version() >= 3 {
+                keyboard.release();
+            }
         }
     }
 }
