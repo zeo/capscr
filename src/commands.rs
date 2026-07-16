@@ -245,9 +245,17 @@ fn humanize_capture_error(e: &anyhow::Error) -> String {
     {
         "capscr couldn't find a display. If you just unplugged a monitor, try again or restart capscr.".into()
     } else if s.contains("access is denied") || s.contains("permission") || s.contains("denied") {
-        "Windows blocked the capture. Run capscr as administrator or check Settings > Privacy > Screen recording.".into()
+        if cfg!(windows) {
+            "Windows blocked the capture. Run capscr as administrator or check Settings > Privacy > Screen recording.".into()
+        } else {
+            "The desktop blocked the capture. If a screen-sharing prompt appeared, allow it and try again; `capscr --wayland-diag` shows which capture sources this session grants.".into()
+        }
     } else if s.contains("hdr") {
-        "HDR capture failed. Turn HDR off in Windows display settings, or disable HDR in capscr Settings > capture > hdr.".into()
+        if cfg!(windows) {
+            "HDR capture failed. Turn HDR off in Windows display settings, or disable HDR in capscr Settings > capture > hdr.".into()
+        } else {
+            "HDR capture failed. Disable HDR in capscr Settings > capture > hdr.".into()
+        }
     } else if s.contains("shader") || s.contains("compile") {
         "Shader compilation failed. Update your graphics driver. (If this keeps happening, file an issue with your GPU model.)".into()
     } else if s.contains("clipboard") {
