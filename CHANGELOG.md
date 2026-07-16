@@ -5,20 +5,19 @@ format follows [keep-a-changelog](https://keepachangelog.com/en/1.1.0/) loosely.
 ## [unreleased]
 
 ### added
-- **Linux support.** capscr now runs on Linux (X11 and Wayland), shipped as deb, rpm, and AppImage packages, with the auto-updater tracking the AppImage. what carries over:
-  - the whole still-capture pipeline on X11: the freeze-frame selector (region drag, window pick, alt+click color picker, shift aspect snap, ctrl fine-tune, loupe), every capture mode, history, uploads, the editor, and pinning. Wayland still capture works on one output at a time without window picking
-  - region GIF and MP4 recording on X11 with the same wall-clock playback guarantees as Windows; frames come off a persistent connection at millisecond cost, and system audio records the PulseAudio/PipeWire monitor of the default output
-  - global hotkeys on X11 sessions. Wayland sessions mark their bindings with a clear per-task status until the GlobalShortcuts portal lands; the tray menu and `capscr --jump` work everywhere
-  - Wayland stills work on wlroots compositors through screencopy and on other desktops through the screenshot portal, including sessions running without XWayland
-  - upload credentials live in the system keyring (freedesktop Secret Service) instead of on disk; OCR runs through tesseract; copying a capture as a file uses text/uri-list; capture and upload cues play through the system audio stack
+- **Linux support.** capscr now runs on Linux (X11 and Wayland), shipped as deb, rpm, and AppImage packages, with the auto-updater tracking the AppImage and walking deb/rpm installs through their native update. what carries over:
+  - the whole still-capture pipeline: the freeze-frame selector (region drag, window pick, alt+click color picker, shift aspect snap, ctrl fine-tune, loupe) across every monitor, all capture modes, history, uploads, the editor, and pinning. on X11, KDE, and wlroots the selector picks windows itself; GNOME routes window mode through the portal's own picker
+  - region GIF and MP4 recording on X11 and Wayland with the same wall-clock playback guarantees as Windows, and system audio off the PulseAudio/PipeWire monitor of the default output
+  - global hotkeys everywhere: X11 grabs, the GlobalShortcuts portal on Wayland, and an opt-in evdev fallback for sessions with neither; the tray menu and `capscr --jump` work regardless
+  - Wayland pixels come from the best source the compositor offers (KWin ScreenShot2, ext-image-copy-capture, wlr-screencopy, or the screenshot portal), including sessions running without XWayland; the recording bar and pins stay above other windows via layer-shell or plasma-shell
+  - upload credentials live in the system keyring (freedesktop Secret Service) instead of on disk; OCR runs through tesseract; copying a capture as a file uses text/uri-list; capture and upload cues play through the system audio stack; the one-click ffmpeg download fetches a static build verified against a pinned sha256
+  - the few remaining platform boundaries (HDR capture, GNOME keep-above and tray) are listed in `docs/platform-limits.md`, with `capscr --wayland-diag` reporting which apply to a given session
 - linux CI: the test suite and clippy now run on ubuntu alongside the windows suite, with the capture path exercised against a real X server
+- a **copy detected text (OCR)** post-action: bind it to a still-capture task and capscr runs OCR on the shot (the built-in Windows engine, tesseract on Linux) and drops the recognized text straight onto your clipboard — no file saved, no editor round-trip. (OCR was already reachable from the history grid; this makes it a one-step capture action.)
+- an optional **per-task pre-capture delay**: each still-capture task can set its own delay (blank uses the global one), so a timed task for catching a menu or tooltip can sit alongside your instant hotkeys instead of the delay being all-or-nothing.
 
 ### fixed
 - when fast GDI capture fails on Windows, the xcap fallback now resolves the monitor by position instead of an id that the two enumerators never shared
-
-### added
-- a **copy detected text (OCR)** post-action: bind it to a still-capture task and capscr runs the built-in Windows OCR on the shot and drops the recognized text straight onto your clipboard — no file saved, no editor round-trip. (OCR was already reachable from the history grid; this makes it a one-step capture action.)
-- an optional **per-task pre-capture delay**: each still-capture task can set its own delay (blank uses the global one), so a timed task for catching a menu or tooltip can sit alongside your instant hotkeys instead of the delay being all-or-nothing.
 
 ## [0.5.43] — 2026-07-11
 
