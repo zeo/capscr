@@ -275,43 +275,21 @@ impl GifRecorder {
                 TimerGuard
             };
 
-            // one persistent X11 connection per recording: GetImage of just
-            // the region keeps frame cost in the low milliseconds, where the
-            // generic whole-monitor-then-crop path can cost whole seconds.
-            // never used under wayland — the XWayland root only contains X
-            // clients, so grabbing it records the wrong pixels
+            // one persistent frame source per recording: x11 GetImage or a
+            // compositor-side wayland grabber, picked by the source chain.
+            // region-sized direct grabs keep frame cost in the low
+            // milliseconds, where the generic whole-monitor-then-crop path
+            // can cost whole seconds. any failure falls back to that path
             #[cfg(target_os = "linux")]
-            let x11_grabber = if region.is_some() && std::env::var("WAYLAND_DISPLAY").is_err() {
-                match crate::capture::X11RegionGrabber::new() {
-                    Ok(g) => Some(g),
+            let mut direct_source = match region {
+                Some(rect) => match crate::capture::RecordingSource::new(rect, show_cursor) {
+                    Ok(source) => Some(source),
                     Err(e) => {
-                        tracing::warn!(
-                            "x11 region grabber unavailable ({e:#}); using generic path"
-                        );
+                        tracing::warn!("direct region source unavailable ({e:#}); using generic path");
                         None
                     }
-                }
-            } else {
-                None
-            };
-
-            // wayland counterpart: persistent compositor-side region grabs
-            // (the compositor also bakes the cursor in, which the composite
-            // path below can't do on wayland)
-            #[cfg(target_os = "linux")]
-            let wayland_grabber = match region {
-                Some(rect) if std::env::var("WAYLAND_DISPLAY").is_ok() => {
-                    match crate::capture::WaylandRegionGrabber::new(rect, show_cursor) {
-                        Ok(g) => Some(g),
-                        Err(e) => {
-                            tracing::warn!(
-                                "wayland region grabber unavailable ({e:#}); using generic path"
-                            );
-                            None
-                        }
-                    }
-                }
-                _ => None,
+                },
+                None => None,
             };
 
             let min_frame_duration = Duration::from_millis(MIN_FRAME_INTERVAL_MS);
@@ -333,32 +311,20 @@ impl GifRecorder {
                 let frame_start = Instant::now();
 
                 let capture_result = if let Some(rect) = region {
-                    // fast path: direct region grab from the persistent X11
-                    // connection; any failure falls through to the generic path
+                    // fast path: direct region grab from the persistent
+                    // source; any failure falls through to the generic path
                     #[cfg(target_os = "linux")]
-                    let direct = x11_grabber
-                        .as_ref()
-                        .and_then(|g| {
-                            g.grab(
+                    let direct = direct_source.as_mut().and_then(|source| {
+                        source
+                            .grab(
                                 rect.x,
                                 rect.y,
                                 rect.width.min(MAX_GIF_DIMENSION),
                                 rect.height.min(MAX_GIF_DIMENSION),
+                                show_cursor,
                             )
                             .ok()
-                        })
-                        .or_else(|| {
-                            wayland_grabber.as_ref().and_then(|g| {
-                                g.grab(
-                                    rect.x,
-                                    rect.y,
-                                    rect.width.min(MAX_GIF_DIMENSION),
-                                    rect.height.min(MAX_GIF_DIMENSION),
-                                    show_cursor,
-                                )
-                                .ok()
-                            })
-                        });
+                    });
                     #[cfg(not(target_os = "linux"))]
                     let direct: Option<RgbaImage> = None;
 

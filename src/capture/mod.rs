@@ -16,6 +16,8 @@ mod portal;
 mod region;
 mod screen;
 mod tonemapping;
+#[cfg(target_os = "linux")]
+mod wayland_chain;
 #[cfg(windows)]
 mod wgc;
 mod window;
@@ -567,34 +569,17 @@ pub fn active_wayland_monitor() -> Result<MonitorInfo> {
         .ok_or_else(|| anyhow::anyhow!("compositor reported no outputs"))
 }
 
-// grab one monitor on wayland. kwin's ScreenShot2 first (the only path that
-// isn't black on kde+nvidia), then wlr screencopy, then the desktop portal.
-// each in-process grab is checked for the all-black frame nvidia hands back.
+// grab one monitor on wayland through the capability-ordered source chain
+// (kwin ScreenShot2 stays first on kde: it's the only path that isn't black
+// on kde+nvidia). each in-process grab is checked for the all-black frame
+// nvidia hands back.
 #[cfg(target_os = "linux")]
 fn wayland_grab_monitor(monitor: &MonitorInfo) -> Result<RgbaImage> {
-    match kwin::capture_area(
-        monitor.x,
-        monitor.y,
-        monitor.width,
-        monitor.height,
-        include_cursor(),
-    ) {
-        Ok(img) if !is_black_frame(&img) => return Ok(img),
-        Ok(_) => tracing::warn!("kwin ScreenShot2 returned all-black; trying screencopy"),
-        Err(e) => tracing::debug!("kwin ScreenShot2 unavailable ({e:#}); trying screencopy"),
-    }
-    match wlroots_grab(monitor) {
-        Ok(img) if !is_black_frame(&img) => Ok(img),
-        Ok(_) => {
-            tracing::warn!("wlr screencopy returned all-black; using the screenshot portal");
-            portal_grab_monitor(monitor)
-        }
-        Err(e) => {
-            tracing::warn!("wlroots screencopy failed ({e:#}); using the screenshot portal");
-            portal_grab_monitor(monitor)
-        }
-    }
+    wayland_chain::grab_monitor(monitor)
 }
+
+#[cfg(target_os = "linux")]
+pub(crate) use wayland_chain::RecordingSource;
 
 #[cfg(target_os = "linux")]
 fn wlroots_grab(monitor: &MonitorInfo) -> Result<RgbaImage> {
@@ -619,27 +604,12 @@ fn wlroots_grab(monitor: &MonitorInfo) -> Result<RgbaImage> {
         .ok_or_else(|| anyhow::anyhow!("screencopy buffer size mismatch"))
 }
 
-// freeze one output at native resolution for the selector. same fallback
+// freeze one output at native resolution for the selector. same source
 // chain as wayland_grab_monitor, but by output name and at the compositor's
 // full pixel density so the overlay maps 1:1 onto physical pixels.
 #[cfg(target_os = "linux")]
 pub fn wayland_freeze_output(name: &str) -> Result<RgbaImage> {
-    match kwin::capture_screen(name, include_cursor()) {
-        Ok(img) if !is_black_frame(&img) => return Ok(img),
-        Ok(_) => tracing::warn!("kwin ScreenShot2 froze all-black; trying screencopy"),
-        Err(e) => tracing::debug!("kwin ScreenShot2 unavailable ({e:#}); trying screencopy"),
-    }
-    match wlroots_freeze_output(name) {
-        Ok(img) if !is_black_frame(&img) => return Ok(img),
-        Ok(_) => tracing::warn!("wlr screencopy froze all-black; using the screenshot portal"),
-        Err(e) => tracing::warn!("wlroots screencopy freeze failed ({e:#}); using the portal"),
-    }
-    // the portal covers the whole desktop; crop needs the output's rect
-    let monitor = list_monitors()?
-        .into_iter()
-        .find(|monitor| monitor.name == name)
-        .ok_or_else(|| anyhow::anyhow!("output {name} is not in the monitor list"))?;
-    portal_grab_monitor(&monitor)
+    wayland_chain::freeze_output(name)
 }
 
 // native-resolution single-output screencopy. the single-output api hands
@@ -687,72 +657,6 @@ pub(crate) fn apply_output_transform(
     }
 }
 
-// persistent per-recording grabber for wayland sessions, mirroring
-// X11RegionGrabber's role: kwin ScreenShot2 over a reused bus connection, with
-// a persistent screencopy connection as the non-kde fallback. the constructor
-// probes one frame so a broken backend fails the whole grabber and the
-// recording loop falls back to the generic grab-and-crop path.
-#[cfg(target_os = "linux")]
-pub enum WaylandRegionGrabber {
-    Kwin(kwin::KwinRegionGrabber),
-    Screencopy(libwayshot_xcap::WayshotConnection),
-}
-
-#[cfg(target_os = "linux")]
-impl WaylandRegionGrabber {
-    pub fn new(probe: Rectangle, include_cursor: bool) -> Result<Self> {
-        match kwin::KwinRegionGrabber::new() {
-            Ok(grabber) => {
-                match grabber.grab(
-                    probe.x,
-                    probe.y,
-                    probe.width,
-                    probe.height,
-                    include_cursor,
-                ) {
-                    Ok(img) if !is_black_frame(&img) => return Ok(Self::Kwin(grabber)),
-                    Ok(_) => tracing::warn!("kwin recording grab is all-black; trying screencopy"),
-                    Err(e) => {
-                        tracing::debug!("kwin recording grab unavailable ({e:#}); trying screencopy")
-                    }
-                }
-            }
-            Err(e) => tracing::debug!("session bus unavailable ({e:#}); trying screencopy"),
-        }
-        let grabber = Self::Screencopy(libwayshot_xcap::WayshotConnection::new()?);
-        let img = grabber.grab(probe.x, probe.y, probe.width, probe.height, include_cursor)?;
-        if is_black_frame(&img) {
-            return Err(anyhow::anyhow!("screencopy recording grab is all-black"));
-        }
-        Ok(grabber)
-    }
-
-    pub fn grab(
-        &self,
-        x: i32,
-        y: i32,
-        width: u32,
-        height: u32,
-        include_cursor: bool,
-    ) -> Result<RgbaImage> {
-        match self {
-            Self::Kwin(grabber) => grabber.grab(x, y, width, height, include_cursor),
-            Self::Screencopy(conn) => {
-                use libwayshot_xcap::region::{LogicalRegion, Position, Region, Size};
-                let region = LogicalRegion {
-                    inner: Region {
-                        position: Position { x, y },
-                        size: Size { width, height },
-                    },
-                };
-                let img = conn.screenshot(region, include_cursor)?;
-                let rgba = img.to_rgba8();
-                RgbaImage::from_raw(rgba.width(), rgba.height(), rgba.into_vec())
-                    .ok_or_else(|| anyhow::anyhow!("screencopy buffer size mismatch"))
-            }
-        }
-    }
-}
 
 // cli diagnostic behind --wayland-diag: report what the desktop offers and
 // run every still source once per output, so a single command shows which
