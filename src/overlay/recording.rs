@@ -540,31 +540,38 @@ pub mod linux_impl {
     const BAR_W: f64 = 148.0;
     const BAR_H: f64 = 36.0;
 
-    // where the stop-control bar sits relative to the recorded region: just
-    // below its bottom-right corner, above it when there's no room below,
-    // last resort tucked inside (it will then appear in the recording, since
-    // linux has no per-window capture exclusion). region-relative and
-    // compositor-agnostic — only how the position is applied differs by
-    // compositor. returns global logical coordinates.
+    // where the stop-control bar sits relative to the recorded region: below
+    // its bottom-right corner, above it, beside it (right, then left), taking
+    // the first spot that fits fully on a monitor. last resort tucked inside,
+    // where it will appear in the recording, since linux has no per-window
+    // capture exclusion; that only remains for a region covering every
+    // monitor. region-relative and compositor-agnostic, only how the
+    // position is applied differs by compositor. returns global logical
+    // coordinates.
     pub(crate) fn bar_position(
         region: Rectangle,
         monitors: &[crate::capture::MonitorInfo],
     ) -> (i32, i32) {
-        let max_y = monitors
-            .iter()
-            .map(|m| m.y + m.height as i32)
-            .max()
-            .unwrap_or(region.y + region.height as i32);
-        let x = (region.x + region.width as i32 - BAR_W as i32).max(region.x);
-        let below = region.y + region.height as i32 + 8;
-        let y = if below + BAR_H as i32 <= max_y {
-            below
-        } else if region.y - BAR_H as i32 - 8 >= 0 {
-            region.y - BAR_H as i32 - 8
-        } else {
-            region.y + region.height as i32 - BAR_H as i32 - 8
+        let right = region.x + region.width as i32;
+        let bottom = region.y + region.height as i32;
+        let x_aligned = (right - BAR_W as i32).max(region.x);
+        let fits = |x: i32, y: i32| {
+            monitors.iter().any(|m| {
+                x >= m.x
+                    && y >= m.y
+                    && x + BAR_W as i32 <= m.x + m.width as i32
+                    && y + BAR_H as i32 <= m.y + m.height as i32
+            })
         };
-        (x, y)
+        [
+            (x_aligned, bottom + 8),
+            (x_aligned, region.y - BAR_H as i32 - 8),
+            (right + 8, bottom - BAR_H as i32),
+            (region.x - BAR_W as i32 - 8, bottom - BAR_H as i32),
+        ]
+        .into_iter()
+        .find(|&(x, y)| fits(x, y))
+        .unwrap_or((x_aligned, bottom - BAR_H as i32 - 8))
     }
 
     #[cfg(test)]
@@ -601,10 +608,24 @@ pub mod linux_impl {
         }
 
         #[test]
-        fn tucks_inside_full_height_region() {
+        fn sits_beside_full_height_region() {
             let region = Rectangle { x: 0, y: 0, width: 400, height: 1080 };
-            let (_, y) = bar_position(region, &[mon(0, 0, 1920, 1080)]);
-            assert_eq!(y, 1036); // inside: bottom - 36 - 8
+            let (x, y) = bar_position(region, &[mon(0, 0, 1920, 1080)]);
+            assert_eq!((x, y), (408, 1044)); // right of the region, bottom-aligned
+        }
+
+        #[test]
+        fn escapes_to_second_monitor_when_one_is_fully_recorded() {
+            let region = Rectangle { x: 0, y: 0, width: 1920, height: 1080 };
+            let (x, y) = bar_position(region, &[mon(0, 0, 1920, 1080), mon(1920, 0, 1920, 1080)]);
+            assert_eq!((x, y), (1928, 1044)); // beside, on the second monitor
+        }
+
+        #[test]
+        fn tucks_inside_when_the_region_covers_everything() {
+            let region = Rectangle { x: 0, y: 0, width: 1920, height: 1080 };
+            let (x, y) = bar_position(region, &[mon(0, 0, 1920, 1080)]);
+            assert_eq!((x, y), (1772, 1036)); // inside: bottom-right corner
         }
     }
 

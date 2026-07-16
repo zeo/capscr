@@ -54,6 +54,19 @@ not guaranteed above a fullscreen surface.
 **closes when:** Mutter supports layer-shell for applications (long-declined
 upstream).
 
+## recording bar visible in an everything-covering recording
+
+Windows excludes the recording control bar from capture outright
+(`SetWindowDisplayAffinity` with `WDA_EXCLUDEFROMCAPTURE`), so it can sit
+anywhere, even inside the recorded region. No X11 or Wayland compositor offers
+a per-window capture exclusion, so on Linux capscr places the bar outside the
+region instead: below, above, or beside it, spilling onto a second monitor
+when the region fills the first. The bar only appears inside the recording
+when the region covers every monitor, where there is no outside left.
+
+**closes when:** a compositor lets a client exclude a surface from capture
+streams.
+
 ## GNOME system tray (needs an extension)
 
 capscr is tray-first. GNOME ships no StatusNotifier host by default, so the
