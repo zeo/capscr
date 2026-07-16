@@ -163,11 +163,45 @@ impl Capture for WindowCapture {
                 {
                     self_capture_screen_region(self.window_id)
                 }
-                #[cfg(not(windows))]
+                #[cfg(target_os = "linux")]
+                {
+                    self_capture_screen_region(self.window_id).map_err(|fallback| {
+                        _e.context(format!("x11 region fallback also failed: {fallback:#}"))
+                    })
+                }
+                #[cfg(not(any(windows, target_os = "linux")))]
                 Err(_e)
             }
         }
     }
+}
+
+// xcap can drop a window from its enumeration (stale ids, override-redirect
+// surfaces) while the X server still knows its geometry; ask the server
+// directly and grab that screen region, mirroring the DWM frame-bounds
+// fallback on windows. only reached from the x11 selector flow — wayland
+// window captures route through the wayland chain
+#[cfg(target_os = "linux")]
+fn self_capture_screen_region(window_id: u32) -> Result<RgbaImage> {
+    use x11rb::connection::Connection;
+    use x11rb::protocol::xproto::ConnectionExt;
+
+    let (conn, _) = x11rb::connect(None)?;
+    let geometry = conn.get_geometry(window_id)?.reply()?;
+    let root = conn
+        .setup()
+        .roots
+        .first()
+        .ok_or_else(|| anyhow!("no x11 screen"))?
+        .root;
+    let origin = conn.translate_coordinates(window_id, root, 0, 0)?.reply()?;
+    let region = super::Rectangle {
+        x: origin.dst_x as i32,
+        y: origin.dst_y as i32,
+        width: geometry.width.max(1) as u32,
+        height: geometry.height.max(1) as u32,
+    };
+    super::region::RegionCapture::new(region).capture()
 }
 
 #[cfg(windows)]
