@@ -929,16 +929,29 @@ fn parse_jump_arg<I: IntoIterator<Item = String>>(args: I) -> Option<String> {
 fn handle_cli_short_circuit<I: IntoIterator<Item = String>>(args: I) -> bool {
     let mut want_version = false;
     let mut want_help = false;
+    let mut want_wayland_diag = false;
     let mut sweep_dir: Option<String> = None;
     for a in args.into_iter().skip(1) {
         match a.as_str() {
             "--version" | "-V" => want_version = true,
             "--help" | "-h" => want_help = true,
+            "--wayland-diag" => want_wayland_diag = true,
             s if s.starts_with("--d2d-sweep=") => {
                 sweep_dir = Some(s.trim_start_matches("--d2d-sweep=").to_string());
             }
             _ => {}
         }
+    }
+    // the wayland diag is the linux counterpart of the d2d sweep
+    #[cfg(not(target_os = "linux"))]
+    if want_wayland_diag {
+        eprintln!("--wayland-diag is only available on Linux");
+        return true;
+    }
+    #[cfg(target_os = "linux")]
+    if want_wayland_diag {
+        capture::wayland_diagnostic();
+        return true;
     }
     // the d2d sweep is a windows-only HDR diagnostic
     #[cfg(not(windows))]

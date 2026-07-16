@@ -9,7 +9,7 @@ StartupWMClass=capscr
 Terminal=false
 Type=Application
 X-KDE-DBUS-Restricted-Interfaces=org.kde.KWin.ScreenShot2
-X-KDE-Wayland-Interfaces=org_kde_plasma_window_management
+X-KDE-Wayland-Interfaces=org_kde_plasma_window_management,ext_image_copy_capture_manager_v1,ext_output_image_capture_source_manager_v1,ext_foreign_toplevel_image_capture_source_manager_v1
 Actions=capture-region;capture-window;capture-fullscreen;open-captures;open-hub;
 
 [Desktop Action capture-region]

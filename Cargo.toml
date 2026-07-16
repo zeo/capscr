@@ -143,7 +143,7 @@ wayland-client = "0.31"
 # the recording bar can carry a plasma-shell role (see overlay/plasma_ffi.rs).
 # this switches every wayland-client user in the app onto libwayland.
 wayland-backend = { version = "0.3", features = ["client_system"] }
-wayland-protocols = { version = "0.32", features = ["client"] }
+wayland-protocols = { version = "0.32", features = ["client", "staging"] }
 # kde's plasma-shell surface role pins each selector window to its output at
 # exact global coordinates — kwin re-places both layer-shell and fullscreen
 # xdg windows bound to a rotated output onto the active output otherwise

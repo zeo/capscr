@@ -729,6 +729,89 @@ impl WaylandRegionGrabber {
     }
 }
 
+// cli diagnostic behind --wayland-diag: report what the desktop offers and
+// run every still source once per output, so a single command shows which
+// pixel path works on a user's machine and how it fails when it doesn't
+#[cfg(target_os = "linux")]
+pub fn wayland_diagnostic() {
+    let globals = crate::shell::wayland_globals();
+    println!(
+        "desktop: {:?} (XDG_CURRENT_DESKTOP={:?})",
+        crate::shell::desktop(),
+        std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default(),
+    );
+    println!("wayland session: {}", is_wayland_session());
+    println!(
+        "globals: plasma_shell={} layer_shell={} ext_image_copy={} wlr_screencopy={} color_management={}",
+        globals.plasma_shell,
+        globals.layer_shell,
+        globals.ext_image_copy,
+        globals.wlr_screencopy,
+        globals.color_management,
+    );
+    println!(
+        "kwin screenshot2 service: {}",
+        if crate::shell::kwin_screenshot2_available() {
+            "present"
+        } else {
+            "absent"
+        },
+    );
+    println!(
+        "globalshortcuts portal: {}",
+        crate::shell::global_shortcuts_portal()
+            .map(|v| format!("v{v}"))
+            .unwrap_or_else(|| "absent".to_string()),
+    );
+    let monitors = match list_monitors() {
+        Ok(monitors) => monitors,
+        Err(e) => {
+            println!("monitor enumeration failed: {e:#}");
+            return;
+        }
+    };
+    for monitor in &monitors {
+        println!(
+            "output {}: {}x{} at {},{}{}",
+            monitor.name,
+            monitor.width,
+            monitor.height,
+            monitor.x,
+            monitor.y,
+            if monitor.is_primary { " (primary)" } else { "" },
+        );
+    }
+    if !is_wayland_session() {
+        println!("x11 session: wayland sources not probed");
+        return;
+    }
+    fn probe(label: &str, output: &str, grab: impl FnOnce() -> Result<RgbaImage>) {
+        let started = std::time::Instant::now();
+        let verdict = match grab() {
+            Ok(img) if is_black_frame(&img) => {
+                format!("all-black {}x{}", img.width(), img.height())
+            }
+            Ok(img) => format!("ok {}x{}", img.width(), img.height()),
+            Err(e) => format!("error: {e:#}"),
+        };
+        println!(
+            "  {label} on {output}: {verdict} in {}ms",
+            started.elapsed().as_millis(),
+        );
+    }
+    for monitor in &monitors {
+        probe("kwin-screenshot2", &monitor.name, || {
+            kwin::capture_screen(&monitor.name, false)
+        });
+        probe("wlr-screencopy", &monitor.name, || {
+            wlroots_freeze_output(&monitor.name)
+        });
+        probe("portal-screenshot", &monitor.name, || {
+            portal_grab_monitor(monitor)
+        });
+    }
+}
+
 // portal screenshots cover the whole desktop; crop this monitor's rect out
 #[cfg(target_os = "linux")]
 fn portal_grab_monitor(monitor: &MonitorInfo) -> Result<RgbaImage> {
