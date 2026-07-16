@@ -148,6 +148,27 @@ jobs:
         with:
           node-version: 20
 
+      # the vm image is bare; install the build stack for whichever package
+      # manager it carries
+      - name: Install system dependencies
+        run: |
+          SUDO=""
+          command -v sudo >/dev/null && [ "$(id -u)" != "0" ] && SUDO=sudo
+          if command -v apt-get >/dev/null; then
+            $SUDO apt-get update
+            $SUDO apt-get install -y build-essential pkg-config libssl-dev \
+              libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev \
+              librsvg2-dev libxdo-dev libclang-dev libxcb1-dev libxcb-shm0-dev \
+              libxcb-randr0-dev libxrandr-dev libdbus-1-dev libpipewire-0.3-dev \
+              libwayland-dev libegl-dev libgbm-dev libdrm-dev
+          elif command -v dnf >/dev/null; then
+            $SUDO dnf install -y gcc gcc-c++ pkgconf-pkg-config openssl-devel \
+              gtk3-devel webkit2gtk4.1-devel libayatana-appindicator-gtk3-devel \
+              librsvg2-devel xdotool-devel clang-devel libxcb-devel \
+              libXrandr-devel dbus-devel pipewire-devel wayland-devel \
+              mesa-libEGL-devel mesa-libgbm-devel libdrm-devel
+          fi
+
       - name: Build frontend
         working-directory: frontend
         run: npm install && npm run build
