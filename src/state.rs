@@ -63,6 +63,9 @@ pub struct AppState {
     // path only if the user actually dropped it (or it's one of capscr's own
     // files), so a webview-supplied arbitrary path can't be uploaded off disk.
     pub dropped_paths: Mutex<HashSet<PathBuf>>,
+    // last url a healthy webview was observed on; the about:blank watchdogs
+    // navigate stuck webviews here when no live hub exists to copy from
+    pub canonical_webview_url: Mutex<Option<url::Url>>,
 }
 
 // a session's dropped-path set won't grow past a real user's drags, but cap it
@@ -104,6 +107,7 @@ impl AppState {
             pinned_images: Mutex::new(HashMap::new()),
             last_region: Mutex::new(None),
             dropped_paths: Mutex::new(HashSet::new()),
+            canonical_webview_url: Mutex::new(None),
         }
     }
 

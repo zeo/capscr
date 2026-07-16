@@ -1652,6 +1652,57 @@ pub async fn install_update(app: AppHandle) -> Result<(), String> {
 
 const HUB_LABEL: &str = "hub";
 
+// the canonical app url for healing webviews stuck on about:blank: a live
+// hub wins, then the last observed good url, then the fixed release origin
+// (or the dev server in dev builds)
+pub fn canonical_app_url(app: &AppHandle) -> Option<url::Url> {
+    if let Some(hub) = app.get_webview_window(HUB_LABEL) {
+        if let Ok(url) = hub.url() {
+            if url.scheme() != "about" {
+                remember_canonical_url(app, &url);
+                return Some(url);
+            }
+        }
+    }
+    if let Some(url) = app
+        .state::<AppState>()
+        .canonical_webview_url
+        .lock()
+        .unwrap()
+        .clone()
+    {
+        return Some(url);
+    }
+    if tauri::is_dev() {
+        return app.config().build.dev_url.clone();
+    }
+    // custom-protocol release builds serve the bundled assets from a fixed
+    // origin (observed via the selector watchdog logs)
+    url::Url::parse("tauri://localhost").ok()
+}
+
+pub fn remember_canonical_url(app: &AppHandle, url: &url::Url) {
+    if url.scheme() != "about" {
+        *app
+            .state::<AppState>()
+            .canonical_webview_url
+            .lock()
+            .unwrap() = Some(url.clone());
+    }
+}
+
+// tauri#13967-adjacent: a webview can finish loading with its module script
+// never executed, leaving the static boot splash up forever; reload heals it
+fn heal_stuck_boot(window: tauri::WebviewWindow) {
+    std::thread::spawn(move || {
+        for delay_ms in [3000u64, 8000] {
+            std::thread::sleep(Duration::from_millis(delay_ms));
+            let _ =
+                window.eval("if (document.getElementById('boot')) window.location.reload()");
+        }
+    });
+}
+
 // called in setup() so the WebView2 instance is warm before the user opens
 // the tray. Without this, the first tray click pays the full WebView2 cold-
 // boot cost (multi-second on most machines, >1min on some).
@@ -1676,7 +1727,8 @@ pub fn prewarm_hub_window(app: &tauri::App) -> tauri::Result<()> {
     // intercept the close button so the WebView2 process stays alive for the
     // next tray-click. Without this we pay multi-second cold-boot every time
     // the user closes and re-opens the hub, even after the startup prewarm.
-    intercept_hub_close(window);
+    intercept_hub_close(window.clone());
+    heal_stuck_boot(window);
     Ok(())
 }
 
@@ -1693,7 +1745,21 @@ fn intercept_hub_close(window: tauri::WebviewWindow) {
                 };
                 match close_behavior {
                     crate::config::CloseBehavior::MinimizeToTray => {
-                        let _ = window.hide();
+                        // on linux the hidden hub's webkit processes would
+                        // keep ~100mb resident; destroy and recreate on
+                        // demand (webkitgtk cold boot is fast). windows keeps
+                        // the warm WebView2 (see the prewarm rationale).
+                        #[cfg(target_os = "linux")]
+                        {
+                            if let Ok(url) = window.url() {
+                                remember_canonical_url(&app, &url);
+                            }
+                            let _ = window.destroy();
+                        }
+                        #[cfg(not(target_os = "linux"))]
+                        {
+                            let _ = window.hide();
+                        }
                     }
                     crate::config::CloseBehavior::MinimizeToTaskbar => {
                         let _ = window.minimize();
@@ -1736,7 +1802,8 @@ pub fn open_hub_window(app: &AppHandle) -> tauri::Result<()> {
     }
 
     let window = builder.build()?;
-    intercept_hub_close(window);
+    intercept_hub_close(window.clone());
+    heal_stuck_boot(window);
     Ok(())
 }
 
@@ -1785,20 +1852,21 @@ fn watch_editor_navigation(app: &AppHandle, window: tauri::WebviewWindow) {
     std::thread::spawn(move || {
         for wait_ms in [500u64, 1500, 3000] {
             std::thread::sleep(std::time::Duration::from_millis(wait_ms));
-            let on_blank = window.url().map(|u| u.scheme() == "about").unwrap_or(false);
-            if !on_blank {
-                return;
+            match window.url() {
+                Ok(url) if url.scheme() != "about" => {
+                    remember_canonical_url(&app, &url);
+                    return;
+                }
+                Err(_) => return,
+                _ => {}
             }
             tracing::warn!("editor webview stuck on about:blank; navigating explicitly");
-            let target = app
-                .get_webview_window(HUB_LABEL)
-                .and_then(|hub| hub.url().ok());
-            if let Some(url) = target {
+            if let Some(url) = canonical_app_url(&app) {
                 if let Err(e) = window.navigate(url) {
                     tracing::warn!("editor explicit navigation failed: {e}");
                 }
             } else {
-                tracing::warn!("hub window missing; cannot derive app url for editor");
+                tracing::warn!("no canonical app url available for the editor");
             }
         }
     });
@@ -3573,6 +3641,82 @@ fn ocr_image_bytes(_image_bytes: &[u8]) -> anyhow::Result<String> {
     anyhow::bail!("OCR is not supported on this platform")
 }
 
+/// static grid thumbnail for the history view. full-size animated gifs
+/// dropped straight into <img> tags decode to gigabytes across a grid, and
+/// files outside the asset-protocol scope render blank; a cached first-frame
+/// jpeg in the app cache dir solves both. keyed by path + size + mtime.
+#[tauri::command]
+pub async fn history_thumbnail(
+    path: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    let config = state.config.lock().unwrap().clone();
+    let canonical = std::fs::canonicalize(&path).map_err(|e| e.to_string())?;
+    if !is_path_allowed(&canonical, &config) {
+        return Err("Path is outside the allowed directories".into());
+    }
+    let cache_dir = app
+        .path()
+        .app_cache_dir()
+        .map_err(|e| e.to_string())?
+        .join("thumbs");
+    tokio::task::spawn_blocking(move || {
+        thumbnail_for(&cache_dir, &canonical).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map(|thumb| thumb.to_string_lossy().to_string())
+}
+
+fn thumbnail_for(cache_dir: &std::path::Path, path: &std::path::Path) -> anyhow::Result<PathBuf> {
+    use std::hash::{Hash, Hasher};
+    const THUMB_WIDTH: u32 = 480;
+    let meta = std::fs::metadata(path)?;
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    path.hash(&mut hasher);
+    meta.len().hash(&mut hasher);
+    if let Ok(modified) = meta.modified() {
+        if let Ok(age) = modified.duration_since(std::time::UNIX_EPOCH) {
+            age.as_secs().hash(&mut hasher);
+        }
+    }
+    std::fs::create_dir_all(cache_dir)?;
+    let thumb = cache_dir.join(format!("{:016x}.jpg", hasher.finish()));
+    if thumb.exists() {
+        return Ok(thumb);
+    }
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let frame: RgbaImage = if ext == "gif" {
+        // first frame only; the grid shows a still, the viewer animates
+        use image::AnimationDecoder;
+        let file = std::io::BufReader::new(std::fs::File::open(path)?);
+        let decoder = image::codecs::gif::GifDecoder::new(file)?;
+        decoder
+            .into_frames()
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("gif has no frames"))??
+            .into_buffer()
+    } else {
+        image::open(path)?.to_rgba8()
+    };
+    let scale = (THUMB_WIDTH as f32 / frame.width() as f32).min(1.0);
+    let width = ((frame.width() as f32 * scale) as u32).max(1);
+    let height = ((frame.height() as f32 * scale) as u32).max(1);
+    let small = image::imageops::thumbnail(&frame, width, height);
+    let rgb = image::DynamicImage::ImageRgba8(small).to_rgb8();
+    // atomic-ish: encode to a temp name then rename, so a torn write never
+    // caches as a valid thumb
+    let staging = thumb.with_extension("jpg.tmp");
+    rgb.save_with_format(&staging, image::ImageFormat::Jpeg)?;
+    std::fs::rename(&staging, &thumb)?;
+    Ok(thumb)
+}
+
 /// OCR a freshly captured image by encoding it to PNG in memory first
 fn ocr_capture(image: &RgbaImage) -> anyhow::Result<String> {
     use image::ImageEncoder;
@@ -3655,15 +3799,16 @@ fn watch_pin_navigation(app: &AppHandle, window: tauri::WebviewWindow) {
     std::thread::spawn(move || {
         for wait_ms in [500u64, 1500, 3000] {
             std::thread::sleep(std::time::Duration::from_millis(wait_ms));
-            let on_blank = window.url().map(|u| u.scheme() == "about").unwrap_or(false);
-            if !on_blank {
-                return;
+            match window.url() {
+                Ok(url) if url.scheme() != "about" => {
+                    remember_canonical_url(&app, &url);
+                    return;
+                }
+                Err(_) => return,
+                _ => {}
             }
             tracing::warn!("pin webview stuck on about:blank; navigating explicitly");
-            let target = app
-                .get_webview_window(HUB_LABEL)
-                .and_then(|hub| hub.url().ok());
-            if let Some(url) = target {
+            if let Some(url) = canonical_app_url(&app) {
                 if let Err(e) = window.navigate(url) {
                     tracing::warn!("pin explicit navigation failed: {e}");
                 }

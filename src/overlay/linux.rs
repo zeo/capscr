@@ -738,14 +738,17 @@ fn watch_selector_navigation(app: &AppHandle, window: tauri::WebviewWindow) {
         for wait_ms in [500u64, 1500, 3000] {
             std::thread::sleep(Duration::from_millis(wait_ms));
             let url = window.url();
-            let on_blank = url.as_ref().map(|u| u.scheme() == "about").unwrap_or(false);
             tracing::info!("selector webview url after {wait_ms}ms: {url:?}");
-            if !on_blank {
-                return;
+            match url {
+                Ok(url) if url.scheme() != "about" => {
+                    crate::commands::remember_canonical_url(&app, &url);
+                    return;
+                }
+                Err(_) => return,
+                _ => {}
             }
             tracing::warn!("selector webview stuck on about:blank; navigating explicitly");
-            let target = app.get_webview_window("hub").and_then(|hub| hub.url().ok());
-            if let Some(url) = target {
+            if let Some(url) = crate::commands::canonical_app_url(&app) {
                 if let Err(e) = window.navigate(url) {
                     tracing::warn!("selector explicit navigation failed: {e}");
                 }
