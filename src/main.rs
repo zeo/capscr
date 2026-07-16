@@ -276,6 +276,8 @@ fn main() {
             commands::upload_edited_image,
             commands::upload_file,
             commands::hotkey_diagnostics,
+            commands::evdev_status,
+            commands::portal_rebind_shortcuts,
             commands::set_hotkeys_disabled,
             commands::start_hotkey_capture,
             commands::cancel_hotkey_capture,
@@ -864,12 +866,32 @@ fn spawn_hotkey_thread(
             let disabled = st.hotkeys_disabled.load(Ordering::SeqCst);
             crate::hotkeys::ll_hook::set_enabled(!disabled);
         }
+        // resolve the advanced-input opt-in before the first flush: an unset
+        // value migrates to enabled when mouse-button bindings already exist,
+        // so established Mouse4/Mouse5 setups keep working untouched
+        #[cfg(target_os = "linux")]
+        {
+            let configured = {
+                let st = app.state::<state::AppState>();
+                let cfg = st.config.lock().unwrap();
+                cfg.hotkeys.advanced_input
+            };
+            let advanced = configured.unwrap_or_else(|| {
+                initial_tasks
+                    .iter()
+                    .any(|t| hotkeys::evdev_linux::parse_mouse_binding(&t.hotkey).is_some())
+            });
+            hotkeys::set_advanced_input(advanced);
+            hotkeys::portal_linux::start(app.clone());
+        }
         for task in &initial_tasks {
-            hm.try_register(task.id.clone(), &task.hotkey);
+            hm.try_register_labeled(task.id.clone(), &task.hotkey, &task.name);
         }
         hm.flush_to_hook();
         #[cfg(target_os = "linux")]
-        hotkeys::evdev_linux::start(app.clone());
+        if hotkeys::advanced_input_enabled() {
+            hotkeys::evdev_linux::start(app.clone());
+        }
         let startup_errors = hm.take_errors();
         for err in &startup_errors {
             tracing::warn!(
@@ -897,7 +919,7 @@ fn spawn_hotkey_thread(
         while let Ok(HotkeyCommand::Reload { tasks }) = rx.recv() {
             hm.unregister_all();
             for task in &tasks {
-                hm.try_register(task.id.clone(), &task.hotkey);
+                hm.try_register_labeled(task.id.clone(), &task.hotkey, &task.name);
             }
             hm.flush_to_hook();
             let errs = hm.take_errors();

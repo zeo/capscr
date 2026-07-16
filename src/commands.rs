@@ -138,6 +138,15 @@ pub fn set_config(
     // respect the tray's Disable-hotkeys toggle: when off, reload with an
     // empty task list so the new config doesn't silently re-register hotkeys
     use std::sync::atomic::Ordering;
+    // apply the advanced-input toggle before the reload flush reads it; an
+    // explicit enable also starts the evdev readers on demand
+    #[cfg(target_os = "linux")]
+    if let Some(advanced) = config.hotkeys.advanced_input {
+        crate::hotkeys::set_advanced_input(advanced);
+        if advanced {
+            crate::hotkeys::evdev_linux::start(app.clone());
+        }
+    }
     let tasks_to_register = if state.hotkeys_disabled.load(Ordering::SeqCst) {
         Vec::new()
     } else {
@@ -3155,11 +3164,19 @@ pub struct HotkeyStatusEntry {
     pub task_id: String,
     pub status: String, // "live" or "failed"
     pub reason: Option<String>,
+    // the desktop's own description of what actually triggers this shortcut
+    // (portal backend only) — it may differ from the configured chord when
+    // the compositor remapped it
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub effective_trigger: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct HotkeyDiagnostics {
     pub disabled_globally: bool,
+    // which mechanism owns keyboard hotkeys right now:
+    // "ll_hook" (windows), "x11", "portal", "evdev", or "none"
+    pub backend: String,
     pub statuses: Vec<HotkeyStatusEntry>,
     #[cfg(windows)]
     pub hook: HookTelemetrySnapshot,
@@ -3215,10 +3232,86 @@ pub fn record_hotkey_status(
     let _ = app.emit("capscr://hotkey-status", ());
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct EvdevStatus {
+    pub enabled: bool,
+    pub readable_device_count: usize,
+    pub dev_input_exists: bool,
+}
+
+// settings backing for the advanced-input section: whether the opt-in is on
+// and whether /dev/input is actually readable (input-group membership)
+#[tauri::command]
+pub fn evdev_status() -> EvdevStatus {
+    #[cfg(target_os = "linux")]
+    {
+        EvdevStatus {
+            enabled: crate::hotkeys::advanced_input_enabled(),
+            readable_device_count: crate::hotkeys::evdev_linux::readable_devices().len(),
+            dev_input_exists: std::path::Path::new("/dev/input").exists(),
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        EvdevStatus {
+            enabled: false,
+            readable_device_count: 0,
+            dev_input_exists: false,
+        }
+    }
+}
+
+// re-run the portal bind for the current set even when unchanged, so a user
+// who dismissed the desktop's approval dialog can bring it back
+#[tauri::command]
+pub fn portal_rebind_shortcuts(app: AppHandle, state: State<AppState>) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    {
+        crate::hotkeys::portal_linux::rebind().map_err(|e| format!("{e:#}"))?;
+        // re-flush so statuses reflect the fresh outcome
+        let tasks = state.config.lock().unwrap().capture_tasks.clone();
+        state.send_hotkey_reload(tasks);
+        let _ = app.emit("capscr://hotkey-status", ());
+        Ok(())
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (app, state);
+        Err("the shortcuts portal only exists on Linux".to_string())
+    }
+}
+
+fn hotkey_backend_name() -> String {
+    #[cfg(windows)]
+    {
+        "ll_hook".to_string()
+    }
+    #[cfg(target_os = "linux")]
+    {
+        if !crate::capture::is_wayland_session() {
+            "x11".to_string()
+        } else if crate::hotkeys::portal_linux::available() {
+            "portal".to_string()
+        } else if crate::hotkeys::advanced_input_enabled() {
+            "evdev".to_string()
+        } else {
+            "none".to_string()
+        }
+    }
+    #[cfg(not(any(windows, target_os = "linux")))]
+    {
+        "none".to_string()
+    }
+}
+
 #[tauri::command]
 pub fn hotkey_diagnostics(state: State<AppState>) -> HotkeyDiagnostics {
     use std::sync::atomic::Ordering;
     let disabled = state.hotkeys_disabled.load(Ordering::SeqCst);
+    #[cfg(target_os = "linux")]
+    let effective = crate::hotkeys::portal_linux::effective_triggers();
+    #[cfg(not(target_os = "linux"))]
+    let effective: std::collections::HashMap<String, String> = Default::default();
     let status = state.hotkey_status.lock().unwrap();
     let statuses = status
         .iter()
@@ -3227,16 +3320,19 @@ pub fn hotkey_diagnostics(state: State<AppState>) -> HotkeyDiagnostics {
                 task_id: task_id.clone(),
                 status: "live".to_string(),
                 reason: None,
+                effective_trigger: effective.get(task_id).cloned(),
             },
             HotkeyStatus::Failed { reason } => HotkeyStatusEntry {
                 task_id: task_id.clone(),
                 status: "failed".to_string(),
                 reason: Some(reason.clone()),
+                effective_trigger: None,
             },
         })
         .collect();
     HotkeyDiagnostics {
         disabled_globally: disabled,
+        backend: hotkey_backend_name(),
         statuses,
         #[cfg(windows)]
         hook: {

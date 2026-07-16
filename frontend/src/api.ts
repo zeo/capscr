@@ -126,7 +126,13 @@ export interface CaptureTask {
 export interface AppConfig {
   output: OutputConfig;
   capture: CaptureConfig;
-  hotkeys: { screenshot: string; record_gif: string; disabled_globally: boolean };
+  hotkeys: {
+    screenshot: string;
+    record_gif: string;
+    disabled_globally: boolean;
+    // linux evdev opt-in; absent means unresolved (backend migrates it)
+    advanced_input?: boolean | null;
+  };
   ui: UiConfig;
   post_capture: {
     action: PostAction;
@@ -182,10 +188,20 @@ export interface HotkeyStatusEntry {
   task_id: string;
   status: "live" | "failed";
   reason: string | null;
+  // the desktop's description of the effective trigger (portal backend)
+  effective_trigger?: string;
+}
+
+export interface EvdevStatus {
+  enabled: boolean;
+  readable_device_count: number;
+  dev_input_exists: boolean;
 }
 
 export interface HotkeyDiagnostics {
   disabled_globally: boolean;
+  // which mechanism owns keyboard hotkeys: ll_hook | x11 | portal | evdev | none
+  backend: string;
   statuses: HotkeyStatusEntry[];
   hook?: HookTelemetrySnapshot;
 }
@@ -259,6 +275,8 @@ export const api = {
   togglePluginEnabled: (id: string, enabled: boolean) =>
     invoke<void>("toggle_plugin_enabled", { id, enabled }),
   hotkeyDiagnostics: () => invoke<HotkeyDiagnostics>("hotkey_diagnostics"),
+  evdevStatus: () => invoke<EvdevStatus>("evdev_status"),
+  portalRebindShortcuts: () => invoke<void>("portal_rebind_shortcuts"),
   setHotkeysDisabled: (disabled: boolean) =>
     invoke<void>("set_hotkeys_disabled", { disabled }),
   startHotkeyCapture: () => invoke<void>("start_hotkey_capture"),

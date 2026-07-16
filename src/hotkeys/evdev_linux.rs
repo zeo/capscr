@@ -208,8 +208,13 @@ fn spawn_reader(path: PathBuf, app: AppHandle) {
 
 /// start one reader thread per readable input device plus a hotplug monitor;
 /// bindings are read live from BINDINGS so a later config reload just updates
-/// the map without restarting the threads.
+/// the map without restarting the threads. safe to call again (the advanced-
+/// input toggle starts it on demand); only the first call spawns anything.
 pub fn start(app: AppHandle) {
+    static STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if STARTED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
     let devices = readable_devices();
     if devices.is_empty() {
         tracing::warn!(
@@ -302,7 +307,7 @@ fn watch_hotplug(app: AppHandle) {
     }
 }
 
-fn readable_devices() -> Vec<PathBuf> {
+pub(crate) fn readable_devices() -> Vec<PathBuf> {
     let mut out = Vec::new();
     let Ok(entries) = std::fs::read_dir("/dev/input") else {
         return out;

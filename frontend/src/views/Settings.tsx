@@ -119,7 +119,7 @@ export function Settings() {
                 <HdrPane c={c()} patch={patch} />
               </Match>
               <Match when={pane() === "hotkeys"}>
-                <HotkeysPane c={c()} />
+                <HotkeysPane c={c()} patch={patch} />
               </Match>
               <Match when={pane() === "ssh"}>
                 <SshPane />
@@ -588,10 +588,25 @@ function HdrPane(props: { c: AppConfig; patch: Patch }) {
 }
 
 
-function HotkeysPane(props: { c: AppConfig }) {
+function HotkeysPane(props: { c: AppConfig; patch: Patch }) {
   const [diag, { refetch }] = createResource<HotkeyDiagnostics>(api.hotkeyDiagnostics);
+  const [evdev, { refetch: refetchEvdev }] = createResource(api.evdevStatus);
   const [busy, setBusy] = createSignal(false);
   const [err, setErr] = createSignal<string | null>(null);
+  const [rebinding, setRebinding] = createSignal(false);
+
+  const rebind = async () => {
+    setRebinding(true);
+    setErr(null);
+    try {
+      await api.portalRebindShortcuts();
+      await refetch();
+    } catch (e) {
+      setErr(String(e));
+    } finally {
+      setRebinding(false);
+    }
+  };
 
   const unlistenPromise = listen("capscr://hotkey-status", () => refetch());
   onCleanup(() => {
@@ -634,10 +649,74 @@ function HotkeysPane(props: { c: AppConfig }) {
             </span>
           </div>
         </div>
+        <div class="field">
+          <label class="field-label">backend</label>
+          <div class="field-control">
+            <code>{diag()?.backend ?? "…"}</code>
+            <Show when={diag()?.backend === "portal"}>
+              <button
+                class="btn"
+                data-variant="ghost"
+                disabled={rebinding()}
+                onClick={rebind}
+                title="re-open the desktop's shortcut approval if it was dismissed"
+              >
+                re-bind with desktop
+              </button>
+              <span class="field-hint">
+                the desktop registers and can remap these bindings; the
+                effective column below shows what actually triggers each task.
+              </span>
+            </Show>
+          </div>
+        </div>
         <Show when={err()}>
           <p class="flash" data-tone="err">{err()}</p>
         </Show>
       </Section>
+
+      <Show when={IS_LINUX}>
+        <Section title="advanced input">
+          <div class="field">
+            <label class="field-label">raw input (evdev)</label>
+            <div class="field-control">
+              <label class="check">
+                <input
+                  type="checkbox"
+                  checked={props.c.hotkeys.advanced_input ?? evdev()?.enabled ?? false}
+                  onChange={(e) => {
+                    props.patch("hotkeys", {
+                      ...props.c.hotkeys,
+                      advanced_input: e.currentTarget.checked,
+                    });
+                  }}
+                />
+                <span class="check-label">
+                  {(props.c.hotkeys.advanced_input ?? evdev()?.enabled) ? "enabled" : "off"}
+                </span>
+              </label>
+              <span class="field-hint">
+                reads /dev/input directly: needed for mouse-button hotkeys and
+                for keyboards on desktops without the GlobalShortcuts portal.
+                sees all input devices while capscr runs.
+              </span>
+            </div>
+          </div>
+          <Show
+            when={(props.c.hotkeys.advanced_input ?? evdev()?.enabled)
+              && evdev()
+              && evdev()!.readable_device_count === 0}
+          >
+            <p class="flash" data-tone="warn">
+              no readable input devices — add yourself to the input group
+              (<code>sudo usermod -aG input $USER</code>), re-login, then{" "}
+              <button class="btn" data-variant="ghost" onClick={() => refetchEvdev()}>
+                re-check
+              </button>
+            </p>
+          </Show>
+        </Section>
+      </Show>
 
       <Section title="per-binding status">
         <div class="field-control" style="flex-direction: column; align-items: stretch;">
@@ -648,6 +727,7 @@ function HotkeysPane(props: { c: AppConfig }) {
                   <th>task</th>
                   <th>hotkey</th>
                   <th>status</th>
+                  <th>effective</th>
                   <th>reason</th>
                 </tr>
               </thead>
@@ -681,6 +761,9 @@ function HotkeysPane(props: { c: AppConfig }) {
                               </span>
                             </Show>
                           </Show>
+                        </td>
+                        <td>
+                          <span class="lede">{entry()?.effective_trigger ?? ""}</span>
                         </td>
                         <td>
                           <span class="lede">{entry()?.reason ?? ""}</span>

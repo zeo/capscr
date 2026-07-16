@@ -5,10 +5,108 @@ pub mod ll_hook;
 
 #[cfg(target_os = "linux")]
 pub mod evdev_linux;
+#[cfg(target_os = "linux")]
+pub mod portal_linux;
 
 use anyhow::{anyhow, Result};
 use global_hotkey::hotkey::{Code, HotKey, Modifiers};
 use std::collections::HashMap;
+
+// evdev opt-in ("advanced input"): raw /dev/input readers are the only way
+// to bind mouse side buttons and the only keyboard path on portal-less
+// wayland, but they need input-group membership and see every keystroke, so
+// they're off unless the user (or the presence of existing mouse bindings at
+// startup) opts in
+#[cfg(target_os = "linux")]
+static ADVANCED_INPUT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+#[cfg(target_os = "linux")]
+pub fn set_advanced_input(enabled: bool) {
+    ADVANCED_INPUT.store(enabled, std::sync::atomic::Ordering::SeqCst);
+}
+
+#[cfg(target_os = "linux")]
+pub fn advanced_input_enabled() -> bool {
+    ADVANCED_INPUT.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+// capscr hotkey string -> the shortcuts-spec trigger the portal forwards to
+// the compositor ("CTRL+SHIFT+g", "LOGO+Print"). None for keys with no xkb
+// keysym mapping; the compositor then asks the user to pick one.
+#[cfg(target_os = "linux")]
+pub fn to_portal_trigger(hotkey: &HotKey) -> Option<String> {
+    let key = match hotkey.key {
+        Code::KeyA => "a", Code::KeyB => "b", Code::KeyC => "c", Code::KeyD => "d",
+        Code::KeyE => "e", Code::KeyF => "f", Code::KeyG => "g", Code::KeyH => "h",
+        Code::KeyI => "i", Code::KeyJ => "j", Code::KeyK => "k", Code::KeyL => "l",
+        Code::KeyM => "m", Code::KeyN => "n", Code::KeyO => "o", Code::KeyP => "p",
+        Code::KeyQ => "q", Code::KeyR => "r", Code::KeyS => "s", Code::KeyT => "t",
+        Code::KeyU => "u", Code::KeyV => "v", Code::KeyW => "w", Code::KeyX => "x",
+        Code::KeyY => "y", Code::KeyZ => "z",
+        Code::Digit0 => "0", Code::Digit1 => "1", Code::Digit2 => "2",
+        Code::Digit3 => "3", Code::Digit4 => "4", Code::Digit5 => "5",
+        Code::Digit6 => "6", Code::Digit7 => "7", Code::Digit8 => "8",
+        Code::Digit9 => "9",
+        Code::F1 => "F1", Code::F2 => "F2", Code::F3 => "F3", Code::F4 => "F4",
+        Code::F5 => "F5", Code::F6 => "F6", Code::F7 => "F7", Code::F8 => "F8",
+        Code::F9 => "F9", Code::F10 => "F10", Code::F11 => "F11", Code::F12 => "F12",
+        Code::PrintScreen => "Print",
+        Code::ScrollLock => "Scroll_Lock",
+        Code::Pause => "Pause",
+        Code::Insert => "Insert",
+        Code::Delete => "Delete",
+        Code::Home => "Home",
+        Code::End => "End",
+        Code::PageUp => "Page_Up",
+        Code::PageDown => "Page_Down",
+        Code::ArrowUp => "Up",
+        Code::ArrowDown => "Down",
+        Code::ArrowLeft => "Left",
+        Code::ArrowRight => "Right",
+        Code::Space => "space",
+        Code::Enter => "Return",
+        Code::Tab => "Tab",
+        Code::Backspace => "BackSpace",
+        Code::Escape => "Escape",
+        Code::Minus => "minus",
+        Code::Equal => "equal",
+        Code::BracketLeft => "bracketleft",
+        Code::BracketRight => "bracketright",
+        Code::Backslash => "backslash",
+        Code::Semicolon => "semicolon",
+        Code::Quote => "apostrophe",
+        Code::Comma => "comma",
+        Code::Period => "period",
+        Code::Slash => "slash",
+        Code::Backquote => "grave",
+        Code::Numpad0 => "KP_0", Code::Numpad1 => "KP_1", Code::Numpad2 => "KP_2",
+        Code::Numpad3 => "KP_3", Code::Numpad4 => "KP_4", Code::Numpad5 => "KP_5",
+        Code::Numpad6 => "KP_6", Code::Numpad7 => "KP_7", Code::Numpad8 => "KP_8",
+        Code::Numpad9 => "KP_9",
+        Code::NumpadAdd => "KP_Add",
+        Code::NumpadSubtract => "KP_Subtract",
+        Code::NumpadMultiply => "KP_Multiply",
+        Code::NumpadDivide => "KP_Divide",
+        Code::NumpadDecimal => "KP_Decimal",
+        Code::NumpadEnter => "KP_Enter",
+        _ => return None,
+    };
+    let mut parts: Vec<&str> = Vec::new();
+    if hotkey.mods.contains(Modifiers::CONTROL) {
+        parts.push("CTRL");
+    }
+    if hotkey.mods.contains(Modifiers::ALT) {
+        parts.push("ALT");
+    }
+    if hotkey.mods.contains(Modifiers::SHIFT) {
+        parts.push("SHIFT");
+    }
+    if hotkey.mods.contains(Modifiers::SUPER) {
+        parts.push("LOGO");
+    }
+    parts.push(key);
+    Some(parts.join("+"))
+}
 
 // modifier bitmask shared by every hotkey backend (LL hook on windows,
 // X11/portal on linux) and by the capture events sent to the hub UI
@@ -259,8 +357,8 @@ mod linux_grabs {
 pub use linux_grabs::task_for as task_for_hotkey_id;
 
 pub struct HotkeyManager {
-    // task_id → (parsed hotkey, original string)
-    registered: HashMap<String, (HotKey, String)>,
+    // task_id → (parsed hotkey, original string, human-readable task label)
+    registered: HashMap<String, (HotKey, String, String)>,
     registration_errors: Vec<HotkeyRegistrationError>,
     #[cfg(target_os = "linux")]
     os_manager: Option<global_hotkey::GlobalHotKeyManager>,
@@ -289,6 +387,20 @@ impl HotkeyManager {
     }
 
     pub fn register(&mut self, task_id: impl Into<String>, hotkey_str: &str) -> Result<()> {
+        let task_id = task_id.into();
+        let label = task_id.clone();
+        self.register_labeled(task_id, hotkey_str, &label)
+    }
+
+    // label is what shows up in desktop-side shortcut UIs (the portal's
+    // approval dialog, kde's shortcuts settings), so callers pass the task's
+    // display name where they have one
+    pub fn register_labeled(
+        &mut self,
+        task_id: impl Into<String>,
+        hotkey_str: &str,
+        label: &str,
+    ) -> Result<()> {
         if is_risky_bare(hotkey_str) {
             return Err(anyhow!(
                 "'{}' has no modifier — it would steal that key from every \
@@ -305,17 +417,30 @@ impl HotkeyManager {
                 hotkey_str
             ));
         }
-        self.registered
-            .insert(task_id.into(), (hotkey, hotkey_str.to_string()));
+        self.registered.insert(
+            task_id.into(),
+            (hotkey, hotkey_str.to_string(), label.to_string()),
+        );
         Ok(())
     }
 
     pub fn try_register(&mut self, task_id: impl Into<String>, hotkey_str: &str) {
+        let task_id = task_id.into();
+        let label = task_id.clone();
+        self.try_register_labeled(task_id, hotkey_str, &label);
+    }
+
+    pub fn try_register_labeled(
+        &mut self,
+        task_id: impl Into<String>,
+        hotkey_str: &str,
+        label: &str,
+    ) {
         if hotkey_str.is_empty() {
             return;
         }
         let task_id = task_id.into();
-        match self.register(task_id.clone(), hotkey_str) {
+        match self.register_labeled(task_id.clone(), hotkey_str, label) {
             Ok(()) => {}
             Err(e) => {
                 self.registration_errors.push(HotkeyRegistrationError {
@@ -349,7 +474,7 @@ impl HotkeyManager {
     #[cfg(windows)]
     pub fn flush_to_hook(&self) {
         let mut table: HashMap<ll_hook::HookBinding, String> = HashMap::new();
-        for (task_id, (hotkey, _str)) in &self.registered {
+        for (task_id, (hotkey, _str, _label)) in &self.registered {
             if let Some(binding) = hotkey_to_hook_binding(hotkey) {
                 table.insert(binding, task_id.clone());
             }
@@ -357,48 +482,103 @@ impl HotkeyManager {
         ll_hook::set_bindings(table);
     }
 
-    // linux: sync the OS-level X11 grabs with the registered set. failures
-    // move the task from `registered` into `registration_errors` so the hub
-    // shows an honest per-task status instead of a silently dead binding.
+    // linux: route the registered set to its backends. keyboard bindings go
+    // to the GlobalShortcuts portal on wayland (X11 keeps compositor grabs);
+    // mouse side buttons and portal-less wayland keyboards go to evdev when
+    // advanced input is enabled. failures move the task from `registered`
+    // into `registration_errors` so the hub shows an honest per-task status
+    // instead of a silently dead binding.
     #[cfg(target_os = "linux")]
     pub fn flush_to_hook(&mut self) {
         let wayland = std::env::var("WAYLAND_DISPLAY").is_ok()
             || std::env::var("XDG_SESSION_TYPE")
                 .map(|t| t == "wayland")
                 .unwrap_or(false);
-        // evdev owns every binding on wayland and only mouse side buttons on
-        // x11, where keyboard shortcuts retain their compositor-level grabs
-        let mut evdev_map: HashMap<(u8, u16), String> = HashMap::new();
-        for (task_id, (_, hotkey_str)) in &self.registered {
-            let binding = if wayland {
-                evdev_linux::parse_evdev_binding(hotkey_str)
-            } else {
-                evdev_linux::parse_mouse_binding(hotkey_str)
-            };
-            if let Some(binding) = binding {
-                evdev_map.insert(binding, task_id.clone());
-            }
-        }
-        evdev_linux::set_bindings(evdev_map);
+        let advanced = advanced_input_enabled();
         let is_mouse = |s: &str| evdev_linux::parse_mouse_binding(s).is_some();
 
         if wayland {
-            let unsupported: Vec<String> = self
-                .registered
-                .iter()
-                .filter(|(_, (_, hotkey))| evdev_linux::parse_evdev_binding(hotkey).is_none())
-                .map(|(id, _)| id.clone())
-                .collect();
-            for task_id in unsupported {
-                if let Some((_, hotkey)) = self.registered.remove(&task_id) {
+            let portal = portal_linux::available();
+            let mut evdev_map: HashMap<(u8, u16), String> = HashMap::new();
+            let mut portal_set: Vec<portal_linux::PortalBinding> = Vec::new();
+            let mut failures: Vec<(String, String)> = Vec::new();
+            for (task_id, (hotkey, hotkey_str, label)) in &self.registered {
+                if let Some(binding) = evdev_linux::parse_mouse_binding(hotkey_str) {
+                    if advanced {
+                        evdev_map.insert(binding, task_id.clone());
+                    } else {
+                        failures.push((
+                            task_id.clone(),
+                            "mouse-button hotkeys need Advanced input (Settings → hotkeys)"
+                                .to_string(),
+                        ));
+                    }
+                    continue;
+                }
+                if portal {
+                    portal_set.push(portal_linux::PortalBinding {
+                        task_id: task_id.clone(),
+                        label: label.clone(),
+                        trigger: to_portal_trigger(hotkey),
+                    });
+                    continue;
+                }
+                if advanced {
+                    match evdev_linux::parse_evdev_binding(hotkey_str) {
+                        Some(binding) => {
+                            evdev_map.insert(binding, task_id.clone());
+                        }
+                        None => failures.push((
+                            task_id.clone(),
+                            "this key has no Linux input-event mapping".to_string(),
+                        )),
+                    }
+                } else {
+                    failures.push((
+                        task_id.clone(),
+                        "no GlobalShortcuts portal on this desktop — enable Advanced \
+                         input (Settings → hotkeys) or use the tray / capscr --jump"
+                            .to_string(),
+                    ));
+                }
+            }
+            evdev_linux::set_bindings(evdev_map);
+            failures.extend(portal_linux::sync(portal_set));
+            for (task_id, reason) in failures {
+                if let Some((_, hotkey, _)) = self.registered.remove(&task_id) {
                     self.registration_errors.push(HotkeyRegistrationError {
                         task_id,
                         hotkey,
-                        reason: "this key has no Linux input-event mapping".into(),
+                        reason,
                     });
                 }
             }
             return;
+        }
+
+        // x11: keyboard keeps its compositor-level grabs below; mouse side
+        // buttons have no X grab and ride evdev, gated on the same opt-in
+        let mut evdev_map: HashMap<(u8, u16), String> = HashMap::new();
+        let mut mouse_failures: Vec<String> = Vec::new();
+        for (task_id, (_, hotkey_str, _)) in &self.registered {
+            if let Some(binding) = evdev_linux::parse_mouse_binding(hotkey_str) {
+                if advanced {
+                    evdev_map.insert(binding, task_id.clone());
+                } else {
+                    mouse_failures.push(task_id.clone());
+                }
+            }
+        }
+        evdev_linux::set_bindings(evdev_map);
+        for task_id in mouse_failures {
+            if let Some((_, hotkey, _)) = self.registered.remove(&task_id) {
+                self.registration_errors.push(HotkeyRegistrationError {
+                    task_id,
+                    hotkey,
+                    reason: "mouse-button hotkeys need Advanced input (Settings → hotkeys)"
+                        .to_string(),
+                });
+            }
         }
 
         // two hard constraints gate X11 registration:
@@ -415,11 +595,11 @@ impl HotkeyManager {
             let keyboard_ids: Vec<String> = self
                 .registered
                 .iter()
-                .filter(|(_, (_, s))| !is_mouse(s))
+                .filter(|(_, (_, s, _))| !is_mouse(s))
                 .map(|(id, _)| id.clone())
                 .collect();
             for task_id in keyboard_ids {
-                if let Some((_, hotkey_str)) = self.registered.remove(&task_id) {
+                if let Some((_, hotkey_str, _)) = self.registered.remove(&task_id) {
                     self.registration_errors.push(HotkeyRegistrationError {
                         task_id,
                         hotkey: hotkey_str,
@@ -433,7 +613,7 @@ impl HotkeyManager {
             match global_hotkey::GlobalHotKeyManager::new() {
                 Ok(m) => self.os_manager = Some(m),
                 Err(e) => {
-                    for (task_id, (_, hotkey_str)) in self.registered.drain() {
+                    for (task_id, (_, hotkey_str, _)) in self.registered.drain() {
                         self.registration_errors.push(HotkeyRegistrationError {
                             task_id,
                             hotkey: hotkey_str,
@@ -450,7 +630,7 @@ impl HotkeyManager {
         }
         let mut id_map = HashMap::new();
         let mut failed: Vec<(String, String, String)> = Vec::new();
-        for (task_id, (hotkey, hotkey_str)) in &self.registered {
+        for (task_id, (hotkey, hotkey_str, _)) in &self.registered {
             if is_mouse(hotkey_str) {
                 continue; // handled by evdev, not the x11 grab manager
             }

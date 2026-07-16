@@ -400,6 +400,12 @@ pub struct HotkeyConfig {
     // empty, so no chord can fire a task. preserved across restarts.
     #[serde(default)]
     pub disabled_globally: bool,
+    // linux "advanced input": opt-in for the raw evdev backend (mouse-button
+    // hotkeys, portal-less wayland keyboards). None means unset and resolves
+    // at startup to true iff mouse-button bindings already exist, so
+    // established setups migrate without a settings visit
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub advanced_input: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -1161,6 +1167,7 @@ impl Default for Config {
                 screenshot: "Ctrl+Shift+S".to_string(),
                 record_gif: "Ctrl+Shift+G".to_string(),
                 disabled_globally: false,
+                advanced_input: None,
             },
             ui: UiConfig::default(),
             post_capture: PostCaptureConfig::default(),
