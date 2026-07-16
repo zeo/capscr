@@ -3,6 +3,8 @@
 mod cursor;
 #[cfg(windows)]
 mod d2d_tonemap;
+#[cfg(target_os = "linux")]
+mod ext_copy;
 #[cfg(windows)]
 mod gdi;
 mod hdr;
@@ -57,6 +59,18 @@ pub use kwin::keep_own_windows_above;
 
 #[cfg(target_os = "linux")]
 pub fn capture_wayland_region(region: Rectangle) -> Result<RgbaImage> {
+    compose_region(region, |monitor| wayland_freeze_output(&monitor.name))
+}
+
+// stitch a logical-coordinate region out of per-output native-resolution
+// grabs, scaling mixed-dpi pieces onto the densest output's pixel grid.
+// grab_one returns the full frame for one output; only intersecting outputs
+// are grabbed
+#[cfg(target_os = "linux")]
+pub(crate) fn compose_region(
+    region: Rectangle,
+    mut grab_one: impl FnMut(&MonitorInfo) -> Result<RgbaImage>,
+) -> Result<RgbaImage> {
     let monitors = list_monitors()?;
     let right = region.x.saturating_add_unsigned(region.width);
     let bottom = region.y.saturating_add_unsigned(region.height);
@@ -71,7 +85,7 @@ pub fn capture_wayland_region(region: Rectangle) -> Result<RgbaImage> {
         if x0 >= x1 || y0 >= y1 {
             continue;
         }
-        let frame = wayland_freeze_output(&monitor.name)?;
+        let frame = grab_one(&monitor)?;
         let scale_x = frame.width() as f64 / monitor.width as f64;
         let scale_y = frame.height() as f64 / monitor.height as f64;
         pieces.push((monitor, frame, (x0, y0, x1, y1), scale_x, scale_y));
@@ -634,7 +648,6 @@ pub fn wayland_freeze_output(name: &str) -> Result<RgbaImage> {
 // libwayshot's own composite path.
 #[cfg(target_os = "linux")]
 fn wlroots_freeze_output(name: &str) -> Result<RgbaImage> {
-    use wayland_client::protocol::wl_output::Transform;
     let conn = libwayshot_xcap::WayshotConnection::new()?;
     let outputs = conn.get_all_outputs();
     let output = outputs
@@ -646,7 +659,19 @@ fn wlroots_freeze_output(name: &str) -> Result<RgbaImage> {
     let rgba = img.to_rgba8();
     let frame = RgbaImage::from_raw(rgba.width(), rgba.height(), rgba.into_vec())
         .ok_or_else(|| anyhow::anyhow!("screencopy buffer size mismatch"))?;
-    Ok(match transform {
+    Ok(apply_output_transform(frame, transform))
+}
+
+// single-output grabs (screencopy, ext-image-copy) hand back the scanned-out
+// buffer without the output transform applied; rotate/flip it into logical
+// orientation, mirroring libwayshot's composite path
+#[cfg(target_os = "linux")]
+pub(crate) fn apply_output_transform(
+    frame: RgbaImage,
+    transform: wayland_client::protocol::wl_output::Transform,
+) -> RgbaImage {
+    use wayland_client::protocol::wl_output::Transform;
+    match transform {
         Transform::_90 => image::imageops::rotate90(&frame),
         Transform::_180 => image::imageops::rotate180(&frame),
         Transform::_270 => image::imageops::rotate270(&frame),
@@ -659,7 +684,7 @@ fn wlroots_freeze_output(name: &str) -> Result<RgbaImage> {
             image::imageops::rotate270(&image::imageops::flip_horizontal(&frame))
         }
         _ => frame,
-    })
+    }
 }
 
 // persistent per-recording grabber for wayland sessions, mirroring
@@ -799,10 +824,22 @@ pub fn wayland_diagnostic() {
             started.elapsed().as_millis(),
         );
     }
+    let mut ext_session = match ext_copy::ExtCopySession::new() {
+        Ok(session) => Some(session),
+        Err(e) => {
+            println!("  ext-image-copy session: unavailable ({e:#})");
+            None
+        }
+    };
     for monitor in &monitors {
         probe("kwin-screenshot2", &monitor.name, || {
             kwin::capture_screen(&monitor.name, false)
         });
+        if let Some(session) = ext_session.as_mut() {
+            probe("ext-image-copy", &monitor.name, || {
+                session.grab_output(&monitor.name, false)
+            });
+        }
         probe("wlr-screencopy", &monitor.name, || {
             wlroots_freeze_output(&monitor.name)
         });
