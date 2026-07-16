@@ -54,18 +54,32 @@ not guaranteed above a fullscreen surface.
 **closes when:** Mutter supports layer-shell for applications (long-declined
 upstream).
 
-## recording bar visible in an everything-covering recording
+## recording bar visible in an everything-covering recording (closed on Plasma 6.7+)
 
 Windows excludes the recording control bar from capture outright
-(`SetWindowDisplayAffinity` with `WDA_EXCLUDEFROMCAPTURE`), so it can sit
-anywhere, even inside the recorded region. No X11 or Wayland compositor offers
-a per-window capture exclusion, so on Linux capscr places the bar outside the
-region instead: below, above, or beside it, spilling onto a second monitor
-when the region fills the first. The bar only appears inside the recording
-when the region covers every monitor, where there is no outside left.
+(`SetWindowDisplayAffinity` with `WDA_EXCLUDEFROMCAPTURE`). Plasma 6.7 grew
+the compositor-side equivalent: a per-window `excludeFromCapture` property
+that KWin honours in screenshots and screencasts alike (6.6 introduced it for
+screencasts only). capscr sets it on the bar through a KWin script, so on
+Plasma 6.7+ the bar places exactly like on Windows, sitting inside the region
+without appearing in the frames.
 
-**closes when:** a compositor lets a client exclude a surface from capture
-streams.
+Elsewhere the boundary stands. Mutter has nothing comparable. Hyprland 0.50's
+`no_screen_share` rule censors the window to a black box rather than removing
+it, which looks worse in a recording than the bar itself, so capscr doesn't
+use it. On those desktops (and X11, where root-window capture reads final
+composited pixels) the bar keeps to the outside placement: below, above, or
+beside the region, spilling onto a second monitor when the region fills the
+first, inside it only when the region covers every monitor.
+
+**closes elsewhere when:** the `ext-surface-capture-control` protocol
+proposal (wayland-protocols MR 450) or an equivalent lands in the remaining
+compositors.
+
+Related: KWin ≥ 6.6.1 hides *all* of a caller's windows from its own
+ScreenShot2 grabs by default, which would silently drop pinned screenshots
+from user captures — they are ordinary windows on Windows and belong in the
+shot. capscr passes `hide-caller-windows: false` and excludes only the bar.
 
 ## GNOME system tray (needs an extension)
 

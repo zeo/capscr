@@ -137,6 +137,31 @@ pub fn kwin_screenshot2_available() -> bool {
     })
 }
 
+// kwin's version, parsed out of supportInformation ("KWin version: 6.7.2").
+// None off kde or when the call fails
+pub fn kwin_version() -> Option<(u32, u32)> {
+    static VERSION: OnceLock<Option<(u32, u32)>> = OnceLock::new();
+    *VERSION.get_or_init(|| {
+        let connection = zbus::blocking::Connection::session().ok()?;
+        let reply = connection
+            .call_method(Some("org.kde.KWin"), "/KWin", Some("org.kde.KWin"), "supportInformation", &())
+            .ok()?;
+        let info: String = reply.body().deserialize().ok()?;
+        let line = info.lines().find_map(|l| l.strip_prefix("KWin version: "))?;
+        let mut parts = line.trim().split('.');
+        let major = parts.next()?.parse().ok()?;
+        let minor = parts.next()?.parse().ok()?;
+        Some((major, minor))
+    })
+}
+
+// plasma 6.6 let windows opt out of screencasts (Window.excludeFromCapture);
+// 6.7 extended that to still screenshots, which is what the recording loop's
+// ScreenShot2 grabs are. only 6.7+ makes an in-region recording bar invisible
+pub fn kwin_still_capture_exclusion() -> bool {
+    kwin_version().is_some_and(|version| version >= (6, 7))
+}
+
 // version of the GlobalShortcuts portal, or None when the desktop's portal
 // backend doesn't implement it (plasma < 6, gnome < 46, most wlroots stacks)
 pub fn global_shortcuts_portal() -> Option<u32> {

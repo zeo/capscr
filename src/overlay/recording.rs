@@ -527,9 +527,12 @@ mod windows_impl {
 }
 
 // linux: a small always-on-top webview (label "recbar") with the elapsed
-// clock and stop button, placed OUTSIDE the recorded region — there is no
-// SetWindowDisplayAffinity equivalent, so a bar inside the region would be
-// captured into the recording.
+// clock and stop button. on plasma >= 6.7 a kwin script marks it
+// excludeFromCapture (the compositor-side WDA_EXCLUDEFROMCAPTURE), so it
+// places like the windows bar: below the region, above it, or inside it
+// without appearing in the frames. everywhere else it stays OUTSIDE the
+// recorded region, spilling onto a neighbouring monitor when the region
+// fills its own.
 #[cfg(target_os = "linux")]
 pub mod linux_impl {
     use super::*;
@@ -541,16 +544,17 @@ pub mod linux_impl {
     const BAR_H: f64 = 36.0;
 
     // where the stop-control bar sits relative to the recorded region: below
-    // its bottom-right corner, above it, beside it (right, then left), taking
-    // the first spot that fits fully on a monitor. last resort tucked inside,
-    // where it will appear in the recording, since linux has no per-window
-    // capture exclusion; that only remains for a region covering every
-    // monitor. region-relative and compositor-agnostic, only how the
-    // position is applied differs by compositor. returns global logical
-    // coordinates.
+    // its bottom-right corner, then above it. when the bar is excluded from
+    // capture (plasma >= 6.7) that is the whole windows-parity order and the
+    // fallback tucks it inside the region, invisible to the recording. when
+    // it isn't, the search keeps trying beside the region (right, then left,
+    // possibly on a neighbouring monitor) before the inside fallback, which
+    // there only remains for a region covering every monitor. returns global
+    // logical coordinates.
     pub(crate) fn bar_position(
         region: Rectangle,
         monitors: &[crate::capture::MonitorInfo],
+        excluded_from_capture: bool,
     ) -> (i32, i32) {
         let right = region.x + region.width as i32;
         let bottom = region.y + region.height as i32;
@@ -563,15 +567,18 @@ pub mod linux_impl {
                     && y + BAR_H as i32 <= m.y + m.height as i32
             })
         };
-        [
+        let mut spots = vec![
             (x_aligned, bottom + 8),
             (x_aligned, region.y - BAR_H as i32 - 8),
-            (right + 8, bottom - BAR_H as i32),
-            (region.x - BAR_W as i32 - 8, bottom - BAR_H as i32),
-        ]
-        .into_iter()
-        .find(|&(x, y)| fits(x, y))
-        .unwrap_or((x_aligned, bottom - BAR_H as i32 - 8))
+        ];
+        if !excluded_from_capture {
+            spots.push((right + 8, bottom - BAR_H as i32));
+            spots.push((region.x - BAR_W as i32 - 8, bottom - BAR_H as i32));
+        }
+        spots
+            .into_iter()
+            .find(|&(x, y)| fits(x, y))
+            .unwrap_or((x_aligned, bottom - BAR_H as i32 - 8))
     }
 
     #[cfg(test)]
@@ -594,7 +601,7 @@ pub mod linux_impl {
         #[test]
         fn sits_below_when_there_is_room() {
             let region = Rectangle { x: 100, y: 100, width: 400, height: 200 };
-            let (x, y) = bar_position(region, &[mon(0, 0, 1920, 1080)]);
+            let (x, y) = bar_position(region, &[mon(0, 0, 1920, 1080)], false);
             assert_eq!(y, 308); // 100 + 200 + 8
             assert_eq!(x, 352); // right edge 500 - 148
         }
@@ -603,29 +610,60 @@ pub mod linux_impl {
         fn flips_above_when_no_room_below() {
             // region hugs the monitor's bottom edge
             let region = Rectangle { x: 100, y: 800, width: 400, height: 280 };
-            let (_, y) = bar_position(region, &[mon(0, 0, 1920, 1080)]);
+            let (_, y) = bar_position(region, &[mon(0, 0, 1920, 1080)], false);
             assert_eq!(y, 756); // 800 - 36 - 8
         }
 
         #[test]
         fn sits_beside_full_height_region() {
             let region = Rectangle { x: 0, y: 0, width: 400, height: 1080 };
-            let (x, y) = bar_position(region, &[mon(0, 0, 1920, 1080)]);
+            let (x, y) = bar_position(region, &[mon(0, 0, 1920, 1080)], false);
             assert_eq!((x, y), (408, 1044)); // right of the region, bottom-aligned
         }
 
         #[test]
         fn escapes_to_second_monitor_when_one_is_fully_recorded() {
             let region = Rectangle { x: 0, y: 0, width: 1920, height: 1080 };
-            let (x, y) = bar_position(region, &[mon(0, 0, 1920, 1080), mon(1920, 0, 1920, 1080)]);
+            let (x, y) = bar_position(
+                region,
+                &[mon(0, 0, 1920, 1080), mon(1920, 0, 1920, 1080)],
+                false,
+            );
             assert_eq!((x, y), (1928, 1044)); // beside, on the second monitor
         }
 
         #[test]
         fn tucks_inside_when_the_region_covers_everything() {
             let region = Rectangle { x: 0, y: 0, width: 1920, height: 1080 };
-            let (x, y) = bar_position(region, &[mon(0, 0, 1920, 1080)]);
+            let (x, y) = bar_position(region, &[mon(0, 0, 1920, 1080)], false);
             assert_eq!((x, y), (1772, 1036)); // inside: bottom-right corner
+        }
+
+        #[test]
+        fn excluded_bar_still_prefers_the_outside_spots() {
+            let region = Rectangle { x: 100, y: 100, width: 400, height: 200 };
+            let (x, y) = bar_position(region, &[mon(0, 0, 1920, 1080)], true);
+            assert_eq!((x, y), (352, 308)); // below, same as the windows bar
+        }
+
+        #[test]
+        fn excluded_bar_goes_inside_instead_of_beside() {
+            // full-height region: the visible bar sits beside it, the
+            // excluded bar tucks inside like windows clamps to the work area
+            let region = Rectangle { x: 0, y: 0, width: 400, height: 1080 };
+            let (x, y) = bar_position(region, &[mon(0, 0, 1920, 1080)], true);
+            assert_eq!((x, y), (252, 1036)); // inside: bottom-right of the region
+        }
+
+        #[test]
+        fn excluded_bar_never_roams_to_a_second_monitor() {
+            let region = Rectangle { x: 0, y: 0, width: 1920, height: 1080 };
+            let (x, y) = bar_position(
+                region,
+                &[mon(0, 0, 1920, 1080), mon(1920, 0, 1920, 1080)],
+                true,
+            );
+            assert_eq!((x, y), (1772, 1036)); // inside the region, not next door
         }
     }
 
@@ -633,6 +671,8 @@ pub mod linux_impl {
     // holds the recbar's plasma-shell role objects for the recording's
     // lifetime; dropped (and destroyed) on stop so nothing leaks per run
     static PLASMA_GRANT: Mutex<Option<crate::overlay::plasma_ffi::PlasmaGrant>> = Mutex::new(None);
+    // keeps the kwin capture-exclusion script loaded while recording
+    static EXCLUSION: Mutex<Option<crate::capture::CaptureExclusionGuard>> = Mutex::new(None);
 
     pub fn start(region: Rectangle, _max_secs: u64, on_stop: Box<dyn Fn() + Send>) {
         let Some(app) = crate::overlay::linux::app_handle() else {
@@ -640,8 +680,24 @@ pub mod linux_impl {
         };
         *ON_STOP.lock().unwrap() = Some(on_stop);
 
+        // arm the exclusion before the bar window exists so its windowAdded
+        // handler catches the mapping and no frame ever shows the bar
+        let excluded = crate::capture::gui_is_wayland()
+            && crate::shell::desktop() == crate::shell::DesktopEnv::Kde
+            && crate::shell::kwin_still_capture_exclusion()
+            && match crate::capture::exclude_own_windows_from_capture("capscr recording") {
+                Ok(guard) => {
+                    *EXCLUSION.lock().unwrap() = Some(guard);
+                    true
+                }
+                Err(e) => {
+                    tracing::debug!("kwin capture exclusion unavailable ({e:#}); keeping the bar outside the region");
+                    false
+                }
+            };
+
         let monitors = crate::capture::list_monitors().unwrap_or_default();
-        let (bar_x, bar_y) = bar_position(region, &monitors);
+        let (bar_x, bar_y) = bar_position(region, &monitors, excluded);
         let (x, y) = (bar_x as f64, bar_y as f64);
 
         let app2 = app.clone();
@@ -746,6 +802,7 @@ pub mod linux_impl {
 
     pub fn stop() {
         *ON_STOP.lock().unwrap() = None;
+        *EXCLUSION.lock().unwrap() = None;
         if let Some(grant) = PLASMA_GRANT.lock().unwrap().take() {
             grant.plasma_surface.destroy();
         }

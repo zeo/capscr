@@ -58,11 +58,21 @@ pub fn capture_area_native(
     capture_area_with_resolution(x, y, width, height, true, include_cursor)
 }
 
+// kwin >= 6.6.1 drops the calling process's windows from every ScreenShot2
+// grab by default. windows-parity wants the opposite: pinned screenshots are
+// ordinary windows that belong in the user's captures, and only the recording
+// bar is excluded (per-window, via exclude_own_windows_from_capture below).
+// older kwin never reads the key, so passing it is safe everywhere
+fn show_caller_windows(options: &mut HashMap<&str, Value>) {
+    options.insert("hide-caller-windows", Value::from(false));
+}
+
 pub fn capture_screen(output_name: &str, include_cursor: bool) -> Result<RgbaImage> {
     capture_request(|conn, output| {
         let mut options: HashMap<&str, Value> = HashMap::new();
         options.insert("include-cursor", Value::from(include_cursor));
         options.insert("native-resolution", Value::from(true));
+        show_caller_windows(&mut options);
         Ok(conn.call_method(
             Some("org.kde.KWin.ScreenShot2"),
             "/org/kde/KWin/ScreenShot2",
@@ -88,6 +98,7 @@ fn capture_area_with_resolution(
         let mut options: HashMap<&str, Value> = HashMap::new();
         options.insert("include-cursor", Value::from(include_cursor));
         options.insert("native-resolution", Value::from(native_resolution));
+        show_caller_windows(&mut options);
         Ok(conn.call_method(
             Some("org.kde.KWin.ScreenShot2"),
             "/org/kde/KWin/ScreenShot2",
@@ -107,6 +118,7 @@ pub fn capture_interactive_window(include_cursor: bool) -> Result<RgbaImage> {
         options.insert("include-decoration", Value::from(true));
         options.insert("include-shadow", Value::from(false));
         options.insert("native-resolution", Value::from(true));
+        show_caller_windows(&mut options);
         Ok(conn.call_method(
             Some("org.kde.KWin.ScreenShot2"),
             "/org/kde/KWin/ScreenShot2",
@@ -124,6 +136,7 @@ pub fn capture_window(handle: &str, include_cursor: bool) -> Result<RgbaImage> {
         options.insert("include-decoration", Value::from(true));
         options.insert("include-shadow", Value::from(false));
         options.insert("native-resolution", Value::from(true));
+        show_caller_windows(&mut options);
         Ok(conn.call_method(
             Some("org.kde.KWin.ScreenShot2"),
             "/org/kde/KWin/ScreenShot2",
@@ -346,6 +359,90 @@ pub fn keep_own_windows_above(title: &str) -> Result<usize> {
     Ok(flagged)
 }
 
+// kwin >= 6.7 removes a window with excludeFromCapture set from screenshots
+// and screencasts alike — the compositor-side equivalent of the
+// WDA_EXCLUDEFROMCAPTURE flag the windows recording bar uses. the property is
+// only reachable from inside kwin, so a resident script flags this process's
+// windows whose caption carries `marker`, and its windowAdded handler runs
+// before the window is ever composited into a grab, so a bar mapped after the
+// guard is armed never leaks into a frame. dropping the guard unloads the
+// script; the property dies with the window.
+pub struct CaptureExclusionGuard {
+    script_path: std::path::PathBuf,
+    file: std::path::PathBuf,
+}
+
+const EXCLUSION_PLUGIN: &str = "capscr-capture-exclusion";
+
+pub fn exclude_own_windows_from_capture(marker: &str) -> Result<CaptureExclusionGuard> {
+    let pid = std::process::id();
+    // kwin appends " — <app name>" to captions, so match on containment
+    let script = format!(
+        "function apply(w) {{\n    if (w.pid == {pid} && w.caption.includes({marker:?})) {{\n        w.excludeFromCapture = true;\n    }}\n}}\nworkspace.windowList().forEach(apply);\nworkspace.windowAdded.connect(apply);\n"
+    );
+    let file = std::env::temp_dir().join(format!("capscr_kwin_{pid}.js"));
+    std::fs::write(&file, script)?;
+
+    let conn = zbus::blocking::Connection::session()?;
+    // a stale copy from a crashed run would make loadScript return -1
+    let _ = conn.call_method(
+        Some("org.kde.KWin"),
+        "/Scripting",
+        Some("org.kde.kwin.Scripting"),
+        "unloadScript",
+        &(EXCLUSION_PLUGIN,),
+    );
+    let reply = conn.call_method(
+        Some("org.kde.KWin"),
+        "/Scripting",
+        Some("org.kde.kwin.Scripting"),
+        "loadScript",
+        &(file.to_string_lossy().as_ref(), EXCLUSION_PLUGIN),
+    )?;
+    let id: i32 = reply.body().deserialize()?;
+    if id < 0 {
+        let _ = std::fs::remove_file(&file);
+        return Err(anyhow!("kwin refused the capture-exclusion script"));
+    }
+    let script_path = format!("/Scripting/Script{id}");
+    if let Err(e) = conn.call_method(
+        Some("org.kde.KWin"),
+        script_path.as_str(),
+        Some("org.kde.kwin.Script"),
+        "run",
+        &(),
+    ) {
+        let _ = std::fs::remove_file(&file);
+        return Err(e.into());
+    }
+    Ok(CaptureExclusionGuard {
+        script_path: script_path.into(),
+        file,
+    })
+}
+
+impl Drop for CaptureExclusionGuard {
+    fn drop(&mut self) {
+        if let Ok(conn) = zbus::blocking::Connection::session() {
+            let _ = conn.call_method(
+                Some("org.kde.KWin"),
+                self.script_path.to_string_lossy().as_ref(),
+                Some("org.kde.kwin.Script"),
+                "stop",
+                &(),
+            );
+            let _ = conn.call_method(
+                Some("org.kde.KWin"),
+                "/Scripting",
+                Some("org.kde.kwin.Scripting"),
+                "unloadScript",
+                &(EXCLUSION_PLUGIN,),
+            );
+        }
+        let _ = std::fs::remove_file(&self.file);
+    }
+}
+
 // the compositor announces the full window stacking order (bottom to top,
 // `;`-separated internal uuids) once on bind
 fn stacking_order() -> Result<Vec<String>> {
@@ -443,6 +540,7 @@ impl KwinRegionGrabber {
             let mut options: HashMap<&str, Value> = HashMap::new();
             options.insert("include-cursor", Value::from(include_cursor));
             options.insert("native-resolution", Value::from(false));
+            show_caller_windows(&mut options);
             Ok(conn.call_method(
                 Some("org.kde.KWin.ScreenShot2"),
                 "/org/kde/KWin/ScreenShot2",

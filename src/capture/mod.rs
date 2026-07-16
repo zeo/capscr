@@ -64,6 +64,7 @@ pub fn capture_wayland_area(x: i32, y: i32, width: u32, height: u32) -> Result<R
 pub use kwin::capture_interactive_window as capture_wayland_window;
 #[cfg(target_os = "linux")]
 pub use kwin::keep_own_windows_above;
+pub use kwin::{exclude_own_windows_from_capture, CaptureExclusionGuard};
 
 #[cfg(target_os = "linux")]
 pub fn capture_wayland_region(region: Rectangle) -> Result<RgbaImage> {
