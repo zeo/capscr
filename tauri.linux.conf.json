@@ -4,11 +4,18 @@
     "linux": {
       "deb": {
         "desktopTemplate": "linux/capscr.desktop",
+        "depends": ["libpipewire-0.3-0", "libssl3t64 | libssl3", "libdbus-1-3"],
         "recommends": ["ffmpeg", "tesseract-ocr", "xclip", "pulseaudio-utils"],
         "section": "graphics"
       },
       "rpm": {
         "desktopTemplate": "linux/capscr.desktop",
+        "depends": [
+          "libpipewire-0.3.so.0()(64bit)",
+          "libssl.so.3()(64bit)",
+          "libcrypto.so.3()(64bit)",
+          "libdbus-1.so.3()(64bit)"
+        ],
         "recommends": ["ffmpeg", "tesseract", "xclip", "pulseaudio-utils"]
       }
     }
