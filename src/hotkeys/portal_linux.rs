@@ -218,14 +218,10 @@ fn list_shortcuts(session: &PortalSession) -> Result<HashMap<String, String>> {
 // shortcuts come back as a(sa{sv}); pull id -> trigger_description
 fn parse_shortcut_list(value: Option<&OwnedValue>) -> HashMap<String, String> {
     let mut map = HashMap::new();
-    let Some(value) = value else {
+    let Some(value) = value.and_then(|v| v.try_clone().ok()) else {
         return map;
     };
-    let Ok(entries) =
-        <Vec<(String, HashMap<String, OwnedValue>)>>::try_from(value.try_clone().unwrap_or_else(
-            |_| OwnedValue::from(0u32),
-        ))
-    else {
+    let Ok(entries) = <Vec<(String, HashMap<String, OwnedValue>)>>::try_from(value) else {
         return map;
     };
     for (id, props) in entries {
