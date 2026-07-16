@@ -9,9 +9,9 @@
 // BEFORE IDAT, so we add it via `Writer::write_chunk` between header and
 // image data.
 //
-// scope right now: HDR10 source (R16G16B16A16 native PQ from D3D11 swapchain
-// scanout). ScRgb (float linear) needs a per-pixel matrix + PQ-encode pass
-// before quantising to u16 — that path is in TODO state at the bottom.
+// scope: HDR10 source (R16G16B16A16 native PQ from D3D11 swapchain scanout).
+// ScRgb (float linear) would need a per-pixel matrix + PQ-encode pass before
+// quantising to u16; until then those sources take the tonemapped SDR path.
 
 use anyhow::{anyhow, Result};
 use png::chunk::ChunkType;
@@ -62,10 +62,10 @@ pub fn encode_hdr_png(path: &Path, bitmap: &HdrBitmap, transfer: HdrTransfer) ->
             HdrTransfer::Hlg => encode_hdr10_as_hlg_png(path, bitmap),
         },
         HdrFormat::ScRgb => Err(anyhow!(
-            "scRGB HDR encoding not yet implemented (needs matrix + PQ pass) — Phase 2"
+            "scRGB HDR encoding not supported (needs matrix + PQ pass); falling back to SDR"
         )),
         HdrFormat::Hlg => Err(anyhow!(
-            "HLG HDR encoding not yet implemented (needs upsample to 16-bit) — Phase 2"
+            "HLG HDR encoding not supported (needs upsample to 16-bit); falling back to SDR"
         )),
         HdrFormat::Sdr => Err(anyhow!(
             "encode_hdr_png called with SDR bitmap — programmer error"
