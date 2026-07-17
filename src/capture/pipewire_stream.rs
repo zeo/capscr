@@ -118,6 +118,257 @@ impl Drop for PipeWireFrameStream {
     }
 }
 
+// one 10-bit PQ frame off a fresh portal screencast, for HDR stills. mutter
+// (gnome 50+) only offers the 210LE formats while the shared monitor is in
+// HDR mode, so a session that can't negotiate them errors out and the caller
+// takes the SDR path; the packed words go out as-is — the same R10G10B10A2
+// layout HdrFormat::Hdr10 means everywhere else in the pipeline
+pub struct Hdr10Frame {
+    pub data: Vec<u8>,
+    pub width: u32,
+    pub height: u32,
+    pub position: (i32, i32),
+    pub logical_size: (i32, i32),
+}
+
+type Hdr10Slot = Arc<Mutex<Option<(Vec<u8>, u32, u32)>>>;
+
+pub fn grab_hdr10_frame(embed_cursor: bool) -> Result<Hdr10Frame> {
+    let session = open_monitor_session(embed_cursor)?;
+    let stream = session.stream.clone();
+    let fd = session.pipewire_fd.try_clone()?;
+    let slot: Hdr10Slot = Arc::new(Mutex::new(None));
+    let (stop_tx, stop_rx) = pipewire::channel::channel::<()>();
+    let (ready_tx, ready_rx) = mpsc::channel::<Result<()>>();
+    let hdr_slot = slot.clone();
+    let node_id = stream.node_id;
+    let worker = std::thread::Builder::new()
+        .name("capscr-hdr-still".into())
+        .spawn(move || run_hdr_stream(fd, node_id, hdr_slot, stop_rx, ready_tx))?;
+    let finish = |stop_tx: pipewire::channel::Sender<()>, worker: std::thread::JoinHandle<()>| {
+        let _ = stop_tx.send(());
+        let _ = worker.join();
+    };
+    match ready_rx.recv_timeout(FIRST_FRAME_TIMEOUT) {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => {
+            finish(stop_tx, worker);
+            return Err(e);
+        }
+        Err(_) => {
+            finish(stop_tx, worker);
+            bail!("hdr screencast produced no setup result in time");
+        }
+    }
+    let deadline = Instant::now() + FIRST_FRAME_TIMEOUT;
+    let frame = loop {
+        if let Some(frame) = slot.lock().unwrap().take() {
+            break frame;
+        }
+        if Instant::now() >= deadline {
+            finish(stop_tx, worker);
+            bail!("hdr screencast delivered no frames");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    finish(stop_tx, worker);
+    let (data, width, height) = frame;
+    Ok(Hdr10Frame {
+        data,
+        width,
+        height,
+        position: stream.position,
+        logical_size: stream.size,
+    })
+}
+
+// worker for the one-shot HDR grab: offer only the packed 10-bit formats and
+// verify the negotiated transfer is PQ before trusting a frame
+fn run_hdr_stream(
+    fd: std::os::fd::OwnedFd,
+    node_id: u32,
+    slot: Hdr10Slot,
+    stop_rx: pipewire::channel::Receiver<()>,
+    ready_tx: mpsc::Sender<Result<()>>,
+) {
+    use pipewire::spa::param::format::{FormatProperties, MediaSubtype, MediaType};
+    use pipewire::spa::param::video::{VideoFormat, VideoInfoRaw};
+    use pipewire::spa::param::ParamType;
+    use pipewire::spa::pod::{self, serialize::PodSerializer, Pod};
+    use pipewire::spa::utils::{Direction, Fraction, Rectangle, SpaTypes};
+    use pipewire::stream::{StreamFlags, StreamRc};
+
+    // spa_video_transfer_function / spa_video_color_primaries codepoints
+    const TRANSFER_UNKNOWN: u32 = 0;
+    const TRANSFER_SMPTE2084: u32 = 14;
+
+    let setup = || -> Result<(pipewire::main_loop::MainLoopRc, StreamRc, Box<dyn std::any::Any>)> {
+        pipewire::init();
+        let main_loop = pipewire::main_loop::MainLoopRc::new(None)?;
+        let context = pipewire::context::ContextRc::new(&main_loop, None)?;
+        let core = context.connect_fd_rc(fd, None)?;
+
+        #[derive(Clone, Default)]
+        struct StreamData {
+            format: VideoInfoRaw,
+        }
+
+        let stream = StreamRc::new(
+            core,
+            "capscr-hdr",
+            pipewire::properties::properties! {
+                *pipewire::keys::MEDIA_TYPE => "Video",
+                *pipewire::keys::MEDIA_CATEGORY => "Capture",
+                *pipewire::keys::MEDIA_ROLE => "Screen",
+            },
+        )?;
+
+        let listener = stream
+            .add_local_listener_with_user_data(StreamData::default())
+            .param_changed(|_, data, id, param| {
+                let Some(param) = param else { return };
+                if id != ParamType::Format.as_raw() {
+                    return;
+                }
+                let parsed = pipewire::spa::param::format_utils::parse_format(param);
+                if let Ok((MediaType::Video, MediaSubtype::Raw)) = parsed {
+                    if let Err(e) = data.format.parse(param) {
+                        tracing::warn!("hdr screencast format parse failed: {e:?}");
+                    }
+                    tracing::info!(
+                        "hdr screencast format: {:?} transfer={} primaries={}",
+                        data.format.format(),
+                        data.format.transfer_function(),
+                        data.format.color_primaries(),
+                    );
+                }
+            })
+            .process(move |stream, data| {
+                let Some(mut buffer) = stream.dequeue_buffer() else {
+                    return;
+                };
+                let datas = buffer.datas_mut();
+                if datas.is_empty() {
+                    return;
+                }
+                let format = data.format.format();
+                let opaque = format == VideoFormat::xBGR_210LE;
+                if format != VideoFormat::xBGR_210LE && format != VideoFormat::ABGR_210LE {
+                    tracing::warn!("hdr screencast delivered non-10-bit format {format:?}");
+                    return;
+                }
+                // an SDR-colorimetry 10-bit stream is not an HDR source
+                let transfer = data.format.transfer_function();
+                if transfer != TRANSFER_SMPTE2084 && transfer != TRANSFER_UNKNOWN {
+                    tracing::warn!("hdr screencast transfer {transfer} is not PQ; dropping");
+                    return;
+                }
+                let size = data.format.size();
+                let (width, height) = (size.width, size.height);
+                if width == 0 || height == 0 {
+                    return;
+                }
+                let stride = datas[0].chunk().stride().unsigned_abs() as usize;
+                let Some(raw) = datas[0].data() else { return };
+                let row_bytes = width as usize * 4;
+                let stride = if stride == 0 { row_bytes } else { stride };
+                if raw.len() < stride * (height as usize - 1) + row_bytes {
+                    return;
+                }
+                let mut packed = vec![0u8; row_bytes * height as usize];
+                for (row_index, dst_row) in packed.chunks_exact_mut(row_bytes).enumerate() {
+                    dst_row
+                        .copy_from_slice(&raw[row_index * stride..row_index * stride + row_bytes]);
+                    if opaque {
+                        // x-formats carry undefined alpha bits; force opaque
+                        for px in dst_row.chunks_exact_mut(4) {
+                            px[3] |= 0xC0;
+                        }
+                    }
+                }
+                *slot.lock().unwrap() = Some((packed, width, height));
+            })
+            .register()?;
+
+        let format_object = pod::object!(
+            SpaTypes::ObjectParamFormat,
+            ParamType::EnumFormat,
+            pod::property!(FormatProperties::MediaType, Id, MediaType::Video),
+            pod::property!(FormatProperties::MediaSubtype, Id, MediaSubtype::Raw),
+            pod::property!(
+                FormatProperties::VideoFormat,
+                Choice,
+                Enum,
+                Id,
+                VideoFormat::xBGR_210LE,
+                VideoFormat::ABGR_210LE,
+            ),
+            pod::property!(
+                FormatProperties::VideoSize,
+                Choice,
+                Range,
+                Rectangle,
+                Rectangle {
+                    width: 1920,
+                    height: 1080
+                },
+                Rectangle {
+                    width: 1,
+                    height: 1
+                },
+                Rectangle {
+                    width: 16384,
+                    height: 16384
+                }
+            ),
+            pod::property!(
+                FormatProperties::VideoFramerate,
+                Choice,
+                Range,
+                Fraction,
+                Fraction { num: 60, denom: 1 },
+                Fraction { num: 0, denom: 1 },
+                Fraction {
+                    num: 1000,
+                    denom: 1
+                }
+            ),
+        );
+        let serialized = PodSerializer::serialize(
+            std::io::Cursor::new(Vec::new()),
+            &pod::Value::Object(format_object),
+        )
+        .map_err(|e| anyhow!("pod serialization failed: {e:?}"))?
+        .0
+        .into_inner();
+        let mut params = [Pod::from_bytes(&serialized)
+            .ok_or_else(|| anyhow!("pod construction failed"))?];
+
+        stream.connect(
+            Direction::Input,
+            Some(node_id),
+            StreamFlags::AUTOCONNECT | StreamFlags::MAP_BUFFERS,
+            &mut params,
+        )?;
+
+        Ok((main_loop, stream, Box::new(listener)))
+    };
+
+    match setup() {
+        Ok((main_loop, _stream, _listener)) => {
+            let _ = ready_tx.send(Ok(()));
+            let loop_handle = main_loop.clone();
+            let _stop_attached = stop_rx.attach(main_loop.loop_(), move |_| {
+                loop_handle.quit();
+            });
+            main_loop.run();
+        }
+        Err(e) => {
+            let _ = ready_tx.send(Err(e));
+        }
+    }
+}
+
 // the pipewire side, entirely on its own thread: connect over the portal's
 // fd, negotiate a raw video format, and copy every buffer into the slot.
 // format incantations mirror xcap's screencast recorder, which runs against

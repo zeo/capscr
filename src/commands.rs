@@ -926,7 +926,22 @@ fn capture_active_monitor_with_hdr(
 
     #[cfg(target_os = "linux")]
     if crate::capture::is_wayland_session() {
+        use crate::capture::HdrCapture;
         let monitor = crate::capture::active_wayland_monitor()?;
+        let center = (
+            monitor.x + monitor.width as i32 / 2,
+            monitor.y + monitor.height as i32 / 2,
+        );
+        // gnome 50 hands out hdr pixels over a screencast stream; everywhere
+        // else is_hdr_at_point stays false and the sdr grab below runs
+        if HdrCapture::is_hdr_at_point(center.0, center.1) {
+            match HdrCapture::new().capture_with_hdr_at(Some(center)) {
+                Ok(pair) => return Ok(pair),
+                Err(e) => {
+                    tracing::warn!("wayland HDR capture failed — SDR fallback: {e:#}")
+                }
+            }
+        }
         let image = crate::capture::capture_wayland_area(
             monitor.x,
             monitor.y,
@@ -3438,6 +3453,26 @@ fn gnome_extension_dir() -> Option<std::path::PathBuf> {
             .join("gnome-shell/extensions")
             .join(GNOME_EXTENSION_UUID),
     )
+}
+
+// whether this platform can deliver hdr pixels at all, gating the hdr
+// settings pane and history filter: always on windows, gnome-on-wayland on
+// linux (the screencast portal's 10-bit pq path), nowhere else
+#[tauri::command]
+pub fn hdr_pipeline_supported() -> bool {
+    #[cfg(windows)]
+    {
+        true
+    }
+    #[cfg(target_os = "linux")]
+    {
+        crate::shell::desktop() == crate::shell::DesktopEnv::Gnome
+            && crate::capture::is_wayland_session()
+    }
+    #[cfg(not(any(windows, target_os = "linux")))]
+    {
+        false
+    }
 }
 
 // settings backing for the gnome section: install state of the companion

@@ -834,10 +834,12 @@ pub fn wayland_diagnostic() {
     } else {
         println!("  ext-copy formats: no session (source unavailable)");
     }
-    let verdict = match (hdr_signal, deep_formats) {
-        (true, true) => "an hdr output AND a deep capture format exist — hdr capture is worth wiring up here",
-        (true, false) => "outputs run hdr but every capture source is 8-bit; captures stay sdr (compositor limitation)",
-        (false, _) => "no hdr signal on any output; sdr captures are lossless here",
+    let gnome_hdr = crate::shell::desktop() == crate::shell::DesktopEnv::Gnome && hdr_signal;
+    let verdict = match (hdr_signal, deep_formats, gnome_hdr) {
+        (_, _, true) => "an hdr output on gnome — fullscreen captures pull 10-bit pq frames off the screencast portal",
+        (true, true, _) => "an hdr output AND a deep capture format exist, but the format carries no colorimetry; captures stay sdr until the capture protocol gains color metadata",
+        (true, false, _) => "outputs run hdr but every capture source is 8-bit; captures stay sdr (compositor limitation)",
+        (false, ..) => "no hdr signal on any output; sdr captures are lossless here",
     };
     println!("  verdict: {verdict}");
 }

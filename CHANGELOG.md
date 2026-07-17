@@ -16,10 +16,12 @@ format follows [keep-a-changelog](https://keepachangelog.com/en/1.1.0/) loosely.
 - a **copy detected text (OCR)** post-action: bind it to a still-capture task and capscr runs OCR on the shot (the built-in Windows engine, tesseract on Linux) and drops the recognized text straight onto your clipboard — no file saved, no editor round-trip. (OCR was already reachable from the history grid; this makes it a one-step capture action.)
 - an optional **per-task pre-capture delay**: each still-capture task can set its own delay (blank uses the global one), so a timed task for catching a menu or tooltip can sit alongside your instant hotkeys instead of the delay being all-or-nothing.
 
+- **HDR capture on GNOME 50+**: fullscreen captures of a monitor running HDR now pull a 10-bit PQ frame off the screencast portal and go through the same tonemap (and optional HDR-preserved PNG) pipeline as Windows, instead of settling for the compositor's 8-bit screenshot; the hdr settings pane and history filter appear on sessions that support it
 - a **GNOME companion extension** (installable from Settings → general on a GNOME session) that closes the three GNOME gaps at once: window-mode capture picks windows in capscr's own overlay instead of GNOME's portal dialog, the recording bar and pinned screenshots stay above fullscreen windows and land where they should, and a top-bar capture menu stands in for the missing system tray
 - on Plasma 6.7+, the recording control bar is excluded from capture the same way it is on Windows: KWin removes it from screenshots and recordings compositor-side, so it sits below or above the region and tucks inside it when there is no room, never appearing in the frames or fleeing to another monitor
 
 ### fixed
+- the HDR-preserved PNG post-action actually writes an HDR PNG again: the encoder expected 16-bit pixel data while every capture source delivers packed 10-bit, so it silently fell back to SDR output every time
 - pinned screenshots no longer vanish from captures on Plasma 6.6.1+ — KWin started hiding all of a screenshotting app's own windows by default, and capscr now asks it not to, keeping pins in your shots like every other window
 - when fast GDI capture fails on Windows, the xcap fallback now resolves the monitor by position instead of an id that the two enumerators never shared
 

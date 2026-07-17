@@ -285,6 +285,7 @@ export const api = {
   hotkeyDiagnostics: () => invoke<HotkeyDiagnostics>("hotkey_diagnostics"),
   evdevStatus: () => invoke<EvdevStatus>("evdev_status"),
   gnomeCompanionStatus: () => invoke<GnomeCompanionStatus>("gnome_companion_status"),
+  hdrPipelineSupported: () => invoke<boolean>("hdr_pipeline_supported"),
   installGnomeCompanion: () => invoke<GnomeCompanionStatus>("install_gnome_companion"),
   portalRebindShortcuts: () => invoke<void>("portal_rebind_shortcuts"),
   pinManualDrag: () => invoke<boolean>("pin_manual_drag"),

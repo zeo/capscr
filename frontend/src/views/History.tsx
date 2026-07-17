@@ -23,15 +23,16 @@ import {
   Pin,
 } from "lucide-solid";
 import { api } from "../api";
-import { IS_LINUX } from "../keys";
+import { hdrSupported } from "../hdrSupport";
 import { TrimModal } from "../components/TrimModal";
 
 type FilterKind = "all" | "images" | "gifs" | "videos" | "hdr";
 
-// linux captures can't produce hdr files, so the pill would always be empty
-const FILTER_PILLS: readonly FilterKind[] = (
-  ["all", "images", "gifs", "videos", "hdr"] as FilterKind[]
-).filter((kind) => !(IS_LINUX && kind === "hdr"));
+// the hdr pill only shows where captures can produce hdr files
+const FILTER_PILLS = () =>
+  (["all", "images", "gifs", "videos", "hdr"] as FilterKind[]).filter(
+    (kind) => !(kind === "hdr" && !hdrSupported()),
+  );
 
 // grid tiles use a cached backend thumbnail: full-size animated gifs in
 // <img> decode to gigabytes across a grid, and files outside the asset
@@ -244,7 +245,7 @@ export function History() {
             </Show>
           </label>
           <div class="history-filters">
-            <For each={FILTER_PILLS}>
+            <For each={FILTER_PILLS()}>
               {(k) => (
                 <button
                   type="button"

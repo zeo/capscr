@@ -316,6 +316,7 @@ fn main() {
             commands::hotkey_diagnostics,
             commands::evdev_status,
             commands::gnome_companion_status,
+            commands::hdr_pipeline_supported,
             commands::install_gnome_companion,
             commands::portal_rebind_shortcuts,
             commands::pin_manual_drag,

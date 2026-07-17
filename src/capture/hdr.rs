@@ -102,19 +102,70 @@ impl Default for HdrDisplayInfo {
     }
 }
 
-// linux capture stays SDR: verified 2026-07-16, there is no HDR pixel source
-// to integrate on any compositor — kwin's ScreenShot2 (v5) returns 8-bit
-// QImage frames with no color metadata (source-checked against v6.7.2), kde
-// rejected ext-image-copy-capture outright (bug 513785, portals-first), and
-// portal screencasts advertise 8-bit formats only. wlroots compositors do
-// expose ext-image-copy, so a future >8-bit shm format offer there is the
-// likeliest first opening; `capscr --wayland-diag`'s hdr-readiness section
-// (color_probe.rs + ExtCopySession::offered_formats) detects exactly that in
-// the field. when a source lands, a backend has to produce raw bytes plus an
-// HdrFormat and the display's sdr white level; tonemapping.rs and hdr_png.rs
-// already handle everything downstream and are test-covered with synthetic
-// buffers (hdr_png.rs, synthetic pipeline test).
+// linux HDR state (rechecked 2026-07-17): gnome 50's screencast advertises
+// 10-bit PQ/BT.2020 formats on the portal's pipewire stream while the shared
+// monitor is in HDR mode, and that is the one working linux source — a
+// one-shot grab through pipewire_stream::grab_hdr10_frame feeds the same
+// packed-Hdr10 pipeline the windows desktop-duplication path uses. kwin's
+// ScreenShot2 (v5) still returns 8-bit QImage frames with no color metadata
+// (source-checked against 6.7.2, kde declined ext-image-copy in bug 513785),
+// and wlroots' ext-image-copy hands out the output's 10-bit buffer but no
+// colorimetry — `capscr --wayland-diag`'s hdr-readiness section
+// (color_probe.rs + ExtCopySession::offered_formats) watches both in the
+// field.
 pub struct HdrCapture;
+
+#[cfg(target_os = "linux")]
+mod linux_hdr {
+    use super::{HdrDisplayInfo, HdrFormat};
+
+    // hdr display facts for the monitor containing `target` (primary when
+    // None), from the compositor's color-management state. only gnome can
+    // deliver hdr pixels (see module note), so everything else reports sdr
+    // and the capture path falls back cleanly
+    pub fn display_info_at(target: Option<(i32, i32)>) -> HdrDisplayInfo {
+        if crate::shell::desktop() != crate::shell::DesktopEnv::Gnome
+            || !crate::capture::is_wayland_session()
+        {
+            return HdrDisplayInfo::default();
+        }
+        let Ok(monitors) = crate::capture::list_monitors() else {
+            return HdrDisplayInfo::default();
+        };
+        let monitor = match target {
+            Some((x, y)) => monitors.iter().find(|m| {
+                x >= m.x
+                    && y >= m.y
+                    && x < m.x + m.width as i32
+                    && y < m.y + m.height as i32
+            }),
+            None => monitors.iter().find(|m| m.is_primary),
+        }
+        .or(monitors.first());
+        let Some(monitor) = monitor else {
+            return HdrDisplayInfo::default();
+        };
+        let Ok(outputs) = super::super::color_probe::probe_outputs() else {
+            return HdrDisplayInfo::default();
+        };
+        let Some(output) = outputs.iter().find(|o| o.output == monitor.name) else {
+            return HdrDisplayInfo::default();
+        };
+        if !output.is_hdr_signal() {
+            return HdrDisplayInfo::default();
+        }
+        let (_, max, reference) = output.luminance.unwrap_or((0.0, 1000.0, 203.0));
+        HdrDisplayInfo {
+            is_hdr_enabled: true,
+            format: HdrFormat::Hdr10,
+            max_luminance: if max > 0.0 { max as f32 } else { 1000.0 },
+            min_luminance: 0.0,
+            // wayland's reference luminance plays the role of windows'
+            // SDR white level: what sdr-white content actually emits
+            sdr_white_level: if reference > 0.0 { reference as f32 } else { 203.0 },
+        }
+    }
+}
 
 impl HdrCapture {
     pub fn new() -> Self {
@@ -133,7 +184,11 @@ impl HdrCapture {
         {
             windows_hdr::get_hdr_display_info_at(target)
         }
-        #[cfg(not(target_os = "windows"))]
+        #[cfg(target_os = "linux")]
+        {
+            Ok(linux_hdr::display_info_at(target))
+        }
+        #[cfg(not(any(target_os = "windows", target_os = "linux")))]
         {
             let _ = target;
             Ok(HdrDisplayInfo::default())
@@ -151,7 +206,11 @@ impl HdrCapture {
         {
             windows_hdr::is_hdr_at_point(x, y)
         }
-        #[cfg(not(target_os = "windows"))]
+        #[cfg(target_os = "linux")]
+        {
+            linux_hdr::display_info_at(Some((x, y))).is_hdr_enabled
+        }
+        #[cfg(not(any(target_os = "windows", target_os = "linux")))]
         {
             let _ = (x, y);
             tracing::debug!("no hdr pixel source on this platform; capturing sdr");
@@ -179,57 +238,50 @@ impl HdrCapture {
         &self,
         target: Option<(i32, i32)>,
     ) -> Result<(RgbaImage, Option<crate::capture::HdrBitmap>)> {
-        #[cfg(target_os = "windows")]
-        {
-            // resolve HDR info for the monitor being captured, not just the
-            // first HDR output, so a multi-HDR desktop tonemaps each panel
-            // against its own SDR white level
-            let hdr_info = Self::get_display_hdr_info_at(target)?;
+        // resolve HDR info for the monitor being captured, not just the
+        // first HDR output, so a multi-HDR desktop tonemaps each panel
+        // against its own SDR white level
+        let hdr_info = Self::get_display_hdr_info_at(target)?;
 
-            if !hdr_info.is_hdr_enabled {
-                tracing::debug!("capture_with_hdr_at: hdr not enabled, falling back to SDR");
-                return Ok((self.capture_sdr_fallback_at(target)?, None));
-            }
+        if !hdr_info.is_hdr_enabled {
+            tracing::debug!("capture_with_hdr_at: hdr not enabled, falling back to SDR");
+            return Ok((self.capture_sdr_fallback_at(target)?, None));
+        }
 
-            let (raw_data, width, height, format) = self.capture_raw(target).map_err(|e| {
-                tracing::warn!("capture_with_hdr_at: capture_raw failed — falling back: {e:#}");
-                e
-            })?;
+        let (raw_data, width, height, format) = self.capture_raw(target).map_err(|e| {
+            tracing::warn!("capture_with_hdr_at: capture_raw failed — falling back: {e:#}");
+            e
+        })?;
 
-            if width == 0 || height == 0 {
-                return Err(anyhow!("Invalid capture dimensions"));
-            }
-            if width > MAX_HDR_DIMENSION || height > MAX_HDR_DIMENSION {
-                return Err(anyhow!("Capture dimensions exceed maximum"));
-            }
+        if width == 0 || height == 0 {
+            return Err(anyhow!("Invalid capture dimensions"));
+        }
+        if width > MAX_HDR_DIMENSION || height > MAX_HDR_DIMENSION {
+            return Err(anyhow!("Capture dimensions exceed maximum"));
+        }
 
-            let sdr_white = hdr_info.sdr_white_level.max(80.0);
-            tracing::info!(
-                "capture_with_hdr_at: passing sdr_white={:.0}nits to tonemap (raw_data {}B, {}x{}, {:?})",
-                sdr_white,
-                raw_data.len(),
+        let sdr_white = hdr_info.sdr_white_level.max(80.0);
+        tracing::info!(
+            "capture_with_hdr_at: passing sdr_white={:.0}nits to tonemap (raw_data {}B, {}x{}, {:?})",
+            sdr_white,
+            raw_data.len(),
+            width,
+            height,
+            format,
+        );
+        let sdr_img = self.tonemap(&raw_data, width, height, format, sdr_white);
+        let hdr_bitmap = if matches!(format, HdrFormat::Sdr) {
+            None
+        } else {
+            Some(crate::capture::HdrBitmap {
                 width,
                 height,
                 format,
-            );
-            let sdr_img = self.tonemap(&raw_data, width, height, format, sdr_white);
-            let hdr_bitmap = if matches!(format, HdrFormat::Sdr) {
-                None
-            } else {
-                Some(crate::capture::HdrBitmap {
-                    width,
-                    height,
-                    format,
-                    data: raw_data,
-                    max_luminance_nits: hdr_info.max_luminance,
-                })
-            };
-            Ok((sdr_img, hdr_bitmap))
-        }
-        #[cfg(not(target_os = "windows"))]
-        {
-            Ok((self.capture_sdr_fallback_at(target)?, None))
-        }
+                data: raw_data,
+                max_luminance_nits: hdr_info.max_luminance,
+            })
+        };
+        Ok((sdr_img, hdr_bitmap))
     }
 
     fn capture_raw(&self, target: Option<(i32, i32)>) -> Result<(Vec<u8>, u32, u32, HdrFormat)> {
@@ -237,7 +289,17 @@ impl HdrCapture {
         {
             windows_hdr::capture_hdr_screen(target)
         }
-        #[cfg(not(target_os = "windows"))]
+        #[cfg(target_os = "linux")]
+        {
+            // the portal streams whichever monitor its (token-restored)
+            // session shares; on the common one-HDR-monitor desktop that is
+            // the monitor `target` names. the packed 210LE words are already
+            // the Hdr10 layout.
+            let _ = target;
+            let frame = super::pipewire_stream::grab_hdr10_frame(super::include_cursor())?;
+            Ok((frame.data, frame.width, frame.height, HdrFormat::Hdr10))
+        }
+        #[cfg(not(any(target_os = "windows", target_os = "linux")))]
         {
             let _ = target;
             Err(anyhow!("HDR capture not available on this platform"))

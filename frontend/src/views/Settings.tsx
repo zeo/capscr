@@ -8,6 +8,7 @@ import { FolderOpen, RotateCcw, Save } from "lucide-solid";
 import { config, mutateConfig } from "../store";
 import { commitNumber } from "../num";
 import { IS_LINUX } from "../keys";
+import { hdrSupported } from "../hdrSupport";
 
 type Pane = "general" | "capture" | "hdr" | "hotkeys" | "ssh" | "notify";
 
@@ -19,8 +20,8 @@ const ALL_PANES: { id: Pane; label: string }[] = [
   { id: "ssh", label: "ssh" },
   { id: "notify", label: "notify" },
 ];
-// no hdr pixel source exists on linux; the pane would be inert
-const PANES = ALL_PANES.filter((pane) => !(IS_LINUX && pane.id === "hdr"));
+// the hdr pane only shows where a pixel source exists (windows, gnome 50)
+const PANES = () => ALL_PANES.filter((pane) => !(pane.id === "hdr" && !hdrSupported()));
 
 export function Settings() {
   const [pane, setPane] = createSignal<Pane>("general");
@@ -77,7 +78,7 @@ export function Settings() {
       </div>
 
       <nav class="subnav" role="tablist">
-        <For each={PANES}>
+        <For each={PANES()}>
           {(p) => (
             <button
               type="button"

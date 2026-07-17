@@ -9,28 +9,35 @@ exists, and what would have to change upstream to close it.
 run `capscr --wayland-diag` on any Linux session for a live readout of which
 of these apply to that machine.
 
-## HDR-preserved capture (Windows only)
+## HDR-preserved capture (Windows and GNOME 50+)
 
 Windows captures HDR displays through Windows.Graphics.Capture in FP16 and
-tonemaps to SDR (or writes an HDR-preserved PNG). No Linux compositor hands a
-capture client HDR pixels as of mid-2026:
+tonemaps to SDR (or writes an HDR-preserved PNG). GNOME 50 (March 2026)
+opened the first Linux door: while a shared monitor is in HDR mode, Mutter's
+screencast PipeWire stream advertises 10-bit and FP16 formats with BT.2020+PQ
+colorimetry. capscr pulls a one-shot 10-bit PQ frame off that stream for
+fullscreen captures on GNOME (`src/capture/pipewire_stream.rs`,
+`grab_hdr10_frame`) and runs it through the same tonemap and cICP-PNG
+pipeline as Windows.
+
+The rest of the Linux landscape still can't:
 
 - KWin's `org.kde.KWin.ScreenShot2` returns 8-bit `QImage` frames with no
-  colour metadata (checked against KWin 6.7.2).
-- KDE declined the `ext-image-copy-capture` staging protocol that could carry
-  deep buffers ([bug 513785], "resolved intentional", portals-first policy).
-- The screenshot/screencast portals advertise 8-bit formats only.
+  colour metadata (checked against KWin 6.7.2), the screencast plugin pins
+  its formats to 8-bit, and KDE declined `ext-image-copy-capture` ([bug
+  513785], "resolved intentional", portals-first policy).
+- wlroots compositors (sway 1.11+, Hyprland 0.54+) hand out the output's
+  native 10-bit buffer over `ext-image-copy-capture`, but the protocol
+  carries no colorimetry, so the pixels can't be trusted as PQ; the
+  `wp_image_description_reference` groundwork for fixing that shipped in
+  wayland-protocols 1.47 and the capture-side addition hasn't.
 
-So Linux captures are SDR. The tonemap and cICP-PNG pipeline
-(`src/capture/tonemapping.rs`, `src/capture/hdr_png.rs`) is cross-platform and
-already exercised on synthetic frames; `capscr --wayland-diag` reports each
-output's colour signal and whether any capture source offers a >8-bit format.
-The day a compositor exposes deep buffers, that readout flips and the backend
-seam in `src/capture/hdr.rs` (`is_hdr_at_point` / `capture_raw` /
-`capture_with_hdr_at`) is where the source plugs in.
+`capscr --wayland-diag` reports each output's colour signal and per-source
+format depth, and its verdict line says which of these cases the session is
+in.
 
-**closes when:** KWin or Mutter exposes HDR pixels to a capture client (e.g. a
-colour-managed `ext-image-copy-capture` frame).
+**closes on KDE when:** KWin's capture paths gain >8-bit formats.
+**closes on wlroots when:** ext-image-copy-capture gains colour metadata.
 
 ## GNOME window picking (closed by the companion extension)
 

@@ -26,9 +26,11 @@ pub struct HdrBitmap {
     pub width: u32,
     pub height: u32,
     pub format: HdrFormat,
-    /// raw bytes straight from the DXGI swapchain. Layout depends on `format`:
-    /// - `Hdr10`: R16G16B16A16, 8 bytes per pixel, little-endian.
-    /// - `ScRgb`: R32G32B32A32 float, 16 bytes per pixel, little-endian.
+    /// raw bytes straight from the capture source. Layout depends on `format`:
+    /// - `Hdr10`: packed R10G10B10A2 little-endian u32 words (r bits 0-9,
+    ///   g 10-19, b 20-29, a 30-31), 4 bytes per pixel — DXGI
+    ///   R10G10B10A2_UNORM and pipewire xBGR/ABGR_210LE share this layout.
+    /// - `ScRgb`: R16G16B16A16 half-float, 8 bytes per pixel, little-endian.
     /// - `Hlg`:   4 bytes per pixel (HLG-encoded BT.2020 8-bit per channel).
     /// - `Sdr`:   should never reach this struct — caller drops it.
     pub data: Vec<u8>,
@@ -74,10 +76,24 @@ pub fn encode_hdr_png(path: &Path, bitmap: &HdrBitmap, transfer: HdrTransfer) ->
 }
 
 #[allow(clippy::uninit_vec)]
-fn encode_hdr10_png(path: &Path, bitmap: &HdrBitmap) -> Result<()> {
+// expand one packed R10G10B10A2 word into full-range 16-bit channels.
+// (v << 6) | (v >> 4) replicates the top bits so 0 maps to 0 and 1023 to
+// 65535 exactly; the 2-bit alpha spreads the same way
+pub(crate) fn unpack_rgb10a2(word: u32) -> [u16; 4] {
+    let widen = |v: u32| ((v << 6) | (v >> 4)) as u16;
+    let alpha = ((word >> 30) & 0x3) as u16;
+    [
+        widen(word & 0x3FF),
+        widen((word >> 10) & 0x3FF),
+        widen((word >> 20) & 0x3FF),
+        alpha * 21845,
+    ]
+}
+
+fn packed_hdr10_words(bitmap: &HdrBitmap) -> Result<impl Iterator<Item = u32> + '_> {
     let pixel_count = bitmap.pixel_count();
     let expected_bytes = pixel_count
-        .checked_mul(8)
+        .checked_mul(4)
         .ok_or_else(|| anyhow!("hdr10 dimensions overflow byte count"))?;
     if (bitmap.data.len() as u64) < expected_bytes {
         return Err(anyhow!(
@@ -86,6 +102,13 @@ fn encode_hdr10_png(path: &Path, bitmap: &HdrBitmap) -> Result<()> {
             expected_bytes
         ));
     }
+    Ok(bitmap.data[..expected_bytes as usize]
+        .chunks_exact(4)
+        .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]])))
+}
+
+fn encode_hdr10_png(path: &Path, bitmap: &HdrBitmap) -> Result<()> {
+    let words = packed_hdr10_words(bitmap)?;
 
     let file = File::create(path)?;
     let mut w = BufWriter::new(file);
@@ -93,10 +116,6 @@ fn encode_hdr10_png(path: &Path, bitmap: &HdrBitmap) -> Result<()> {
     let mut enc = png::Encoder::new(&mut w, bitmap.width, bitmap.height);
     enc.set_color(png::ColorType::Rgba);
     enc.set_depth(png::BitDepth::Sixteen);
-    // PNG stores 16-bit channels in big-endian. The PNG crate handles the
-    // byte-swap if we hand it a u8 slice via `write_image_data` — but only if
-    // the slice is already big-endian. The DXGI data is little-endian, so we
-    // need to swap once.
     let mut writer = enc.write_header()?;
 
     // cICP chunk: colour-primaries = 9 (BT.2020), transfer = 16 (PQ),
@@ -105,17 +124,11 @@ fn encode_hdr10_png(path: &Path, bitmap: &HdrBitmap) -> Result<()> {
     let cicp: [u8; 4] = [9, 16, 0, 1];
     writer.write_chunk(ChunkType(*b"cICP"), &cicp)?;
 
-    let mut be_data = Vec::with_capacity(bitmap.data.len());
-    unsafe {
-        be_data.set_len(bitmap.data.len());
-    }
-    let src_ptr: *const u8 = bitmap.data.as_ptr();
-    let dest_ptr: *mut u8 = be_data.as_mut_ptr();
-    let num_u16s = bitmap.data.len() / 2;
-    for i in 0..num_u16s {
-        unsafe {
-            let val = std::ptr::read_unaligned(src_ptr.add(i * 2) as *const u16);
-            std::ptr::write_unaligned(dest_ptr.add(i * 2) as *mut u16, val.swap_bytes());
+    // PNG wants 16-bit channels big-endian; widen each packed word in place
+    let mut be_data = Vec::with_capacity(bitmap.pixel_count() as usize * 8);
+    for word in words {
+        for channel in unpack_rgb10a2(word) {
+            be_data.extend_from_slice(&channel.to_be_bytes());
         }
     }
     writer.write_image_data(&be_data)?;
@@ -131,19 +144,8 @@ fn encode_hdr10_png(path: &Path, bitmap: &HdrBitmap) -> Result<()> {
 //      reference HDR white
 //   3. HLG OETF: encode linear E -> non-linear E' per BT.2100 / ARIB STD-B67
 //   4. quantise back to u16, write 16-bit RGBA PNG, attach cICP 9/18/0/1
-#[allow(clippy::uninit_vec)]
 fn encode_hdr10_as_hlg_png(path: &Path, bitmap: &HdrBitmap) -> Result<()> {
-    let pixel_count = bitmap.pixel_count();
-    let expected_bytes = pixel_count
-        .checked_mul(8)
-        .ok_or_else(|| anyhow!("hdr10 dimensions overflow byte count"))?;
-    if (bitmap.data.len() as u64) < expected_bytes {
-        return Err(anyhow!(
-            "hdr10 source buffer too small: have {}, need {}",
-            bitmap.data.len(),
-            expected_bytes
-        ));
-    }
+    let words = packed_hdr10_words(bitmap)?;
 
     // build a 65536-entry LUT mapping PQ-encoded u16 -> HLG-encoded u16.
     // the alpha channel passes through unchanged.
@@ -171,30 +173,11 @@ fn encode_hdr10_as_hlg_png(path: &Path, bitmap: &HdrBitmap) -> Result<()> {
     let cicp: [u8; 4] = [9, 18, 0, 1];
     writer.write_chunk(ChunkType(*b"cICP"), &cicp)?;
 
-    let mut out = Vec::with_capacity(bitmap.data.len());
-    unsafe {
-        out.set_len(bitmap.data.len());
-    }
-    let src_ptr: *const u8 = bitmap.data.as_ptr();
-    let dest_ptr: *mut u8 = out.as_mut_ptr();
-    let num_pixels = bitmap.data.len() / 8;
-    for i in 0..num_pixels {
-        unsafe {
-            let offset = i * 8;
-            let r = std::ptr::read_unaligned(src_ptr.add(offset) as *const u16);
-            let g = std::ptr::read_unaligned(src_ptr.add(offset + 2) as *const u16);
-            let b = std::ptr::read_unaligned(src_ptr.add(offset + 4) as *const u16);
-            let a = std::ptr::read_unaligned(src_ptr.add(offset + 6) as *const u16);
-
-            let r2 = pq_to_hlg[u16::from_le(r) as usize].to_be();
-            let g2 = pq_to_hlg[u16::from_le(g) as usize].to_be();
-            let b2 = pq_to_hlg[u16::from_le(b) as usize].to_be();
-            let a2 = u16::from_le(a).to_be();
-
-            std::ptr::write_unaligned(dest_ptr.add(offset) as *mut u16, r2);
-            std::ptr::write_unaligned(dest_ptr.add(offset + 2) as *mut u16, g2);
-            std::ptr::write_unaligned(dest_ptr.add(offset + 4) as *mut u16, b2);
-            std::ptr::write_unaligned(dest_ptr.add(offset + 6) as *mut u16, a2);
+    let mut out = Vec::with_capacity(bitmap.pixel_count() as usize * 8);
+    for word in words {
+        let [r, g, b, a] = unpack_rgb10a2(word);
+        for channel in [pq_to_hlg[r as usize], pq_to_hlg[g as usize], pq_to_hlg[b as usize], a] {
+            out.extend_from_slice(&channel.to_be_bytes());
         }
     }
     writer.write_image_data(&out)?;
@@ -299,13 +282,25 @@ mod tests {
     use super::*;
 
     #[test]
+    fn unpack_widens_full_range() {
+        assert_eq!(unpack_rgb10a2(0), [0, 0, 0, 0]);
+        // r=1023, g=512, b=1, a=3
+        let word = 1023 | (512 << 10) | (1 << 20) | (3u32 << 30);
+        let [r, g, b, a] = unpack_rgb10a2(word);
+        assert_eq!(r, 65535);
+        assert_eq!(g, (512 << 6) | (512 >> 4));
+        assert_eq!(b, 64);
+        assert_eq!(a, 65535);
+    }
+
+    #[test]
     fn cicp_chunk_roundtrips() {
         let tmp = std::env::temp_dir().join("capscr-hdr-test.png");
         let bitmap = HdrBitmap {
             width: 2,
             height: 2,
             format: HdrFormat::Hdr10,
-            data: vec![0u8; 32], // 4 pixels × 8 bytes
+            data: vec![0u8; 16], // 4 pixels × 4 packed bytes
             max_luminance_nits: 1000.0,
         };
         encode_hdr_png(&tmp, &bitmap, HdrTransfer::Pq).unwrap();
@@ -325,7 +320,7 @@ mod tests {
             width: 2,
             height: 2,
             format: HdrFormat::Hdr10,
-            data: vec![0u8; 32],
+            data: vec![0u8; 16],
             max_luminance_nits: 1000.0,
         };
         encode_hdr_png(&tmp, &bitmap, HdrTransfer::Hlg).unwrap();
@@ -346,14 +341,13 @@ mod tests {
     fn synthetic_hdr10_pipeline_tonemaps_and_roundtrips_cicp() {
         use crate::capture::tonemapping::{hdr10_to_sdr_bt2390, TonemapParams};
 
-        // 4x1 PQ gradient: black, ~mid gray, bright highlight, PQ peak
-        let pq_levels = [0u16, 33124, 49854, 65535];
+        // 4x1 PQ gradient in packed 10-bit: black, ~mid gray, bright
+        // highlight, PQ peak, opaque alpha
+        let pq_levels = [0u32, 517, 778, 1023];
         let mut data = Vec::new();
         for level in pq_levels {
-            for _ in 0..3 {
-                data.extend_from_slice(&level.to_le_bytes());
-            }
-            data.extend_from_slice(&65535u16.to_le_bytes());
+            let word = level | (level << 10) | (level << 20) | (3 << 30);
+            data.extend_from_slice(&word.to_le_bytes());
         }
         let bitmap = HdrBitmap {
             width: 4,
@@ -364,8 +358,8 @@ mod tests {
         };
 
         let pq_u16: Vec<u16> = data
-            .chunks_exact(2)
-            .map(|bytes| u16::from_le_bytes([bytes[0], bytes[1]]))
+            .chunks_exact(4)
+            .flat_map(|c| unpack_rgb10a2(u32::from_le_bytes([c[0], c[1], c[2], c[3]])))
             .collect();
         let sdr = hdr10_to_sdr_bt2390(&pq_u16, 4, 1, 240.0, TonemapParams::default());
         assert_eq!((sdr.width(), sdr.height()), (4, 1));
