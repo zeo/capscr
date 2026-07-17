@@ -2550,6 +2550,21 @@ fn start_gif_recording(
     #[cfg(target_os = "linux")]
     crate::capture::set_include_cursor(cfg.capture.show_cursor);
 
+    // the recording's first grab must not catch the selector on its way
+    // out: webview teardown is queued on the main thread, and even after
+    // the surfaces are gone the compositor plays a close fade (~150ms on
+    // kwin) that a screenshot would composite. drain the queue, then sit
+    // out the fade
+    #[cfg(target_os = "linux")]
+    {
+        let (drained_tx, drained_rx) = std::sync::mpsc::channel();
+        let _ = app.run_on_main_thread(move || {
+            let _ = drained_tx.send(());
+        });
+        let _ = drained_rx.recv_timeout(Duration::from_millis(500));
+        std::thread::sleep(Duration::from_millis(300));
+    }
+
     let mut recorder = GifRecorder::new(settings).with_region(region);
     recorder.start()?;
 

@@ -22,6 +22,7 @@ format follows [keep-a-changelog](https://keepachangelog.com/en/1.1.0/) loosely.
 - on Plasma 6.7+, the recording control bar is excluded from capture the same way it is on Windows: KWin removes it from screenshots and recordings compositor-side, so it sits below or above the region and tucks inside it when there is no room, never appearing in the frames or fleeing to another monitor
 
 ### fixed
+- a linux recording's first frame no longer catches the region selector mid-teardown (its dim layer and size label could land in frame one); the first grab now waits out the compositor's close animation
 - the HDR-preserved PNG post-action actually writes an HDR PNG again: the encoder expected 16-bit pixel data while every capture source delivers packed 10-bit, so it silently fell back to SDR output every time
 - pinned screenshots no longer vanish from captures on Plasma 6.6.1+ — KWin started hiding all of a screenshotting app's own windows by default, and capscr now asks it not to, keeping pins in your shots like every other window
 - when fast GDI capture fails on Windows, the xcap fallback now resolves the monitor by position instead of an id that the two enumerators never shared
