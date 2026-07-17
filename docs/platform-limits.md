@@ -1,10 +1,11 @@
 # platform limits
 
 capscr aims for the same behaviour on Linux as on Windows, and reaches it
-everywhere the platform allows. a handful of differences remain that no amount
-of capscr code can close: they are boundaries in the OS or the Wayland
-compositor, not missing features. this file is the honest list, why each one
-exists, and what would have to change upstream to close it.
+everywhere the platform allows. this file is the honest ledger of the
+differences that were ever platform boundaries: several are now closed
+(compositors grew the missing pieces, or the bundled GNOME extension supplies
+them), and each remaining one says why it exists and what would have to
+change upstream to close it where it still stands.
 
 run `capscr --wayland-diag` on any Linux session for a live readout of which
 of these apply to that machine.
