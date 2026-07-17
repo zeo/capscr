@@ -677,10 +677,12 @@ pub mod linux_impl {
     static PLASMA_GRANT: Mutex<Option<crate::overlay::plasma_ffi::PlasmaGrant>> = Mutex::new(None);
     // keeps the kwin capture-exclusion script loaded while recording
     static EXCLUSION: Mutex<Option<crate::capture::CaptureExclusionGuard>> = Mutex::new(None);
-    // the red region frame: a plain gtk window, only ever touched on the
-    // main thread; the weak ref lets stop() reach it from anywhere
+    // the red region frame. kde gets a raw wayland client (a gtk toplevel
+    // is server-decorated there and its plasma role ignored); other
+    // desktops get a plain gtk window, only ever touched on the main
+    // thread, with the weak ref letting stop() reach it from anywhere
+    static WL_FRAME: Mutex<Option<crate::overlay::wayland_frame::WaylandFrame>> = Mutex::new(None);
     static FRAME: Mutex<Option<gtk::glib::SendWeakRef<gtk::Window>>> = Mutex::new(None);
-    static FRAME_GRANT: Mutex<Option<crate::overlay::plasma_ffi::PlasmaGrant>> = Mutex::new(None);
 
     // the blinking region outline, drawn like the windows one: a 4px red
     // ring around (not inside) the recorded rect, click-through, above
@@ -730,34 +732,25 @@ pub mod linux_impl {
 
         // x11 honours move(); wayland needs a compositor role. a frame the
         // compositor would place arbitrarily is worse than none, so on
-        // wayland it only shows once something pinned it to the region
+        // wayland it only shows once something pinned it to the region.
+        // kde never reaches this path (raw wayland frame in start())
         window.move_(x, y);
 
         if crate::capture::gui_is_wayland() {
-            let placed = match crate::overlay::plasma_ffi::pin_gtk_window(&window, x, y) {
-                Ok(grant) => {
-                    *FRAME_GRANT.lock().unwrap() = Some(grant);
-                    true
-                }
-                Err(e) => {
-                    tracing::debug!("frame plasma pinning unavailable ({e:#}); trying layer-shell");
-                    crate::shell::layer_shell::monitor_at(&window, x, y)
-                        .map(|monitor| {
-                            crate::shell::layer_shell::pin_at(
-                                &window,
-                                &monitor,
-                                crate::shell::layer_shell::LAYER_OVERLAY,
-                                x,
-                                y,
-                                false,
-                            )
-                        })
-                        .unwrap_or(false)
-                        || (crate::capture::gnome_shell::available()
-                            && crate::capture::gnome_shell::place_above("capscr frame", x, y)
-                                .is_ok())
-                }
-            };
+            let placed = crate::shell::layer_shell::monitor_at(&window, x, y)
+                .map(|monitor| {
+                    crate::shell::layer_shell::pin_at(
+                        &window,
+                        &monitor,
+                        crate::shell::layer_shell::LAYER_OVERLAY,
+                        x,
+                        y,
+                        false,
+                    )
+                })
+                .unwrap_or(false)
+                || (crate::capture::gnome_shell::available()
+                    && crate::capture::gnome_shell::place_above("capscr frame", x, y).is_ok());
             if !placed {
                 tracing::debug!("no compositor can place the region frame; skipping it");
                 window.close();
@@ -811,12 +804,25 @@ pub mod linux_impl {
         let (bar_x, bar_y) = bar_position(region, &monitors, excluded);
         let (x, y) = (bar_x as f64, bar_y as f64);
 
+        // the raw wayland frame carries its own connection; everything else
+        // (kde exclusion armed above, plasma role, position) lives with it
+        let kde_frame = crate::capture::gui_is_wayland()
+            && crate::shell::desktop() == crate::shell::DesktopEnv::Kde;
+        if kde_frame {
+            match crate::overlay::wayland_frame::WaylandFrame::show(region) {
+                Ok(frame) => *WL_FRAME.lock().unwrap() = Some(frame),
+                Err(e) => tracing::debug!("region frame unavailable: {e:#}"),
+            }
+        }
+
         let app2 = app.clone();
         let _ = app.run_on_main_thread(move || {
             if let Some(stale) = app2.get_webview_window(LABEL) {
                 let _ = stale.destroy();
             }
-            create_region_frame(region);
+            if !kde_frame {
+                create_region_frame(region);
+            }
             let url = tauri::WebviewUrl::App("recbar.html".into());
             let built = tauri::WebviewWindowBuilder::new(&app2, LABEL, url)
                 .title("capscr recording")
@@ -927,9 +933,7 @@ pub mod linux_impl {
         if let Some(grant) = PLASMA_GRANT.lock().unwrap().take() {
             grant.plasma_surface.destroy();
         }
-        if let Some(grant) = FRAME_GRANT.lock().unwrap().take() {
-            grant.plasma_surface.destroy();
-        }
+        *WL_FRAME.lock().unwrap() = None;
         let frame = FRAME.lock().unwrap().take();
         let Some(app) = crate::overlay::linux::app_handle() else {
             return;

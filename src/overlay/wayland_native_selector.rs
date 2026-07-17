@@ -1620,7 +1620,7 @@ fn cursor(
     })
 }
 
-fn create_shm_file(output_name: &str, size: u32) -> Result<(File, PathBuf)> {
+pub(super) fn create_shm_file(output_name: &str, size: u32) -> Result<(File, PathBuf)> {
     for nonce in 0..32 {
         let path = PathBuf::from(format!(
             "/dev/shm/capscr-native-{}-{}-{nonce}",
