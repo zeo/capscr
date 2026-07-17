@@ -542,6 +542,10 @@ pub mod linux_impl {
     const LABEL: &str = "recbar";
     const BAR_W: f64 = 148.0;
     const BAR_H: f64 = 36.0;
+    // matches the windows overlay: a 4px ring just outside the region,
+    // blinking every 500ms
+    const FRAME_BORDER: i32 = 4;
+    const FRAME_FLASH_MS: u32 = 500;
 
     // where the stop-control bar sits relative to the recorded region: below
     // its bottom-right corner, then above it. when the bar is excluded from
@@ -673,6 +677,113 @@ pub mod linux_impl {
     static PLASMA_GRANT: Mutex<Option<crate::overlay::plasma_ffi::PlasmaGrant>> = Mutex::new(None);
     // keeps the kwin capture-exclusion script loaded while recording
     static EXCLUSION: Mutex<Option<crate::capture::CaptureExclusionGuard>> = Mutex::new(None);
+    // the red region frame: a plain gtk window, only ever touched on the
+    // main thread; the weak ref lets stop() reach it from anywhere
+    static FRAME: Mutex<Option<gtk::glib::SendWeakRef<gtk::Window>>> = Mutex::new(None);
+    static FRAME_GRANT: Mutex<Option<crate::overlay::plasma_ffi::PlasmaGrant>> = Mutex::new(None);
+
+    // the blinking region outline, drawn like the windows one: a 4px red
+    // ring around (not inside) the recorded rect, click-through, above
+    // other windows where the compositor lets us. main thread only.
+    fn create_region_frame(region: Rectangle) {
+        use gtk::prelude::*;
+
+        let x = region.x - FRAME_BORDER;
+        let y = region.y - FRAME_BORDER;
+        let width = region.width as i32 + FRAME_BORDER * 2;
+        let height = region.height as i32 + FRAME_BORDER * 2;
+
+        let window = gtk::Window::new(gtk::WindowType::Toplevel);
+        window.set_title("capscr frame");
+        window.set_decorated(false);
+        window.set_skip_taskbar_hint(true);
+        window.set_skip_pager_hint(true);
+        window.set_accept_focus(false);
+        window.set_keep_above(true);
+        window.set_app_paintable(true);
+        window.set_default_size(width, height);
+        window.set_size_request(width, height);
+        if let Some(visual) = gtk::prelude::WidgetExt::screen(&window).and_then(|screen| screen.rgba_visual()) {
+            window.set_visual(Some(&visual));
+        }
+
+        let flash_on = std::rc::Rc::new(std::cell::Cell::new(true));
+        {
+            let flash_on = flash_on.clone();
+            window.connect_draw(move |widget, cr| {
+                let (w, h) = (widget.allocated_width() as f64, widget.allocated_height() as f64);
+                cr.set_operator(gtk::cairo::Operator::Source);
+                cr.set_source_rgba(0.0, 0.0, 0.0, 0.0);
+                let _ = cr.paint();
+                if flash_on.get() {
+                    let b = FRAME_BORDER as f64;
+                    cr.set_source_rgba(1.0, 0.0, 0.0, 1.0);
+                    cr.rectangle(0.0, 0.0, w, b);
+                    cr.rectangle(0.0, h - b, w, b);
+                    cr.rectangle(0.0, b, b, h - b * 2.0);
+                    cr.rectangle(w - b, b, b, h - b * 2.0);
+                    let _ = cr.fill();
+                }
+                gtk::glib::Propagation::Proceed
+            });
+        }
+
+        // x11 honours move(); wayland needs a compositor role. a frame the
+        // compositor would place arbitrarily is worse than none, so on
+        // wayland it only shows once something pinned it to the region
+        window.move_(x, y);
+
+        if crate::capture::gui_is_wayland() {
+            let placed = match crate::overlay::plasma_ffi::pin_gtk_window(&window, x, y) {
+                Ok(grant) => {
+                    *FRAME_GRANT.lock().unwrap() = Some(grant);
+                    true
+                }
+                Err(e) => {
+                    tracing::debug!("frame plasma pinning unavailable ({e:#}); trying layer-shell");
+                    crate::shell::layer_shell::monitor_at(&window, x, y)
+                        .map(|monitor| {
+                            crate::shell::layer_shell::pin_at(
+                                &window,
+                                &monitor,
+                                crate::shell::layer_shell::LAYER_OVERLAY,
+                                x,
+                                y,
+                                false,
+                            )
+                        })
+                        .unwrap_or(false)
+                        || (crate::capture::gnome_shell::available()
+                            && crate::capture::gnome_shell::place_above("capscr frame", x, y)
+                                .is_ok())
+                }
+            };
+            if !placed {
+                tracing::debug!("no compositor can place the region frame; skipping it");
+                window.close();
+                return;
+            }
+        }
+
+        window.show_all();
+        // no pixel of the frame takes input; clicks land on whatever is under
+        // it, exactly like the WS_EX_TRANSPARENT windows overlay
+        window.input_shape_combine_region(Some(&gtk::cairo::Region::create()));
+
+        let weak: gtk::glib::SendWeakRef<gtk::Window> = gtk::prelude::ObjectExt::downgrade(&window).into();
+        *FRAME.lock().unwrap() = Some(weak.clone());
+        gtk::glib::timeout_add_local(
+            std::time::Duration::from_millis(FRAME_FLASH_MS as u64),
+            move || {
+                let Some(window) = weak.upgrade() else {
+                    return gtk::glib::ControlFlow::Break;
+                };
+                flash_on.set(!flash_on.get());
+                window.queue_draw();
+                gtk::glib::ControlFlow::Continue
+            },
+        );
+    }
 
     pub fn start(region: Rectangle, _max_secs: u64, on_stop: Box<dyn Fn() + Send>) {
         let Some(app) = crate::overlay::linux::app_handle() else {
@@ -705,6 +816,7 @@ pub mod linux_impl {
             if let Some(stale) = app2.get_webview_window(LABEL) {
                 let _ = stale.destroy();
             }
+            create_region_frame(region);
             let url = tauri::WebviewUrl::App("recbar.html".into());
             let built = tauri::WebviewWindowBuilder::new(&app2, LABEL, url)
                 .title("capscr recording")
@@ -815,11 +927,19 @@ pub mod linux_impl {
         if let Some(grant) = PLASMA_GRANT.lock().unwrap().take() {
             grant.plasma_surface.destroy();
         }
+        if let Some(grant) = FRAME_GRANT.lock().unwrap().take() {
+            grant.plasma_surface.destroy();
+        }
+        let frame = FRAME.lock().unwrap().take();
         let Some(app) = crate::overlay::linux::app_handle() else {
             return;
         };
         let app2 = app.clone();
         let _ = app.run_on_main_thread(move || {
+            use gtk::prelude::GtkWindowExt;
+            if let Some(window) = frame.as_ref().and_then(|weak| weak.upgrade()) {
+                window.close();
+            }
             if let Some(w) = app2.get_webview_window(LABEL) {
                 let _ = w.destroy();
             }

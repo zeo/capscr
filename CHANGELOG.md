@@ -18,6 +18,7 @@ format follows [keep-a-changelog](https://keepachangelog.com/en/1.1.0/) loosely.
 
 - **HDR capture on GNOME 50+**: fullscreen captures of a monitor running HDR now pull a 10-bit PQ frame off the screencast portal and go through the same tonemap (and optional HDR-preserved PNG) pipeline as Windows, instead of settling for the compositor's 8-bit screenshot; the hdr settings pane and history filter appear on sessions that support it
 - a **GNOME companion extension** (installable from Settings → general on a GNOME session) that closes the three GNOME gaps at once: window-mode capture picks windows in capscr's own overlay instead of GNOME's portal dialog, the recording bar and pinned screenshots stay above fullscreen windows and land where they should, and a top-bar capture menu stands in for the missing system tray
+- linux recordings show the same blinking red frame around the recorded region as Windows, sitting just outside the captured pixels and passing clicks through; it appears on X11, KDE, wlroots compositors, and GNOME with the companion extension
 - on Plasma 6.7+, the recording control bar is excluded from capture the same way it is on Windows: KWin removes it from screenshots and recordings compositor-side, so it sits below or above the region and tucks inside it when there is no room, never appearing in the frames or fleeing to another monitor
 
 ### fixed
