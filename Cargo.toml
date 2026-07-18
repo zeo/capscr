@@ -1,6 +1,6 @@
 [package]
 name = "capscr"
-version = "0.5.44"
+version = "0.5.45"
 edition = "2021"
 description = "Fast HDR-aware screen capture for Windows and Linux — tray-first, signed updates, no telemetry."
 authors = ["rot <96458554+rotlove@users.noreply.github.com>"]

@@ -2,7 +2,7 @@
 
 format follows [keep-a-changelog](https://keepachangelog.com/en/1.1.0/) loosely. dates are release-tag dates.
 
-## [unreleased]
+## [0.5.45] - 2026-07-18
 
 ### added
 - **Linux support.** capscr now runs on Linux (X11 and Wayland), shipped as deb, rpm, and AppImage packages, with the auto-updater tracking the AppImage and walking deb/rpm installs through their native update. what carries over:
