@@ -2,6 +2,11 @@
 
 format follows [keep-a-changelog](https://keepachangelog.com/en/1.1.0/) loosely. dates are release-tag dates.
 
+## [Unreleased]
+
+### fixed
+- **fullscreen game capture on Wayland.** the wayland still chain now ends in a screencast source, so grabbing a fullscreen game no longer fails when the one-shot screenshot apis return an incomplete frame. this hits KWin on NVIDIA in particular, where a direct-scanned-out fullscreen buffer reads back empty through ScreenShot2 (and therefore through the screenshot portal too). screencast pulls the frame off a pipewire node instead, so it works where the cheaper sources give up. it stays the last resort behind kwin-screenshot2, ext-image-copy, wlr-screencopy, and the screenshot portal, and only trips a one-time source picker (the choice is remembered by restore token after that), so normal desktop captures keep taking the fast path with no prompt.
+
 ## [0.5.45] - 2026-07-18
 
 ### added

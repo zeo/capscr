@@ -22,6 +22,7 @@ pub(crate) enum SourceKind {
     ExtImageCopy,
     WlrScreencopy,
     PortalScreenshot,
+    PortalScreencast,
 }
 
 impl SourceKind {
@@ -31,6 +32,7 @@ impl SourceKind {
             Self::ExtImageCopy => "ext-image-copy",
             Self::WlrScreencopy => "wlr-screencopy",
             Self::PortalScreenshot => "portal-screenshot",
+            Self::PortalScreencast => "portal-screencast",
         }
     }
 
@@ -40,6 +42,7 @@ impl SourceKind {
             "ext-image-copy" => Some(Self::ExtImageCopy),
             "wlr-screencopy" => Some(Self::WlrScreencopy),
             "portal-screenshot" => Some(Self::PortalScreenshot),
+            "portal-screencast" => Some(Self::PortalScreencast),
             _ => None,
         }
     }
@@ -59,6 +62,11 @@ fn compute_order(kwin_service: bool, caps: crate::shell::WaylandGlobals) -> Vec<
     // the portal answers everywhere a portal backend runs; keep it as the
     // unconditional last resort
     order.push(SourceKind::PortalScreenshot);
+    // screencast reads back fullscreen and direct-scanout buffers that the
+    // one-shot screenshot apis return incomplete on (notably kwin on nvidia),
+    // at the cost of a session handshake and a one-time source picker, so it
+    // sits behind every cheaper source as the true last resort
+    order.push(SourceKind::PortalScreencast);
     order
 }
 
@@ -87,9 +95,13 @@ pub(crate) fn still_order() -> &'static [SourceKind] {
     })
 }
 
-// true when the chain has nothing better than one-shot portal screenshots
+// true when the chain has no direct-protocol source, only the portal-based
+// ones. the whole-desktop portal shortcut in screen.rs relies on this staying
+// true on portal-only desktops (gnome) even now that screencast joins the tail
 pub(crate) fn portal_only() -> bool {
-    still_order() == [SourceKind::PortalScreenshot]
+    still_order()
+        .iter()
+        .all(|kind| matches!(kind, SourceKind::PortalScreenshot | SourceKind::PortalScreencast))
 }
 
 // persistent ext-image-copy session shared by the still paths; recreated once
@@ -108,6 +120,15 @@ fn ext_grab_output(name: &str, cursor: bool) -> Result<RgbaImage> {
             slot.as_mut().unwrap().grab_output(name, cursor)
         }
     }
+}
+
+// one-shot screencast still: open a fresh session, pull a frame, drop it so
+// the "screen is being shared" indicator only flashes for the grab instead of
+// staying lit. this is the last-resort source, reached only when the cheaper
+// ones failed, so the session spin-up cost is acceptable
+fn screencast_grab(x: i32, y: i32, width: u32, height: u32, cursor: bool) -> Result<RgbaImage> {
+    let mut stream = super::pipewire_stream::PipeWireFrameStream::open(cursor)?;
+    stream.grab(x, y, width, height)
 }
 
 fn monitor_by_name(name: &str) -> Result<MonitorInfo> {
@@ -158,6 +179,13 @@ pub(crate) fn grab_monitor(monitor: &MonitorInfo) -> Result<RgbaImage> {
         SourceKind::ExtImageCopy => ext_grab_output(&monitor.name, include_cursor()),
         SourceKind::WlrScreencopy => wlroots_grab(monitor),
         SourceKind::PortalScreenshot => portal_grab_monitor(monitor),
+        SourceKind::PortalScreencast => screencast_grab(
+            monitor.x,
+            monitor.y,
+            monitor.width,
+            monitor.height,
+            include_cursor(),
+        ),
     })
 }
 
@@ -168,6 +196,16 @@ pub(crate) fn freeze_output(name: &str) -> Result<RgbaImage> {
         SourceKind::ExtImageCopy => ext_grab_output(name, include_cursor()),
         SourceKind::WlrScreencopy => wlroots_freeze_output(name),
         SourceKind::PortalScreenshot => portal_grab_monitor(&monitor_by_name(name)?),
+        SourceKind::PortalScreencast => {
+            let monitor = monitor_by_name(name)?;
+            screencast_grab(
+                monitor.x,
+                monitor.y,
+                monitor.width,
+                monitor.height,
+                include_cursor(),
+            )
+        }
     })
 }
 
@@ -210,7 +248,9 @@ impl RecordingSource {
                 // session: pipewire frames, cursor embedded by the
                 // compositor, restore token skipping the picker after the
                 // first run
-                SourceKind::PortalScreenshot => {
+                // both portal sources record through the same screencast
+                // stream; the still chain distinguishes them, recording does not
+                SourceKind::PortalScreenshot | SourceKind::PortalScreencast => {
                     super::pipewire_stream::PipeWireFrameStream::open(cursor).map(Self::PipeWire)
                 }
             };
@@ -270,11 +310,16 @@ mod tests {
 
     #[test]
     fn order_follows_capabilities() {
-        // kde: screenshot2 first, ext/screencopy never advertised
+        // kde: screenshot2 first, ext/screencopy never advertised, screencast
+        // as the fullscreen-capable last resort
         let kde = compute_order(true, WaylandGlobals::default());
         assert_eq!(
             kde,
-            vec![SourceKind::KwinScreenshot2, SourceKind::PortalScreenshot],
+            vec![
+                SourceKind::KwinScreenshot2,
+                SourceKind::PortalScreenshot,
+                SourceKind::PortalScreencast,
+            ],
         );
         // wlroots: modern protocol ahead of deprecated screencopy
         let wlroots = compute_order(
@@ -291,10 +336,14 @@ mod tests {
                 SourceKind::ExtImageCopy,
                 SourceKind::WlrScreencopy,
                 SourceKind::PortalScreenshot,
+                SourceKind::PortalScreencast,
             ],
         );
-        // gnome: nothing advertised, portal carries stills
+        // gnome: nothing advertised, the two portal sources carry stills
         let gnome = compute_order(false, WaylandGlobals::default());
-        assert_eq!(gnome, vec![SourceKind::PortalScreenshot]);
+        assert_eq!(
+            gnome,
+            vec![SourceKind::PortalScreenshot, SourceKind::PortalScreencast],
+        );
     }
 }
