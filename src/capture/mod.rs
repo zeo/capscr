@@ -770,6 +770,12 @@ pub fn wayland_diagnostic() {
         probe("portal-screenshot", &monitor.name, || {
             portal_grab_monitor(monitor)
         });
+        // the last-resort source: reads back fullscreen buffers the one-shot
+        // apis miss, at the cost of a one-time picker this probe will trip
+        probe("portal-screencast", &monitor.name, || {
+            let mut stream = pipewire_stream::PipeWireFrameStream::open(false)?;
+            stream.grab(monitor.x, monitor.y, monitor.width, monitor.height)
+        });
     }
 
     // hdr readiness: what each output's signal looks like, and whether any
