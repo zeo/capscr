@@ -45,7 +45,7 @@ type Tab = {
   context: string;
 };
 
-// matches the updater endpoint host in tauri.conf.json
+// release page fallback when the shared updater is unavailable
 const RELEASES_URL = "https://github.com/zeo/capscr/releases/latest";
 
 const TABS: Tab[] = [

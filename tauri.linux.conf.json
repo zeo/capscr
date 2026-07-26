@@ -1,5 +1,6 @@
 {
   "bundle": {
+    "active": true,
     "targets": ["deb", "rpm", "appimage"],
     "resources": {
       "linux/gnome-extension/extension.js": "gnome-extension/extension.js",

@@ -4,6 +4,12 @@ format follows [keep-a-changelog](https://keepachangelog.com/en/1.1.0/) loosely.
 
 ## [Unreleased]
 
+## [0.5.51] - 2026-07-26
+
+### fixed
+- Windows managed packages contain the signed application executable
+- Windows releases stop producing MSI and legacy updater artifacts
+
 ## [0.5.50] - 2026-07-26
 
 ### fixed
