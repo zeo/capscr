@@ -72,19 +72,9 @@ jobs:
         shell: powershell
         env:
           TERMIE_INSTALLER_PUBLIC_KEY: ${{ vars.TERMIE_INSTALLER_PUBLIC_KEY }}
-          CERTIFICATE_THUMBPRINT: ${{ vars.WINDOWS_CERTIFICATE_THUMBPRINT }}
-          TIMESTAMP_URL: ${{ vars.WINDOWS_TIMESTAMP_URL }}
         run: |
           cargo build --release --locked --manifest-path .rot-installer\Cargo.toml --bin rot-installer --bin rot-pack
           if ($LASTEXITCODE -ne 0) { throw "shared installer build failed" }
-          $installer = '.rot-installer\target\release\rot-installer.exe'
-          $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" |
-            Sort-Object FullName -Descending | Select-Object -First 1
-          if (-not $signtool) { throw "signtool is unavailable" }
-          if ([string]::IsNullOrWhiteSpace($env:CERTIFICATE_THUMBPRINT)) { throw "certificate thumbprint is unavailable" }
-          $timestamp = if ($env:TIMESTAMP_URL) { $env:TIMESTAMP_URL } else { "http://timestamp.digicert.com" }
-          & $signtool.FullName sign /sha1 $env:CERTIFICATE_THUMBPRINT /fd sha256 /tr $timestamp /td sha256 $installer
-          if ($LASTEXITCODE -ne 0) { throw "installer signing failed" }
 
       - name: Build Windows application
         shell: powershell

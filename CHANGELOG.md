@@ -4,6 +4,11 @@ format follows [keep-a-changelog](https://keepachangelog.com/en/1.1.0/) loosely.
 
 ## [Unreleased]
 
+## [0.5.53] - 2026-07-27
+
+### fixed
+- offline setup is signed after its payload is embedded
+
 ## [0.5.52] - 2026-07-27
 
 ### fixed
