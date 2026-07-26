@@ -1932,8 +1932,8 @@ pub fn prewarm_hub_window(app: &tauri::App) -> tauri::Result<()> {
     let url = tauri::WebviewUrl::App("index.html".into());
     let mut builder = tauri::WebviewWindowBuilder::new(app, HUB_LABEL, url)
         .title("capscr")
-        .inner_size(900.0, 640.0)
-        .min_inner_size(720.0, 480.0)
+        .inner_size(840.0, 560.0)
+        .min_inner_size(420.0, 280.0)
         .resizable(true)
         .decorations(false)
         .visible(false);
@@ -1943,12 +1943,44 @@ pub fn prewarm_hub_window(app: &tauri::App) -> tauri::Result<()> {
     }
 
     let window = builder.build()?;
+    fit_window_to_work_area(&window);
     // intercept the close button so the WebView2 process stays alive for the
     // next tray-click. Without this we pay multi-second cold-boot every time
     // the user closes and re-opens the hub, even after the startup prewarm.
     intercept_hub_close(window.clone());
     heal_stuck_boot(window);
     Ok(())
+}
+
+fn fit_window_to_work_area(window: &tauri::WebviewWindow) {
+    let Ok(Some(monitor)) = window.current_monitor() else {
+        return;
+    };
+    let Ok(size) = window.inner_size() else {
+        return;
+    };
+    let work_area = monitor.work_area();
+    let width = size.width.min(work_area.size.width.saturating_sub(16));
+    let height = size.height.min(work_area.size.height.saturating_sub(16));
+    if width != size.width || height != size.height {
+        let _ = window.set_size(tauri::PhysicalSize::new(width, height));
+    }
+    let Ok(position) = window.outer_position() else {
+        return;
+    };
+    let max_x = work_area
+        .position
+        .x
+        .saturating_add_unsigned(work_area.size.width.saturating_sub(width));
+    let max_y = work_area
+        .position
+        .y
+        .saturating_add_unsigned(work_area.size.height.saturating_sub(height));
+    let x = position.x.clamp(work_area.position.x, max_x);
+    let y = position.y.clamp(work_area.position.y, max_y);
+    if x != position.x || y != position.y {
+        let _ = window.set_position(tauri::PhysicalPosition::new(x, y));
+    }
 }
 
 fn intercept_hub_close(window: tauri::WebviewWindow) {
@@ -2002,6 +2034,7 @@ fn intercept_hub_close(window: tauri::WebviewWindow) {
 
 pub fn open_hub_window(app: &AppHandle) -> tauri::Result<()> {
     if let Some(window) = app.get_webview_window(HUB_LABEL) {
+        fit_window_to_work_area(&window);
         let _ = window.show();
         let _ = window.unminimize();
         let _ = window.set_focus();
@@ -2010,8 +2043,8 @@ pub fn open_hub_window(app: &AppHandle) -> tauri::Result<()> {
     let url = tauri::WebviewUrl::App("index.html".into());
     let mut builder = tauri::WebviewWindowBuilder::new(app, HUB_LABEL, url)
         .title("capscr")
-        .inner_size(900.0, 640.0)
-        .min_inner_size(720.0, 480.0)
+        .inner_size(840.0, 560.0)
+        .min_inner_size(420.0, 280.0)
         .resizable(true)
         .decorations(false)
         .visible(true);
@@ -2021,6 +2054,7 @@ pub fn open_hub_window(app: &AppHandle) -> tauri::Result<()> {
     }
 
     let window = builder.build()?;
+    fit_window_to_work_area(&window);
     intercept_hub_close(window.clone());
     heal_stuck_boot(window);
     Ok(())
@@ -2033,6 +2067,7 @@ pub fn open_editor_window(app: &AppHandle, image_path: &str) -> tauri::Result<()
     *state.editor_image_path.lock().unwrap() = Some(image_path.to_string());
 
     if let Some(window) = app.get_webview_window(EDITOR_LABEL) {
+        fit_window_to_work_area(&window);
         let _ = window.show();
         let _ = window.set_focus();
         let _ = window.emit("capscr://editor-load", image_path.to_string());
@@ -2045,8 +2080,8 @@ pub fn open_editor_window(app: &AppHandle, image_path: &str) -> tauri::Result<()
     let url = tauri::WebviewUrl::App("index.html".into());
     let mut builder = tauri::WebviewWindowBuilder::new(app, EDITOR_LABEL, url)
         .title("capscr — edit")
-        .inner_size(1200.0, 800.0)
-        .min_inner_size(800.0, 600.0)
+        .inner_size(960.0, 640.0)
+        .min_inner_size(420.0, 280.0)
         .resizable(true)
         .decorations(false)
         .visible(true);
@@ -2056,6 +2091,7 @@ pub fn open_editor_window(app: &AppHandle, image_path: &str) -> tauri::Result<()
     }
 
     let window = builder.build()?;
+    fit_window_to_work_area(&window);
     watch_editor_navigation(app, window);
     Ok(())
 }

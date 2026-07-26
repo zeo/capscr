@@ -118,6 +118,81 @@ textarea,
   border: 1px solid var(--rule-2);
 }
 
+.resize-handle {
+  position: fixed;
+  z-index: 2000;
+}
+
+.resize-handle.is-disabled {
+  pointer-events: none;
+}
+
+.resize-handle-n,
+.resize-handle-s {
+  left: 8px;
+  right: 8px;
+  height: 6px;
+}
+
+.resize-handle-e,
+.resize-handle-w {
+  top: 8px;
+  bottom: 8px;
+  width: 6px;
+}
+
+.resize-handle-n {
+  top: 0;
+  cursor: ns-resize;
+}
+
+.resize-handle-ne {
+  top: 0;
+  right: 0;
+  cursor: nesw-resize;
+}
+
+.resize-handle-e {
+  right: 0;
+  cursor: ew-resize;
+}
+
+.resize-handle-se {
+  right: 0;
+  bottom: 0;
+  cursor: nwse-resize;
+}
+
+.resize-handle-s {
+  bottom: 0;
+  cursor: ns-resize;
+}
+
+.resize-handle-sw {
+  bottom: 0;
+  left: 0;
+  cursor: nesw-resize;
+}
+
+.resize-handle-w {
+  left: 0;
+  cursor: ew-resize;
+}
+
+.resize-handle-nw {
+  top: 0;
+  left: 0;
+  cursor: nwse-resize;
+}
+
+.resize-handle-ne,
+.resize-handle-se,
+.resize-handle-sw,
+.resize-handle-nw {
+  width: 10px;
+  height: 10px;
+}
+
 /* no corner registration marks — kept the diagnostic-console rules
    without the gimmicky cross-hair ticks */
 
@@ -1671,6 +1746,102 @@ kbd {
   font-family: inherit;
   font-size: 11px;
   color: var(--text-1);
+}
+
+@media (max-width: 620px) {
+  :root {
+    --titlebar-h: 30px;
+    --statusbar-h: 20px;
+  }
+
+  .app {
+    grid-template-rows: var(--titlebar-h) 38px 1fr var(--statusbar-h);
+    grid-template-columns: 1fr;
+    grid-template-areas:
+      "titlebar"
+      "sidebar"
+      "content"
+      "statusbar";
+  }
+
+  .sidebar {
+    border-right: 0;
+    border-bottom: 1px solid var(--rule);
+  }
+
+  .sidebar-label,
+  .sidebar-foot {
+    display: none;
+  }
+
+  .sidebar-nav {
+    flex-direction: row;
+    padding: 0;
+  }
+
+  .nav-item {
+    grid-template-columns: 24px 1fr;
+    height: 37px;
+    min-width: 0;
+    padding: 0 8px;
+    font-size: 11px;
+  }
+
+  .content {
+    padding: 16px 18px 28px;
+  }
+
+  .update-banner {
+    margin: -16px -18px 14px;
+    align-items: flex-start;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 9px 14px;
+  }
+
+  .update-banner-text {
+    flex-basis: calc(100% - 22px);
+  }
+
+  .statusbar {
+    padding: 0 8px;
+  }
+
+  .statusbar .seg {
+    padding: 0 7px;
+  }
+
+  .statusbar .seg:nth-of-type(3),
+  .statusbar .seg-sep:nth-of-type(4) {
+    display: none;
+  }
+}
+
+@media (max-width: 470px) {
+  .nav-item {
+    display: flex;
+    justify-content: center;
+    padding: 0 4px;
+  }
+
+  .nav-item-label {
+    display: none;
+  }
+
+  .titlebar-btn {
+    width: 38px;
+  }
+}
+
+@media (max-height: 420px) {
+  .content {
+    padding-top: 12px;
+    padding-bottom: 18px;
+  }
+
+  .update-banner {
+    margin-top: -12px;
+  }
 }
 
 /* ---------------- editor HDR banner ---------------- */

@@ -4,6 +4,11 @@ format follows [keep-a-changelog](https://keepachangelog.com/en/1.1.0/) loosely.
 
 ## [Unreleased]
 
+## [0.5.47] - 2026-07-26
+
+### fixed
+- the hub and editor now fit small high-DPI work areas, restore inside the active monitor, switch to compact navigation when narrow, and expose resize handles on every edge and corner
+
 ## [0.5.46] - 2026-07-26
 
 ### changed
