@@ -4,6 +4,11 @@ format follows [keep-a-changelog](https://keepachangelog.com/en/1.1.0/) loosely.
 
 ## [Unreleased]
 
+## [0.5.48] - 2026-07-26
+
+### fixed
+- shared installer packages use Capscr's existing updater signer, including legacy keys that the standalone pack tool cannot open
+
 ## [0.5.47] - 2026-07-26
 
 ### fixed
