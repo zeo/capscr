@@ -1280,13 +1280,11 @@ fn run_post_action(
             Ok(Some(path))
         }
         PostCaptureAction::DoNothing => {
-            let history_path =
-                do_save_to_history_async(image.clone(), hdr_bitmap.clone(), app.clone());
             Sound::Screenshot.play_if_enabled(config.post_capture.play_sound);
             if config.ui.show_notifications {
                 let _ = show_notification("Capture complete", "Screenshot taken successfully.");
             }
-            Ok(history_path)
+            Ok(None)
         }
     }
 }
@@ -1294,14 +1292,31 @@ fn run_post_action(
 pub fn open_in_default_image_editor(path: &std::path::Path) -> anyhow::Result<()> {
     #[cfg(windows)]
     {
-        use std::os::windows::process::CommandExt;
-        std::process::Command::new("cmd")
-            .args(["/C", "start", "\"\"", "/B"])
-            .arg(path)
-            // CREATE_NO_WINDOW: cmd is a console app and the gui-subsystem
-            // parent would otherwise flash a console window
-            .creation_flags(0x0800_0000)
-            .spawn()?;
+        use std::os::windows::ffi::OsStrExt;
+        use windows::core::{w, PCWSTR};
+        use windows::Win32::Foundation::HWND;
+        use windows::Win32::UI::Shell::ShellExecuteW;
+        use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+
+        let path_wide: Vec<u16> = path
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        let outcome = unsafe {
+            ShellExecuteW(
+                HWND::default(),
+                w!("open"),
+                PCWSTR(path_wide.as_ptr()),
+                PCWSTR::null(),
+                PCWSTR::null(),
+                SW_SHOWNORMAL,
+            )
+        };
+        let status = outcome.0 as isize;
+        if status <= 32 {
+            anyhow::bail!("ShellExecuteW failed with code {status}");
+        }
     }
     #[cfg(not(windows))]
     {

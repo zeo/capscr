@@ -90,7 +90,6 @@ export function Destinations() {
                   >
                     <option value="Imgur">imgur (anonymous)</option>
                     <option value="Custom">custom http</option>
-                    <option value="Ftp">ftp</option>
                     <option value="Sftp">sftp (ssh)</option>
                     <option value="S3">S3 Compatible</option>
                   </select>
@@ -271,7 +270,7 @@ export function Destinations() {
                 <div class="field">
                   <label class="field-label">tls</label>
                   <div class="field-control">
-                    <span class="field-hint">plain ftp only — use sftp for an encrypted transfer</span>
+                    <span class="field-hint">plain FTP is disabled; choose SFTP</span>
                   </div>
                 </div>
                 <div class="field">
@@ -302,11 +301,11 @@ export function Destinations() {
                     <button
                       class="btn"
                       data-variant="ghost"
-                      disabled={testing() === "Ftp"}
+                      disabled
                       onClick={() => test("Ftp")}
                     >
                       <Zap size={12} stroke-width={1.5} />
-                      {testing() === "Ftp" ? "probing..." : "test connection"}
+                      disabled
                     </button>
                     <span class="field-hint">
                       connects, logs in, cwd's to remote dir. doesn't upload.
@@ -417,7 +416,7 @@ export function Destinations() {
                       browse
                     </button>
                     <span class="field-hint">
-                      openssh format. ed25519 / rsa / ecdsa supported.
+                      openssh format. ed25519 and ecdsa supported.
                     </span>
                   </div>
                 </div>

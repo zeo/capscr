@@ -4,6 +4,14 @@ format follows [keep-a-changelog](https://keepachangelog.com/en/1.1.0/) loosely.
 
 ## [Unreleased]
 
+### security
+- updated the SSH transport to russh 0.62.4, which fixes the current remote denial-of-service advisories; RSA keys are disabled to avoid the unresolved timing side-channel in the Rust RSA implementation
+- WebAssembly plugins now get a 64 MiB memory limit by default and can never request more than 256 MiB
+- marketplace requests reject HTTPS downgrades, stop after five redirects, and enforce the registry response limit while reading
+- plain FTP is disabled because it exposes credentials and captures in transit; existing FTP settings remain visible for migration to SFTP
+- clipboard-only captures are no longer retained in history unless the user explicitly enables that setting
+- opening a capture in its default Windows editor no longer passes the file path through `cmd.exe`
+
 ### fixed
 - **fullscreen game capture on Wayland.** the wayland still chain now ends in a screencast source, so grabbing a fullscreen game no longer fails when the one-shot screenshot apis return an incomplete frame. this hits KWin on NVIDIA in particular, where a direct-scanned-out fullscreen buffer reads back empty through ScreenShot2 (and therefore through the screenshot portal too). screencast pulls the frame off a pipewire node instead, so it works where the cheaper sources give up. it stays the last resort behind kwin-screenshot2, ext-image-copy, wlr-screencopy, and the screenshot portal, and only trips a one-time source picker (the choice is remembered by restore token after that), so normal desktop captures keep taking the fast path with no prompt.
 

@@ -446,7 +446,7 @@ pub struct UiConfig {
     pub auto_start: bool,
     #[serde(default = "default_true")]
     pub check_updates_on_launch: bool,
-    #[serde(default = "default_true")]
+    #[serde(default)]
     pub save_clipboard_to_history: bool,
     // set once the user dismisses the "no system tray" first-run banner, so
     // it never nags again on tray-less desktops (vanilla gnome)
@@ -470,7 +470,7 @@ impl Default for UiConfig {
             // launch-time reconcile would otherwise re-add it every boot
             auto_start: false,
             check_updates_on_launch: true,
-            save_clipboard_to_history: true,
+            save_clipboard_to_history: false,
             tray_hint_dismissed: false,
         }
     }
@@ -550,7 +550,6 @@ impl UploadDestination {
         &[
             UploadDestination::Imgur,
             UploadDestination::Custom,
-            UploadDestination::Ftp,
             UploadDestination::Sftp,
             UploadDestination::S3,
         ]

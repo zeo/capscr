@@ -46,7 +46,7 @@ pub struct RuntimeSpec {
     /// path to the artefact, relative to the plugin's dir
     #[serde(default = "default_wasm_file")]
     pub file: String,
-    /// per-instantiation memory cap, in bytes. None = wasmtime default
+    /// per-instantiation memory cap, in bytes; the host supplies a bounded default
     #[serde(default)]
     pub memory_max_bytes: Option<usize>,
     /// tunes the per-hook epoch deadline (ms). None = ~500ms default. fuel is

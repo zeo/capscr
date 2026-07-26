@@ -768,76 +768,11 @@ fn is_transient_upload_error(e: &anyhow::Error) -> bool {
     transient_markers.iter().any(|m| text.contains(m))
 }
 
-// connect + auth + cwd dry-run for the FTP target. used by the
-// `test_upload_connection` command so users can validate credentials
-// without doing an actual capture upload. logs out cleanly on every exit
-// path; never writes anything to the remote.
-pub fn test_connection_ftp(target: &FtpTarget) -> Result<Vec<TestStep>> {
-    use suppaftp::FtpStream;
-    let mut steps: Vec<TestStep> = Vec::new();
-
-    if let Err(e) = validate_host(&target.host) {
-        steps.push(TestStep::fail("validate-host", e.to_string()));
-        return Ok(steps);
-    }
-    steps.push(TestStep::ok("validate-host", target.host.clone()));
-
-    if let Err(e) = validate_remote_dir(&target.remote_dir) {
-        steps.push(TestStep::fail("validate-remote-dir", e.to_string()));
-        return Ok(steps);
-    }
-
-    let addrs = match validate_resolved_host(&target.host, target.port.max(1)) {
-        Ok(a) => a,
-        Err(e) => {
-            steps.push(TestStep::fail("resolve-host", e.to_string()));
-            return Ok(steps);
-        }
-    };
-    steps.push(TestStep::ok(
-        "resolve-host",
-        format!("{}:{}", target.host, target.port.max(1)),
-    ));
-
-    if target.use_tls {
-        steps.push(TestStep::fail(
-            "tls-mode",
-            "FTPS not yet implemented; disable use_tls or use SFTP".into(),
-        ));
-        return Ok(steps);
-    }
-
-    // connect to the vetted address, not the hostname, so we can't be rebound
-    let mut stream = match FtpStream::connect(&addrs[..]) {
-        Ok(s) => s,
-        Err(e) => {
-            steps.push(TestStep::fail("connect", e.to_string()));
-            return Ok(steps);
-        }
-    };
-    steps.push(TestStep::ok(
-        "connect",
-        format!("{}:{}", target.host, target.port.max(1)),
-    ));
-
-    if let Err(e) = stream.login(&target.username, &target.password) {
-        let _ = stream.quit();
-        steps.push(TestStep::fail("login", e.to_string()));
-        return Ok(steps);
-    }
-    steps.push(TestStep::ok("login", target.username.clone()));
-
-    if !target.remote_dir.is_empty() {
-        if let Err(e) = stream.cwd(&target.remote_dir) {
-            let _ = stream.quit();
-            steps.push(TestStep::fail("cwd", e.to_string()));
-            return Ok(steps);
-        }
-        steps.push(TestStep::ok("cwd", target.remote_dir.clone()));
-    }
-
-    let _ = stream.quit();
-    Ok(steps)
+pub fn test_connection_ftp(_target: &FtpTarget) -> Result<Vec<TestStep>> {
+    Ok(vec![TestStep::fail(
+        "transport",
+        "plain FTP is disabled; use SFTP".into(),
+    )])
 }
 
 #[cfg(feature = "sftp")]
@@ -1206,93 +1141,8 @@ pub fn test_connection_custom(uploader: &CustomUploader) -> Result<Vec<TestStep>
     Ok(steps)
 }
 
-pub fn upload_ftp(data: &[u8], file_name: &str, target: &FtpTarget) -> Result<UploadResult> {
-    use std::io::Cursor;
-    use suppaftp::FtpStream;
-
-    validate_host(&target.host)?;
-    validate_remote_dir(&target.remote_dir)?;
-    let addrs = validate_resolved_host(&target.host, target.port.max(1))?;
-    if target.use_tls {
-        return Err(anyhow!(
-            "FTPS not yet implemented; disable use_tls or use SFTP"
-        ));
-    }
-
-    // sanitize and uniquify the remote filename so callers can't smuggle path
-    // traversal and so two captures at the same second don't collide.
-    let safe = sanitize_remote_filename(file_name);
-    let filename = uniquify_remote_filename(&safe);
-
-    // connect to the vetted address, not the hostname, so we can't be rebound
-    let mut stream = FtpStream::connect(&addrs[..]).map_err(|e| {
-        anyhow!(
-            "FTP connect to {}:{} failed: {}",
-            target.host,
-            target.port.max(1),
-            e
-        )
-    })?;
-
-    // helper to log out and tear down the socket no matter which step below
-    // failed — without this the connection lingered until the OS GC'd it,
-    // which on some servers blocked the next upload while the slot expired.
-    let close_quietly = |mut s: FtpStream| {
-        let _ = s.quit();
-    };
-    let with_cleanup = |res: Result<UploadResult>, s: FtpStream, partial: Option<&str>| {
-        if res.is_err() {
-            if let Some(name) = partial {
-                // best-effort: remove the half-written remote file so the
-                // server doesn't accumulate corrupt artefacts from retries.
-                let mut s = s;
-                let _ = s.rm(name);
-                close_quietly(s);
-            } else {
-                close_quietly(s);
-            }
-        } else {
-            close_quietly(s);
-        }
-        res
-    };
-
-    if let Err(e) = stream.login(&target.username, &target.password) {
-        return with_cleanup(Err(anyhow!("FTP login failed: {}", e)), stream, None);
-    }
-
-    if !target.remote_dir.is_empty() {
-        if let Err(e) = stream.cwd(&target.remote_dir) {
-            return with_cleanup(
-                Err(anyhow!("FTP cwd to '{}' failed: {}", target.remote_dir, e)),
-                stream,
-                None,
-            );
-        }
-    }
-
-    let mut reader = Cursor::new(data.to_vec());
-    if let Err(e) = stream.put_file(&filename, &mut reader) {
-        return with_cleanup(
-            Err(anyhow!("FTP put_file failed: {}", e)),
-            stream,
-            Some(&filename),
-        );
-    }
-
-    let url = match build_url(&target.public_url_template, &filename) {
-        Ok(u) => u,
-        Err(e) => {
-            close_quietly(stream);
-            return Err(e);
-        }
-    };
-    let result = UploadResult {
-        url,
-        delete_url: None,
-    };
-    close_quietly(stream);
-    Ok(result)
+pub fn upload_ftp(_data: &[u8], _file_name: &str, _target: &FtpTarget) -> Result<UploadResult> {
+    Err(anyhow!("plain FTP is disabled; use SFTP"))
 }
 
 #[cfg(feature = "sftp")]
@@ -1877,6 +1727,14 @@ mod tests {
         let first = shared_uploader().unwrap() as *const ImageUploader;
         let second = shared_uploader().unwrap() as *const ImageUploader;
         assert_eq!(first, second);
+    }
+
+    #[test]
+    fn ftp_transport_is_disabled() {
+        let target = FtpTarget::default();
+        let err = upload_ftp(b"capture", "capture.png", &target).unwrap_err();
+        assert!(err.to_string().contains("disabled"));
+        assert!(!test_connection_ftp(&target).unwrap()[0].ok);
     }
 
     #[test]

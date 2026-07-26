@@ -19,7 +19,7 @@ Recording: region GIF and H.264 MP4 (MP4 via ffmpeg, auto-downloaded and sha256-
 
 In-app editor: arrows, text, blur, step numbers, and crop, reached via the "open in editor" post-action.
 
-Uploads: Imgur (anonymous), custom HTTPS POST, FTP, and SFTP. HTTP and FTP go through SSRF protection (DNS double-resolve, private-IP / cloud-metadata rejection); stored FTP/SFTP passwords are kept in the per-user credential vault (DPAPI on Windows, the freedesktop Secret Service on Linux), not cleartext.
+Uploads: Imgur (anonymous), custom HTTPS POST, and SFTP. Network destinations go through SSRF protection (DNS double-resolve, private-IP / cloud-metadata rejection); stored SFTP passwords are kept in the per-user credential vault (DPAPI on Windows, the freedesktop Secret Service on Linux), not cleartext. Plain FTP is disabled because it exposes credentials and captures in transit.
 
 Tray-only at idle (~14 MB working set). The hub window allocates a webview only when opened.
 
@@ -102,7 +102,7 @@ remote_dir = "/screenshots"
 public_url_template = "https://files.example.com/{filename}"
 ```
 
-For SFTP prefer an Ed25519 key (`private_key_path`): the pure-Rust RSA implementation has a known timing side-channel (RUSTSEC-2023-0071) with no upstream fix, and Ed25519 avoids that code path.
+SFTP accepts Ed25519 and ECDSA keys through `private_key_path`. RSA key support is disabled because its Rust implementation has an unresolved timing side-channel (RUSTSEC-2023-0071).
 
 ### where capscr stores things
 

@@ -68,7 +68,7 @@ struct HostState {
     config: std::collections::HashMap<String, String>,
     /// owned by the store so the limiter closure can hand back a borrow instead
     /// of leaking a fresh box on every memory.grow (wasmtime re-invokes the
-    /// closure per grow). cap is usize::MAX when the runtime set no memory cap
+    /// closure per grow). cap is always bounded by the host
     mem_limiter: MemLimiter,
 }
 
@@ -141,6 +141,8 @@ const MAX_CAPTURE_DIM: u32 = 16384;
 /// cap on <plugin_dir>/config.toml so a malicious marketplace plugin can't ship
 /// a huge config to bloat host memory at load
 const MAX_CONFIG_BYTES: u64 = 64 * 1024;
+const DEFAULT_PLUGIN_MEMORY_BYTES: usize = 64 * 1024 * 1024;
+const MAX_PLUGIN_MEMORY_BYTES: usize = 256 * 1024 * 1024;
 /// ports a plugin fetch may not target, mirroring the custom-upload destination
 /// guard — non-web services where even a refused https probe leaks reachability
 const FETCH_BLOCKED_PORTS: &[u16] = &[0, 22, 23, 25, 110, 143, 445, 3306, 3389, 5432, 6379, 27017];
@@ -204,6 +206,10 @@ impl WasmHost {
 
         let config = load_plugin_config(plugin_dir);
 
+        let memory_cap = runtime
+            .memory_max_bytes
+            .unwrap_or(DEFAULT_PLUGIN_MEMORY_BYTES)
+            .min(MAX_PLUGIN_MEMORY_BYTES);
         let mut store = Store::new(
             &self.engine,
             HostState {
@@ -212,14 +218,10 @@ impl WasmHost {
                 deadline_ticks,
                 fetch_deadline: None,
                 config,
-                mem_limiter: MemLimiter {
-                    cap: runtime.memory_max_bytes.unwrap_or(usize::MAX),
-                },
+                mem_limiter: MemLimiter { cap: memory_cap },
             },
         );
-        if runtime.memory_max_bytes.is_some() {
-            store.limiter(|data| &mut data.mem_limiter as &mut dyn wasmtime::ResourceLimiter);
-        }
+        store.limiter(|data| &mut data.mem_limiter as &mut dyn wasmtime::ResourceLimiter);
         // trap when the epoch deadline is exceeded — bumper thread advances
         // the engine epoch every 10ms, so HOOK_EPOCH_DEADLINE ticks ≈ 10ms.
         // call_hook bumps the deadline up to time_slice_ms / 10 before each
@@ -1102,6 +1104,23 @@ mod tests {
             .call_hook("on_capture_saved", "p")
             .expect_err("runaway hook must trap");
         assert!(err.to_string().contains("trapped"), "got: {err}");
+    }
+
+    #[test]
+    fn default_memory_limit_blocks_growth() {
+        const GROW_WAT: &str = r#"
+            (module
+              (memory (export "memory") 1)
+              (func (export "capscr_alloc") (param i32) (result i32) (i32.const 1024))
+              (func (export "capscr_on_capture_saved") (param i32 i32)
+                (drop (memory.grow (i32.const 2048)))))
+        "#;
+        let (_dir, plugin) = load_plugin(GROW_WAT, HashMap::new());
+        plugin
+            .call_hook("on_capture_saved", "p")
+            .expect("denied memory growth should not trap");
+        let store = plugin.store.lock().unwrap();
+        assert!(plugin.memory.data_size(&*store) <= DEFAULT_PLUGIN_MEMORY_BYTES);
     }
 
     #[test]

@@ -32,7 +32,7 @@ description = "Does something."     # optional
 [runtime]
 type             = "wasm"           # only "wasm" today
 file             = "plugin.wasm"    # relative path, must stay inside the plugin dir
-memory_max_bytes = 16777216         # optional, defaults to wasmtime default
+memory_max_bytes = 16777216         # optional, defaults to 64 MiB; host maximum is 256 MiB
 time_slice_ms    = 200              # optional, tunes the per-hook epoch budget (ms)
 
 # map of capscr event → exported function name

@@ -49,6 +49,19 @@ const MAX_PLUGIN_FILES: usize = 256;
 const MAX_PLUGIN_FILE_BYTES: u64 = 16 * 1024 * 1024; // per-file cap inside the zip
 const MAX_PLUGIN_TOTAL_BYTES: u64 = 200 * 1024 * 1024; // total extracted cap
 const REGISTRY_SCHEMA_VERSION: u32 = 1;
+const MAX_REDIRECTS: usize = 5;
+
+fn https_redirect_policy() -> reqwest::redirect::Policy {
+    reqwest::redirect::Policy::custom(|attempt| {
+        if attempt.previous().len() >= MAX_REDIRECTS {
+            return attempt.error("too many redirects");
+        }
+        if attempt.url().scheme() != "https" {
+            return attempt.error("redirect to non-https url blocked");
+        }
+        attempt.follow()
+    })
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Registry {
@@ -87,12 +100,15 @@ pub fn fetch_registry(registry_url: &str) -> Result<Registry> {
         .timeout(REGISTRY_FETCH_TIMEOUT)
         .user_agent(concat!("capscr/", env!("CARGO_PKG_VERSION")))
         .dns_resolver(crate::upload::ssrf_validating_resolver())
+        .redirect(https_redirect_policy())
         .build()?;
     let resp = client.get(registry_url).send()?;
     if !resp.status().is_success() {
         bail!("registry fetch failed: HTTP {}", resp.status());
     }
-    let bytes = resp.bytes()?;
+    let mut bytes = Vec::new();
+    resp.take(MAX_REGISTRY_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)?;
     if bytes.len() > MAX_REGISTRY_BYTES {
         bail!(
             "registry exceeds size cap ({} > {} bytes)",
@@ -133,6 +149,7 @@ pub fn install_plugin(plugins_dir: &Path, entry: &RegistryEntry) -> Result<bool>
         .timeout(PLUGIN_DOWNLOAD_TIMEOUT)
         .user_agent(concat!("capscr/", env!("CARGO_PKG_VERSION")))
         .dns_resolver(crate::upload::ssrf_validating_resolver())
+        .redirect(https_redirect_policy())
         .build()?;
     let resp = client.get(&entry.download_url).send()?;
     if !resp.status().is_success() {

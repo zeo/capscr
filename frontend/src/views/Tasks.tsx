@@ -41,7 +41,6 @@ const postActionsFor = (mode: CaptureTask["capture_mode"]) =>
 const UPLOAD_TARGETS: NonNullable<CaptureTask["target_destination"]>[] = [
   "imgur",
   "custom",
-  "ftp",
   "sftp",
   "s3",
 ];
