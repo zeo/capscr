@@ -1719,21 +1719,50 @@ async fn matching_asset_url(version: &str, kind: &str) -> Option<String> {
 
 #[tauri::command]
 pub async fn check_for_updates(app: AppHandle) -> Result<Option<UpdateInfo>, String> {
-    use tauri_plugin_updater::UpdaterExt;
-    let updater = app.updater().map_err(|e| e.to_string())?;
-    let update = updater.check().await.map_err(|e| e.to_string())?;
-    let Some(u) = update else {
+    #[derive(serde::Deserialize)]
+    struct InstallerRelease {
+        version: String,
+        #[serde(default)]
+        notes: String,
+    }
+    let release = tokio::task::spawn_blocking(|| {
+        let installer = shared_installer().ok_or("shared updater is not installed")?;
+        let status = std::process::Command::new(&installer)
+            .args(["status", "capscr", "--json"])
+            .output()
+            .map_err(|error| format!("read installer status: {error}"))?;
+        let receipts: Vec<serde_json::Value> = serde_json::from_slice(&status.stdout)
+            .map_err(|error| format!("read installer status: {error}"))?;
+        if !status.status.success() || receipts.is_empty() {
+            return Err("capscr is still owned by its legacy or system package".into());
+        }
+        let output = std::process::Command::new(installer)
+            .args(["check", "capscr", "--json"])
+            .output()
+            .map_err(|error| format!("start updater: {error}"))?;
+        if !output.status.success() {
+            return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+        }
+        serde_json::from_slice::<InstallerRelease>(&output.stdout)
+            .map_err(|error| format!("read updater response: {error}"))
+    })
+    .await
+    .map_err(|error| error.to_string())??;
+    let current = app.package_info().version.to_string();
+    if semver::Version::parse(&release.version).map_err(|error| error.to_string())?
+        <= semver::Version::parse(&current).map_err(|error| error.to_string())?
+    {
         return Ok(None);
-    };
+    }
     let kind = update_install_kind();
     #[cfg(target_os = "linux")]
-    let download_url = matching_asset_url(&u.version.to_string(), &kind).await;
+    let download_url = matching_asset_url(&release.version, &kind).await;
     #[cfg(not(target_os = "linux"))]
     let download_url = None;
     Ok(Some(UpdateInfo {
-        version: u.version.to_string(),
-        current_version: u.current_version.to_string(),
-        notes: u.body.clone(),
+        version: release.version,
+        current_version: current,
+        notes: (!release.notes.is_empty()).then_some(release.notes),
         install_kind: kind,
         download_url,
     }))
@@ -1741,22 +1770,11 @@ pub async fn check_for_updates(app: AppHandle) -> Result<Option<UpdateInfo>, Str
 
 #[tauri::command]
 pub async fn install_update(app: AppHandle) -> Result<(), String> {
-    use tauri_plugin_updater::UpdaterExt;
     if update_install_kind() != "in-place" {
         return Err("this install updates through your package manager; \
                     download the new release instead"
             .into());
     }
-    let updater = app.updater().map_err(|e| e.to_string())?;
-    let update = updater
-        .check()
-        .await
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| "no update available".to_string())?;
-    update
-        .download_and_install(|_chunk, _total| {}, || {})
-        .await
-        .map_err(|e| e.to_string())?;
     // wait for any in-flight capture to finish so we don't restart mid-encode
     {
         let state = app.state::<AppState>();
@@ -1770,7 +1788,43 @@ pub async fn install_update(app: AppHandle) -> Result<(), String> {
             waited += 1;
         }
     }
-    app.restart();
+    let installer = shared_installer().ok_or_else(|| "shared updater is not installed".to_string())?;
+    std::process::Command::new(installer)
+        .args(["update", "capscr", "--wait-pid", &std::process::id().to_string()])
+        .spawn()
+        .map_err(|error| format!("start updater: {error}"))?;
+    app.exit(0);
+    Ok(())
+}
+
+fn shared_installer() -> Option<std::path::PathBuf> {
+    let name = if cfg!(windows) { "rot-installer.exe" } else { "rot-installer" };
+    let mut candidates = Vec::new();
+    if let Ok(current) = std::env::current_exe() {
+        if let Some(parent) = current.parent() {
+            candidates.push(parent.join(name));
+            candidates.push(parent.join("installer").join(name));
+        }
+    }
+    #[cfg(windows)]
+    {
+        if let Some(root) = std::env::var_os("ProgramFiles") {
+            candidates.push(std::path::PathBuf::from(root).join("rot").join("installer").join(name));
+        }
+        if let Some(root) = std::env::var_os("LOCALAPPDATA") {
+            candidates.push(std::path::PathBuf::from(root).join("Programs").join("rot-installer").join(name));
+        }
+    }
+    #[cfg(target_os = "linux")]
+    {
+        candidates.push(std::path::PathBuf::from("/opt/rot/installer").join(name));
+        if let Some(data) = std::env::var_os("XDG_DATA_HOME") {
+            candidates.push(std::path::PathBuf::from(data).join("rot/apps/installer").join(name));
+        } else if let Some(home) = std::env::var_os("HOME") {
+            candidates.push(std::path::PathBuf::from(home).join(".local/share/rot/apps/installer").join(name));
+        }
+    }
+    candidates.into_iter().find(|path| path.is_file())
 }
 
 const HUB_LABEL: &str = "hub";

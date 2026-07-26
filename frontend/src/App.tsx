@@ -348,6 +348,7 @@ function Hub() {
       // a restart (rare).
     } catch (e) {
       pushToast("update", String(e));
+      void openUrl(RELEASES_URL);
       setUpdating(false);
     }
   };
