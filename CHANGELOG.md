@@ -4,6 +4,11 @@ format follows [keep-a-changelog](https://keepachangelog.com/en/1.1.0/) loosely.
 
 ## [Unreleased]
 
+## [0.5.49] - 2026-07-26
+
+### fixed
+- shared package signing resolves release artifacts from the repository root
+
 ## [0.5.48] - 2026-07-26
 
 ### fixed
