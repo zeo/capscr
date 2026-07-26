@@ -4,6 +4,11 @@ format follows [keep-a-changelog](https://keepachangelog.com/en/1.1.0/) loosely.
 
 ## [Unreleased]
 
+## [0.5.52] - 2026-07-27
+
+### fixed
+- Windows release checks validate the signed payload without depending on the runner's private certificate root
+
 ## [0.5.51] - 2026-07-26
 
 ### fixed

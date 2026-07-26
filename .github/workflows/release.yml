@@ -102,8 +102,10 @@ jobs:
           $timestamp = if ($env:TIMESTAMP_URL) { $env:TIMESTAMP_URL } else { "http://timestamp.digicert.com" }
           & $signtool.FullName sign /sha1 $env:CERTIFICATE_THUMBPRINT /fd sha256 /tr $timestamp /td sha256 $app
           if ($LASTEXITCODE -ne 0) { throw "application signing failed" }
-          & $signtool.FullName verify /pa $app
-          if ($LASTEXITCODE -ne 0) { throw "application signature verification failed" }
+          $signature = Get-AuthenticodeSignature -LiteralPath $app
+          if ($signature.Status -in @('NotSigned', 'HashMismatch')) { throw "application signature is invalid" }
+          if ($signature.SignerCertificate.Thumbprint -ne $env:CERTIFICATE_THUMBPRINT) { throw "application signer does not match" }
+          if (-not $signature.TimeStamperCertificate) { throw "application signature has no timestamp" }
 
       - name: Pack shared installer release
         shell: powershell
