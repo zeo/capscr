@@ -1727,12 +1727,21 @@ pub async fn check_for_updates(app: AppHandle) -> Result<Option<UpdateInfo>, Str
     }
     let release = tokio::task::spawn_blocking(|| {
         let installer = shared_installer().ok_or("shared updater is not installed")?;
-        let status = std::process::Command::new(&installer)
+        let mut status = std::process::Command::new(&installer)
             .args(["status", "capscr", "--json"])
             .output()
             .map_err(|error| format!("read installer status: {error}"))?;
-        let receipts: Vec<serde_json::Value> = serde_json::from_slice(&status.stdout)
+        let mut receipts: Vec<serde_json::Value> = serde_json::from_slice(&status.stdout)
             .map_err(|error| format!("read installer status: {error}"))?;
+        if status.status.success() && receipts.is_empty() && installer_is_bundled(&installer) {
+            adopt_bundled_installer(&installer, "capscr", env!("CARGO_PKG_VERSION"), false)?;
+            status = std::process::Command::new(&installer)
+                .args(["status", "capscr", "--json"])
+                .output()
+                .map_err(|error| format!("read installer status: {error}"))?;
+            receipts = serde_json::from_slice(&status.stdout)
+                .map_err(|error| format!("read installer status: {error}"))?;
+        }
         if !status.status.success() || receipts.is_empty() {
             return Err("capscr is still owned by its legacy or system package".into());
         }
@@ -1825,6 +1834,39 @@ fn shared_installer() -> Option<std::path::PathBuf> {
         }
     }
     candidates.into_iter().find(|path| path.is_file())
+}
+
+fn installer_is_bundled(installer: &std::path::Path) -> bool {
+    std::env::current_exe()
+        .ok()
+        .and_then(|path| path.parent().map(std::path::Path::to_path_buf))
+        .is_some_and(|parent| installer.parent() == Some(parent.as_path()))
+}
+
+fn adopt_bundled_installer(
+    installer: &std::path::Path,
+    app: &str,
+    version: &str,
+    machine_only: bool,
+) -> Result<(), String> {
+    let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+    let root = executable
+        .parent()
+        .ok_or_else(|| "application path has no parent".to_string())?;
+    let machine = machine_only
+        || std::env::var_os("ProgramFiles")
+            .is_some_and(|program_files| executable.starts_with(program_files));
+    let scope = if machine { "machine" } else { "user" };
+    let status = std::process::Command::new(installer)
+        .args(["adopt", app, "--scope", scope, "--root"])
+        .arg(root)
+        .args(["--version", version])
+        .status()
+        .map_err(|error| format!("start installer migration: {error}"))?;
+    status
+        .success()
+        .then_some(())
+        .ok_or_else(|| format!("installer migration exited with {status}"))
 }
 
 const HUB_LABEL: &str = "hub";

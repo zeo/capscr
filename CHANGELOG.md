@@ -4,6 +4,11 @@ format follows [keep-a-changelog](https://keepachangelog.com/en/1.1.0/) loosely.
 
 ## [Unreleased]
 
+## [0.5.46] - 2026-07-26
+
+### changed
+- updates now use the shared signed installer; this release carries the one-time bridge from the existing MSI channel
+
 ### security
 - updated the SSH transport to russh 0.62.4, which fixes the current remote denial-of-service advisories; RSA keys are disabled to avoid the unresolved timing side-channel in the Rust RSA implementation
 - WebAssembly plugins now get a 64 MiB memory limit by default and can never request more than 256 MiB
