@@ -4,6 +4,11 @@ format follows [keep-a-changelog](https://keepachangelog.com/en/1.1.0/) loosely.
 
 ## [Unreleased]
 
+## [0.5.54] - 2026-07-27
+
+### fixed
+- restored hub sizes are clamped to a DPI-aware 720 by 480 logical-pixel floor and the active monitor work area
+
 ## [0.5.53] - 2026-07-27
 
 ### fixed

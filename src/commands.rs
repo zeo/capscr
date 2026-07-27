@@ -19,6 +19,7 @@ use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_autostart::ManagerExt as AutostartManagerExt;
 use tauri_plugin_opener::OpenerExt;
+use tauri_plugin_window_state::{StateFlags as WindowStateFlags, WindowExt};
 
 pub fn history_dir() -> Option<PathBuf> {
     Config::config_dir().map(|d| d.join("history"))
@@ -1869,7 +1870,10 @@ fn adopt_bundled_installer(
         .ok_or_else(|| format!("installer migration exited with {status}"))
 }
 
-const HUB_LABEL: &str = "hub";
+pub(crate) const HUB_LABEL: &str = "hub";
+const HUB_MIN_WIDTH: f64 = 720.0;
+const HUB_MIN_HEIGHT: f64 = 480.0;
+const WINDOW_MARGIN: u32 = 16;
 
 // the canonical app url for healing webviews stuck on about:blank: a live
 // hub wins, then the last observed good url, then the fixed release origin
@@ -1933,7 +1937,7 @@ pub fn prewarm_hub_window(app: &tauri::App) -> tauri::Result<()> {
     let mut builder = tauri::WebviewWindowBuilder::new(app, HUB_LABEL, url)
         .title("capscr")
         .inner_size(840.0, 560.0)
-        .min_inner_size(420.0, 280.0)
+        .min_inner_size(HUB_MIN_WIDTH, HUB_MIN_HEIGHT)
         .resizable(true)
         .decorations(false)
         .visible(false);
@@ -1943,7 +1947,7 @@ pub fn prewarm_hub_window(app: &tauri::App) -> tauri::Result<()> {
     }
 
     let window = builder.build()?;
-    fit_window_to_work_area(&window);
+    restore_hub_state(&window);
     // intercept the close button so the WebView2 process stays alive for the
     // next tray-click. Without this we pay multi-second cold-boot every time
     // the user closes and re-opens the hub, even after the startup prewarm.
@@ -1952,16 +1956,29 @@ pub fn prewarm_hub_window(app: &tauri::App) -> tauri::Result<()> {
     Ok(())
 }
 
-fn fit_window_to_work_area(window: &tauri::WebviewWindow) {
+fn restore_hub_state(window: &tauri::WebviewWindow) {
+    let flags = WindowStateFlags::all() & !WindowStateFlags::VISIBLE;
+    let _ = window.restore_state(flags);
+    fit_window_to_work_area(window, HUB_MIN_WIDTH, HUB_MIN_HEIGHT);
+}
+
+fn clamp_window_axis(current: u32, work_area: u32, minimum: u32) -> u32 {
+    let maximum = work_area.saturating_sub(WINDOW_MARGIN).max(1);
+    current.max(minimum.min(maximum)).min(maximum)
+}
+
+fn fit_window_to_work_area(window: &tauri::WebviewWindow, min_width: f64, min_height: f64) {
     let Ok(Some(monitor)) = window.current_monitor() else {
         return;
     };
     let Ok(size) = window.inner_size() else {
         return;
     };
+    let scale = window.scale_factor().unwrap_or(1.0);
+    let minimum = tauri::LogicalSize::new(min_width, min_height).to_physical::<u32>(scale);
     let work_area = monitor.work_area();
-    let width = size.width.min(work_area.size.width.saturating_sub(16));
-    let height = size.height.min(work_area.size.height.saturating_sub(16));
+    let width = clamp_window_axis(size.width, work_area.size.width, minimum.width);
+    let height = clamp_window_axis(size.height, work_area.size.height, minimum.height);
     if width != size.width || height != size.height {
         let _ = window.set_size(tauri::PhysicalSize::new(width, height));
     }
@@ -2034,7 +2051,7 @@ fn intercept_hub_close(window: tauri::WebviewWindow) {
 
 pub fn open_hub_window(app: &AppHandle) -> tauri::Result<()> {
     if let Some(window) = app.get_webview_window(HUB_LABEL) {
-        fit_window_to_work_area(&window);
+        fit_window_to_work_area(&window, HUB_MIN_WIDTH, HUB_MIN_HEIGHT);
         let _ = window.show();
         let _ = window.unminimize();
         let _ = window.set_focus();
@@ -2044,7 +2061,7 @@ pub fn open_hub_window(app: &AppHandle) -> tauri::Result<()> {
     let mut builder = tauri::WebviewWindowBuilder::new(app, HUB_LABEL, url)
         .title("capscr")
         .inner_size(840.0, 560.0)
-        .min_inner_size(420.0, 280.0)
+        .min_inner_size(HUB_MIN_WIDTH, HUB_MIN_HEIGHT)
         .resizable(true)
         .decorations(false)
         .visible(true);
@@ -2054,7 +2071,7 @@ pub fn open_hub_window(app: &AppHandle) -> tauri::Result<()> {
     }
 
     let window = builder.build()?;
-    fit_window_to_work_area(&window);
+    restore_hub_state(&window);
     intercept_hub_close(window.clone());
     heal_stuck_boot(window);
     Ok(())
@@ -2067,7 +2084,7 @@ pub fn open_editor_window(app: &AppHandle, image_path: &str) -> tauri::Result<()
     *state.editor_image_path.lock().unwrap() = Some(image_path.to_string());
 
     if let Some(window) = app.get_webview_window(EDITOR_LABEL) {
-        fit_window_to_work_area(&window);
+        fit_window_to_work_area(&window, 420.0, 280.0);
         let _ = window.show();
         let _ = window.set_focus();
         let _ = window.emit("capscr://editor-load", image_path.to_string());
@@ -2091,7 +2108,7 @@ pub fn open_editor_window(app: &AppHandle, image_path: &str) -> tauri::Result<()
     }
 
     let window = builder.build()?;
-    fit_window_to_work_area(&window);
+    fit_window_to_work_area(&window, 420.0, 280.0);
     watch_editor_navigation(app, window);
     Ok(())
 }
@@ -3342,6 +3359,26 @@ mod plugin_listing_tests {
     #[test]
     fn rejects_garbage() {
         assert!(read_plugin_listing("not [ valid toml").is_none());
+    }
+}
+
+#[cfg(test)]
+mod window_size_tests {
+    use super::clamp_window_axis;
+
+    #[test]
+    fn expands_stale_compact_state() {
+        assert_eq!(clamp_window_axis(446, 1920, 720), 720);
+    }
+
+    #[test]
+    fn keeps_a_larger_saved_size() {
+        assert_eq!(clamp_window_axis(1000, 1920, 720), 1000);
+    }
+
+    #[test]
+    fn fits_displays_smaller_than_the_preferred_floor() {
+        assert_eq!(clamp_window_axis(840, 700, 720), 684);
     }
 }
 
