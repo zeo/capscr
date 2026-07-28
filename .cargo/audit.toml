@@ -9,17 +9,6 @@
 
 [advisories]
 ignore = [
-    # rsa Marvin Attack (timing side-channel during RSA private-key
-    # operations). this CAN occur: the SFTP destination supports private-key
-    # auth (upload.sftp.private_key_path) and russh is built with the `rsa`
-    # feature, so an RSA identity performs private-key signing during the
-    # handshake. the exposure is a timing side-channel observable only by the
-    # SFTP server the user themselves configured and points at, across many
-    # handshakes — narrow, and not remotely reachable by a third party. no
-    # upstream fix exists (pure-Rust rsa has no constant-time path yet). the
-    # README recommends Ed25519 keys, which avoid the affected code entirely.
-    "RUSTSEC-2023-0071",
-
     # gtk3 / gdk / atk / glib / cairo / javascriptcore / webkit2gtk: wry's
     # Linux display backend, linked into the Linux builds. these are
     # unmaintained-notice advisories (informational), not vulnerabilities.

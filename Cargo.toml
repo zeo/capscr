@@ -2,6 +2,7 @@
 name = "capscr"
 version = "0.5.54"
 edition = "2021"
+rust-version = "1.91"
 description = "Fast HDR-aware screen capture for Windows and Linux — tray-first, signed updates, no telemetry."
 authors = ["rot <96458554+rotlove@users.noreply.github.com>"]
 license = "MIT"

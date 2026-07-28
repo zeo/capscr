@@ -16,13 +16,17 @@ jobs:
     if: github.actor == 'zeo'
     runs-on: [self-hosted, linux-vm]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
+        with:
+          toolchain: stable
 
       - name: Install cargo-audit
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@41049aa56687c35e0afa74eed4f09cec4f9afabf
         with:
           tool: cargo-audit
 
@@ -35,7 +39,9 @@ jobs:
     if: github.actor == 'zeo'
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
 
       - name: Install system dependencies
         run: |
@@ -48,21 +54,23 @@ jobs:
             libwayland-dev libegl-dev libgbm-dev libdrm-dev xvfb
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
         with:
+          toolchain: stable
           components: clippy
 
       - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
 
       - name: Install Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
-          node-version: 20
+          node-version: 24
+          package-manager-cache: false
 
       - name: Install frontend deps
         working-directory: frontend
-        run: npm install
+        run: npm ci
 
       - name: Build frontend
         working-directory: frontend
@@ -72,10 +80,10 @@ jobs:
       - name: Run tests
         env:
           CAPSCR_REQUIRE_CAPTURE: "1"
-        run: xvfb-run -a -s "-screen 0 1600x1000x24" cargo test --bin capscr --all-targets
+        run: xvfb-run -a -s "-screen 0 1600x1000x24" cargo test --bin capscr --all-targets --locked
 
       - name: Run clippy
-        run: cargo clippy --bin capscr --all-targets -- -D warnings
+        run: cargo clippy --bin capscr --all-targets --locked -- -D warnings
 
   # headless-compositor smoke tests. advisory (continue-on-error) until they
   # have a week of green: the rigs depend on distro compositor/portal versions
@@ -91,7 +99,9 @@ jobs:
       matrix:
         rig: [sway, gnome]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
 
       - name: Install system dependencies
         run: |
@@ -114,22 +124,25 @@ jobs:
           fi
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
+        with:
+          toolchain: stable
 
       - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
 
       - name: Install Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
-          node-version: 20
+          node-version: 24
+          package-manager-cache: false
 
       - name: Build frontend
         working-directory: frontend
-        run: npm install && npm run build
+        run: npm ci && npm run build
 
       - name: Build capscr
-        run: cargo build --bin capscr --features custom-protocol
+        run: cargo build --bin capscr --features custom-protocol --locked
 
       - name: Run ${{ matrix.rig }} diagnostic rig
         run: bash ci/compositors/${{ matrix.rig }}-diag.sh target/debug/capscr
@@ -141,15 +154,20 @@ jobs:
     runs-on: [self-hosted, linux-vm]
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
+        with:
+          toolchain: stable
 
       - name: Install Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
-          node-version: 20
+          node-version: 24
+          package-manager-cache: false
 
       # the vm image is bare; install the build stack for whichever package
       # manager it carries
@@ -191,11 +209,11 @@ jobs:
       - name: Build frontend
         if: steps.probe.outputs.usable == 'true'
         working-directory: frontend
-        run: npm install && npm run build
+        run: npm ci && npm run build
 
       - name: Build capscr
         if: steps.probe.outputs.usable == 'true'
-        run: cargo build --bin capscr --features custom-protocol
+        run: cargo build --bin capscr --features custom-protocol --locked
 
       - name: Run KDE diagnostic rig
         if: steps.probe.outputs.usable == 'true'
@@ -205,31 +223,35 @@ jobs:
     if: github.actor == 'zeo'
     runs-on: [self-hosted, windows-vm]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
         with:
+          toolchain: stable
           components: clippy
 
       - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
 
       - name: Install Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
-          node-version: 20
+          node-version: 24
+          package-manager-cache: false
 
       - name: Install frontend deps
         working-directory: frontend
-        run: npm install
+        run: npm ci
 
       - name: Build frontend
         working-directory: frontend
         run: npm run build
 
       - name: Run tests
-        run: cargo test --bin capscr --all-targets
+        run: cargo test --bin capscr --all-targets --locked
 
       - name: Run clippy
-        run: cargo clippy --bin capscr --all-targets -- -D warnings
+        run: cargo clippy --bin capscr --all-targets --locked -- -D warnings

@@ -1,10 +1,10 @@
 # capscr
 
-Fast HDR-aware screen capture for Windows and Linux — tray-first, signed updates, no telemetry.
+Fast HDR-aware screen capture for Windows and Linux: tray-first, signed updates, no telemetry.
 
 - homepage: [rot.lt/work/capscr](https://rot.lt/work/capscr)
 - plugins: [rot.lt/work/capscr/plugins](https://rot.lt/work/capscr/plugins) — publishing contract in [`docs/marketplace.md`](docs/marketplace.md), registry at [`zeo/capscr-plugins`](https://github.com/zeo/capscr-plugins)
-- downloads: [GitHub Releases](https://github.com/zeo/capscr/releases) (signed MSI / deb / rpm / AppImage + auto-updater)
+- downloads: [GitHub Releases](https://github.com/zeo/capscr/releases) (signed shared installers, deb, rpm, AppImage, and update metadata)
 - license: MIT
 
 ## features
@@ -21,9 +21,7 @@ In-app editor: arrows, text, blur, step numbers, and crop, reached via the "open
 
 Uploads: Imgur (anonymous), custom HTTPS POST, and SFTP. Network destinations go through SSRF protection (DNS double-resolve, private-IP / cloud-metadata rejection); stored SFTP passwords are kept in the per-user credential vault (DPAPI on Windows, the freedesktop Secret Service on Linux), not cleartext. Plain FTP is disabled because it exposes credentials and captures in transit.
 
-Tray-only at idle (~14 MB working set). The hub window allocates a webview only when opened.
-
-Signed auto-updates via `tauri-plugin-updater` (ed25519, embedded pubkey).
+Signed in-place updates use the shared rot installer with Minisign-authenticated packages and manifests. deb and rpm installs stay with the system package manager.
 
 No telemetry.
 
@@ -33,15 +31,16 @@ Download from the [releases page](https://github.com/zeo/capscr/releases/latest)
 
 | file | use |
 |---|---|
-| `capscr-x.x.x-setup.exe` | **the installer** — one small window in capscr's own style, wrapping the signed MSI below (`/S` for silent installs) |
-| `capscr_x.x.x_x64_en-US.msi` | the raw MSI, for Group Policy / scripted deployment |
-| `capscr_x.x.x_x64_en-US.msi.sig` | updater signature — keep alongside the MSI if running the updater manually |
+| `capscr-x.x.x-online-setup.exe` | signed Windows bootstrapper that downloads the verified package |
+| `capscr-x.x.x-offline-setup.exe` | signed Windows installer with the verified package embedded |
+| `capscr-x.x.x-linux-x86_64-setup` | Linux bootstrapper that downloads the verified package |
+| `capscr-x.x.x-linux-x86_64-offline-setup` | Linux installer with the verified package embedded |
 | `capscr_x.x.x_amd64.deb` | Debian / Ubuntu / Mint package |
 | `capscr-x.x.x-1.x86_64.rpm` | Fedora / openSUSE package |
-| `capscr_x.x.x_amd64.AppImage` | any distro — `chmod +x` and run; this is the build the Linux auto-updater tracks |
-| `latest.json` | auto-updater manifest, not for manual install |
+| `capscr_x.x.x_amd64.AppImage` | compatible glibc 2.39+ distro; `chmod +x` and run |
+| `.rpack`, `.minisig`, `installer.json` | signed update payloads and metadata used by the shared installer |
 
-Windows 10 1903+ or a Linux desktop with webkit2gtk 4.1 and glibc 2.39+ (Ubuntu 24.04+, Debian 13+, Fedora 40+, or equivalents). Recording MP4 wants `ffmpeg`, the OCR post-action wants `tesseract`, and file-clipboard on X11 wants `xclip` — the deb/rpm packages pull these in as recommends.
+Windows 10 1903+ or a Linux desktop with webkit2gtk 4.1 and glibc 2.39+ (Ubuntu 24.04+, Debian 13+, Fedora 40+, or equivalents). Recording MP4 wants `ffmpeg`, the OCR post-action wants `tesseract`, and file-clipboard on X11 wants `xclip`. The deb and rpm packages pull these in as recommends.
 
 Both X11 and Wayland are supported. On Wayland the pixel source is chosen per compositor: KDE uses KWin's authorized ScreenShot2, wlroots compositors (sway, Hyprland, COSMIC, …) use the `ext-image-copy-capture` protocol, and GNOME uses the screenshot / screencast portals. Feature coverage by session:
 
@@ -115,12 +114,12 @@ The split is intentional: the identifiers are load-bearing (the updater's contin
 
 ## build from source
 
-Requirements: Rust 1.75+, Node 20+, and MSVC build tools (Windows) or the webkit2gtk stack (Linux).
+Requirements: Rust 1.91+, Node 22.12+ (Node 24 LTS recommended), and MSVC build tools on Windows or the webkit2gtk stack on Linux.
 
 ```powershell
 git clone https://github.com/zeo/capscr.git
 cd capscr
-npm --prefix frontend install
+npm --prefix frontend ci
 cargo install tauri-cli --version "^2" --locked
 cargo tauri build
 ```
@@ -135,7 +134,7 @@ sudo apt install build-essential curl wget file pkg-config libssl-dev \
   libwayland-dev libegl-dev libgbm-dev libdrm-dev
 ```
 
-For signed bundles set `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` before `cargo tauri build`. Generate a keypair with `cargo tauri signer generate -w ./signing/key.priv` and paste the public key into `tauri.conf.json` → `plugins.updater.pubkey`.
+The release workflow requires `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` for package and manifest signatures. Generate a keypair with `cargo tauri signer generate -w ./signing/key.priv`; the matching public key is compiled into the shared installer.
 
 ## plugins
 
