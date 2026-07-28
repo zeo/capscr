@@ -379,7 +379,7 @@ function Hub() {
                     const nextConfig = { ...c, capture_tasks: next };
                     mutateConfig(nextConfig);
                     try {
-                      await api.setConfig(nextConfig);
+                      mutateConfig(await api.setConfig(nextConfig));
                       setConfigDirty(false);
                       pushToast("config", "screenshot hotkey bound successfully");
                     } catch (e) {

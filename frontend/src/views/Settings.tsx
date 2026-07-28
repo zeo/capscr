@@ -43,7 +43,7 @@ export function Settings() {
     setSaving(true);
     setStatus({ tone: "", msg: "writing..." });
     try {
-      await api.setConfig(c);
+      mutateConfig(await api.setConfig(c));
       setStatus({ tone: "ok", msg: "saved." });
       setConfigDirty(false);
     } catch (e) {

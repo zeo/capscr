@@ -29,6 +29,15 @@ pub fn encrypt(plaintext: &str) -> Result<String> {
     }
 }
 
+pub fn replace(plaintext: &str, existing: &str) -> Result<String> {
+    #[cfg(target_os = "linux")]
+    if let Some(id) = existing.strip_prefix("keyring:") {
+        return secret_service::store_with_id(plaintext, id);
+    }
+    let _ = existing;
+    encrypt(plaintext)
+}
+
 /// decrypt a blob previously produced by `encrypt`.
 pub fn decrypt(blob: &str) -> Result<String> {
     #[cfg(windows)]
@@ -167,11 +176,15 @@ mod secret_service {
     }
 
     pub fn store(plaintext: &str) -> Result<String> {
-        let s = open()?;
         let id = uuid::Uuid::new_v4().simple().to_string();
+        store_with_id(plaintext, &id)
+    }
+
+    pub fn store_with_id(plaintext: &str, id: &str) -> Result<String> {
+        let s = open()?;
         let mut attrs: HashMap<&str, &str> = HashMap::new();
         attrs.insert("application", "capscr");
-        attrs.insert("capscr-id", &id);
+        attrs.insert("capscr-id", id);
         let mut props: HashMap<&str, Value> = HashMap::new();
         props.insert(
             "org.freedesktop.Secret.Item.Label",
@@ -338,5 +351,16 @@ mod tests {
         assert_ne!(blob, plain, "blob must not equal plaintext");
         let back = decrypt(&blob).expect("decrypt");
         assert_eq!(back, plain);
+    }
+
+    #[test]
+    #[cfg(not(target_os = "linux"))]
+    fn replacement_roundtrip() {
+        let old_blob = encrypt("old secret").expect("encrypt old secret");
+        let new_blob = replace("new secret", &old_blob).expect("replace secret");
+        assert_eq!(
+            decrypt(&new_blob).expect("decrypt replacement"),
+            "new secret"
+        );
     }
 }

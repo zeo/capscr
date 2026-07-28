@@ -85,7 +85,7 @@ pub fn set_config(
     mut config: Config,
     app: AppHandle,
     state: State<AppState>,
-) -> Result<(), String> {
+) -> Result<Config, String> {
     // preserve encrypted secrets when the UI sent empty plaintext inputs —
     // without this, every Settings → Save would wipe the vault unless the
     // user retypes their secret each time. the frontend shows an empty input
@@ -133,6 +133,7 @@ pub fn set_config(
     config.hotkeys.disabled_globally = state
         .hotkeys_disabled
         .load(std::sync::atomic::Ordering::SeqCst);
+    config.migrate_secrets().map_err(|e| e.to_string())?;
     config.validate().map_err(|e| e.to_string())?;
     config.save().map_err(|e| e.to_string())?;
     crate::install_hdr_runtime_from_config(&config);
@@ -156,7 +157,7 @@ pub fn set_config(
     state.send_hotkey_reload(tasks_to_register);
     let want_autostart = config.ui.auto_start;
     let output_dir = config.output.directory.clone();
-    *state.config.lock().unwrap() = config;
+    *state.config.lock().unwrap() = config.clone();
     if let Err(e) = app
         .asset_protocol_scope()
         .allow_directory(&output_dir, true)
@@ -188,7 +189,7 @@ pub fn set_config(
     }
     crate::rebuild_tray_menu(&app);
     let _ = app.emit("capscr://config-updated", ());
-    Ok(())
+    Ok(config)
 }
 
 #[tauri::command]
@@ -3881,9 +3882,9 @@ pub fn fire_task(task_id: String, app: AppHandle) -> Result<(), String> {
 #[tauri::command]
 pub fn test_upload_connection(
     destination: String,
-    state: State<AppState>,
+    config: Config,
 ) -> Result<ConnectionTestReport, String> {
-    let cfg = state.config.lock().unwrap().clone();
+    let cfg = config;
     let steps = match destination.as_str() {
         "Ftp" | "ftp" => {
             let target = crate::upload::FtpTarget {

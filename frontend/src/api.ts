@@ -249,7 +249,7 @@ export interface ConnectionTestReport {
 export const api = {
   getConfig: () => invoke<AppConfig>("get_config"),
   getDefaultConfig: () => invoke<AppConfig>("get_default_config"),
-  setConfig: (config: AppConfig) => invoke<void>("set_config", { config }),
+  setConfig: (config: AppConfig) => invoke<AppConfig>("set_config", { config }),
   takeScreenshot: (mode: CaptureMode, post: PostAction) =>
     invoke<void>("take_screenshot", { mode, post }),
   listCaptures: () => invoke<HistoryEntry[]>("list_captures"),
@@ -299,8 +299,10 @@ export const api = {
   sftpKnownHosts: () => invoke<SftpKnownHost[]>("sftp_known_hosts"),
   sftpForgetHost: (hostPort: string) =>
     invoke<boolean>("sftp_forget_host", { hostPort }),
-  testUploadConnection: (destination: "Ftp" | "Sftp" | "Imgur" | "Custom" | "S3") =>
-    invoke<ConnectionTestReport>("test_upload_connection", { destination }),
+  testUploadConnection: (
+    destination: "Ftp" | "Sftp" | "Imgur" | "Custom" | "S3",
+    config: AppConfig,
+  ) => invoke<ConnectionTestReport>("test_upload_connection", { destination, config }),
   fireTask: (taskId: string) => invoke<void>("fire_task", { taskId }),
   runOcr: (path: string) => invoke<string>("run_ocr", { path }),
   pinImage: (path: string) => invoke<void>("pin_image", { path }),

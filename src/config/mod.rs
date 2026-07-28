@@ -664,10 +664,11 @@ pub struct FtpUploadConfig {
 }
 
 impl FtpUploadConfig {
-    /// returns the decrypted password (or empty string if neither field set).
-    /// Tries the encrypted vault first; falls back to plaintext for
-    /// already-saved-but-not-yet-migrated configs.
+    /// returns a pending plaintext replacement first, then the stored password
     pub fn password_plaintext(&self) -> String {
+        if !self.password.is_empty() {
+            return self.password.clone();
+        }
         if !self.password_encrypted.is_empty() {
             match crate::secret::decrypt(&self.password_encrypted) {
                 Ok(p) => return p,
@@ -678,7 +679,7 @@ impl FtpUploadConfig {
                 }
             }
         }
-        self.password.clone()
+        String::new()
     }
 }
 
@@ -723,6 +724,9 @@ pub struct SftpUploadConfig {
 
 impl SftpUploadConfig {
     pub fn password_plaintext(&self) -> String {
+        if !self.password.is_empty() {
+            return self.password.clone();
+        }
         if !self.password_encrypted.is_empty() {
             match crate::secret::decrypt(&self.password_encrypted) {
                 Ok(p) => return p,
@@ -733,10 +737,13 @@ impl SftpUploadConfig {
                 }
             }
         }
-        self.password.clone()
+        String::new()
     }
 
     pub fn private_key_passphrase_plaintext(&self) -> String {
+        if !self.private_key_passphrase.is_empty() {
+            return self.private_key_passphrase.clone();
+        }
         if !self.private_key_passphrase_encrypted.is_empty() {
             match crate::secret::decrypt(&self.private_key_passphrase_encrypted) {
                 Ok(p) => return p,
@@ -747,7 +754,7 @@ impl SftpUploadConfig {
                 }
             }
         }
-        self.private_key_passphrase.clone()
+        String::new()
     }
 }
 
@@ -773,6 +780,9 @@ pub struct S3UploadConfig {
 
 impl S3UploadConfig {
     pub fn secret_access_key_plaintext(&self) -> String {
+        if !self.secret_access_key.is_empty() {
+            return self.secret_access_key.clone();
+        }
         if !self.secret_access_key_encrypted.is_empty() {
             match crate::secret::decrypt(&self.secret_access_key_encrypted) {
                 Ok(p) => return p,
@@ -781,7 +791,7 @@ impl S3UploadConfig {
                 }
             }
         }
-        self.secret_access_key.clone()
+        String::new()
     }
 }
 
@@ -1214,16 +1224,7 @@ impl Config {
                         // plaintext FTP password is set but the encrypted slot
                         // is empty, wrap it now and persist. The user never
                         // sees their cleartext password on disk again.
-                        let needs_secret_migration = (!config.upload.ftp.password.is_empty()
-                            && config.upload.ftp.password_encrypted.is_empty())
-                            || (!config.upload.sftp.password.is_empty()
-                                && config.upload.sftp.password_encrypted.is_empty())
-                            || (!config.upload.sftp.private_key_passphrase.is_empty()
-                                && config
-                                    .upload
-                                    .sftp
-                                    .private_key_passphrase_encrypted
-                                    .is_empty());
+                        let needs_secret_migration = config.has_plaintext_secrets();
                         #[cfg(target_os = "linux")]
                         let needs_secret_migration = needs_secret_migration
                             || [
@@ -1293,6 +1294,13 @@ impl Config {
         Ok(())
     }
 
+    fn has_plaintext_secrets(&self) -> bool {
+        !self.upload.ftp.password.is_empty()
+            || !self.upload.sftp.password.is_empty()
+            || !self.upload.sftp.private_key_passphrase.is_empty()
+            || !self.upload.s3.secret_access_key.is_empty()
+    }
+
     /// in-place: encrypt any plaintext secrets that haven't been wrapped yet
     /// and clear the plaintext field. Idempotent — running twice is a no-op
     /// after the first.
@@ -1312,63 +1320,26 @@ impl Config {
             }
         }
 
-        let ftp = &mut self.upload.ftp;
-        if !ftp.password.is_empty() && ftp.password_encrypted.is_empty() {
-            match crate::secret::encrypt(&ftp.password) {
-                Ok(blob) => {
-                    ftp.password_encrypted = blob;
-                    ftp.password.clear();
-                    tracing::info!("migrated FTP password into encrypted vault");
-                }
-                Err(e) => {
-                    return Err(e.context("couldn't store FTP password in the credential vault"))
-                }
-            }
-        }
-        let sftp = &mut self.upload.sftp;
-        if !sftp.password.is_empty() && sftp.password_encrypted.is_empty() {
-            match crate::secret::encrypt(&sftp.password) {
-                Ok(blob) => {
-                    sftp.password_encrypted = blob;
-                    sftp.password.clear();
-                    tracing::info!("migrated SFTP password into encrypted vault");
-                }
-                Err(e) => {
-                    return Err(e.context("couldn't store SFTP password in the credential vault"))
-                }
-            }
-        }
-        if !sftp.private_key_passphrase.is_empty()
-            && sftp.private_key_passphrase_encrypted.is_empty()
-        {
-            match crate::secret::encrypt(&sftp.private_key_passphrase) {
-                Ok(blob) => {
-                    sftp.private_key_passphrase_encrypted = blob;
-                    sftp.private_key_passphrase.clear();
-                    tracing::info!("migrated SFTP key passphrase into encrypted vault");
-                }
-                Err(e) => {
-                    return Err(
-                        e.context("couldn't store SFTP key passphrase in the credential vault")
-                    )
-                }
-            }
-        }
-        let s3 = &mut self.upload.s3;
-        if !s3.secret_access_key.is_empty() && s3.secret_access_key_encrypted.is_empty() {
-            match crate::secret::encrypt(&s3.secret_access_key) {
-                Ok(blob) => {
-                    s3.secret_access_key_encrypted = blob;
-                    s3.secret_access_key.clear();
-                    tracing::info!("migrated S3 secret access key into encrypted vault");
-                }
-                Err(e) => {
-                    return Err(
-                        e.context("couldn't store S3 secret access key in the credential vault")
-                    )
-                }
-            }
-        }
+        migrate_secret(
+            &mut self.upload.ftp.password,
+            &mut self.upload.ftp.password_encrypted,
+            "FTP password",
+        )?;
+        migrate_secret(
+            &mut self.upload.sftp.password,
+            &mut self.upload.sftp.password_encrypted,
+            "SFTP password",
+        )?;
+        migrate_secret(
+            &mut self.upload.sftp.private_key_passphrase,
+            &mut self.upload.sftp.private_key_passphrase_encrypted,
+            "SFTP key passphrase",
+        )?;
+        migrate_secret(
+            &mut self.upload.s3.secret_access_key,
+            &mut self.upload.s3.secret_access_key_encrypted,
+            "S3 secret access key",
+        )?;
         Ok(())
     }
 
@@ -1421,6 +1392,18 @@ impl Config {
     pub fn output_path(&self) -> PathBuf {
         self.output.directory.join(self.generate_filename())
     }
+}
+
+fn migrate_secret(plaintext: &mut String, encrypted: &mut String, label: &str) -> Result<()> {
+    if plaintext.is_empty() {
+        return Ok(());
+    }
+    let blob = crate::secret::replace(plaintext, encrypted)
+        .map_err(|error| anyhow!("couldn't store {label} in the credential vault: {error:#}"))?;
+    plaintext.clear();
+    *encrypted = blob;
+    tracing::info!("migrated {label} into encrypted vault");
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1537,6 +1520,54 @@ mod tests {
             Config::default().capture_tasks.len(),
             "the user's tasks must survive a missing/unknown field"
         );
+    }
+
+    #[test]
+    fn pending_plaintext_replacements_are_authoritative() {
+        let mut config = Config::default();
+        config.upload.ftp.password = "new ftp".into();
+        config.upload.ftp.password_encrypted = "stale".into();
+        config.upload.sftp.password = "new sftp".into();
+        config.upload.sftp.password_encrypted = "stale".into();
+        config.upload.sftp.private_key_passphrase = "new passphrase".into();
+        config.upload.sftp.private_key_passphrase_encrypted = "stale".into();
+        config.upload.s3.secret_access_key = "new s3".into();
+        config.upload.s3.secret_access_key_encrypted = "stale".into();
+
+        assert!(config.has_plaintext_secrets());
+        assert_eq!(config.upload.ftp.password_plaintext(), "new ftp");
+        assert_eq!(config.upload.sftp.password_plaintext(), "new sftp");
+        assert_eq!(
+            config.upload.sftp.private_key_passphrase_plaintext(),
+            "new passphrase"
+        );
+        assert_eq!(config.upload.s3.secret_access_key_plaintext(), "new s3");
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn migration_replaces_every_stored_secret_and_clears_plaintext() {
+        let old = crate::secret::encrypt("old").expect("encrypt old secret");
+        let mut config = Config::default();
+        config.upload.ftp.password = "new ftp".into();
+        config.upload.ftp.password_encrypted = old.clone();
+        config.upload.sftp.password = "new sftp".into();
+        config.upload.sftp.password_encrypted = old.clone();
+        config.upload.sftp.private_key_passphrase = "new passphrase".into();
+        config.upload.sftp.private_key_passphrase_encrypted = old.clone();
+        config.upload.s3.secret_access_key = "new s3".into();
+        config.upload.s3.secret_access_key_encrypted = old;
+
+        config.migrate_secrets().expect("migrate replacements");
+
+        assert!(!config.has_plaintext_secrets());
+        assert_eq!(config.upload.ftp.password_plaintext(), "new ftp");
+        assert_eq!(config.upload.sftp.password_plaintext(), "new sftp");
+        assert_eq!(
+            config.upload.sftp.private_key_passphrase_plaintext(),
+            "new passphrase"
+        );
+        assert_eq!(config.upload.s3.secret_access_key_plaintext(), "new s3");
     }
 
     #[test]

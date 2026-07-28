@@ -91,7 +91,7 @@ export function Tasks() {
 
     setStatus({ tone: "", msg: "saving..." });
     try {
-      await api.setConfig(c);
+      mutateConfig(await api.setConfig(c));
       setStatus({
         tone: "ok",
         msg: `${c.capture_tasks.length} task${c.capture_tasks.length === 1 ? "" : "s"} live.`,

@@ -20,10 +20,12 @@ export function Destinations() {
   const [report, setReport] = createSignal<ConnectionTestReport | null>(null);
 
   const test = async (destination: "Ftp" | "Sftp" | "Imgur" | "Custom" | "S3") => {
+    const c = config();
+    if (!c) return;
     setTesting(destination);
     setReport(null);
     try {
-      const r = await api.testUploadConnection(destination);
+      const r = await api.testUploadConnection(destination, c);
       setReport(r);
     } catch (e) {
       setReport({
@@ -41,7 +43,7 @@ export function Destinations() {
     if (!c) return;
     setStatus({ tone: "", msg: "writing..." });
     try {
-      await api.setConfig(c);
+      mutateConfig(await api.setConfig(c));
       setStatus({ tone: "ok", msg: "saved." });
       setConfigDirty(false);
     } catch (e) {
