@@ -29,13 +29,64 @@ pub fn encrypt(plaintext: &str) -> Result<String> {
     }
 }
 
-pub fn replace(plaintext: &str, existing: &str) -> Result<String> {
+#[derive(Default)]
+pub struct SecretTransaction {
     #[cfg(target_os = "linux")]
-    if let Some(id) = existing.strip_prefix("keyring:") {
-        return secret_service::store_with_id(plaintext, id);
+    staged: Vec<String>,
+    #[cfg(target_os = "linux")]
+    previous: Vec<String>,
+    #[cfg(target_os = "linux")]
+    committed: bool,
+}
+
+impl SecretTransaction {
+    pub(crate) fn retire(&mut self, existing: &str) {
+        #[cfg(target_os = "linux")]
+        if existing.starts_with("keyring:")
+            && !self.previous.iter().any(|reference| reference == existing)
+        {
+            self.previous.push(existing.to_string());
+        }
+        #[cfg(not(target_os = "linux"))]
+        let _ = existing;
     }
-    let _ = existing;
-    encrypt(plaintext)
+
+    pub fn replace(&mut self, plaintext: &str, existing: &str) -> Result<String> {
+        let reference = encrypt(plaintext)?;
+        #[cfg(target_os = "linux")]
+        {
+            self.staged.push(reference.clone());
+            self.retire(existing);
+        }
+        #[cfg(not(target_os = "linux"))]
+        let _ = existing;
+        Ok(reference)
+    }
+
+    pub fn commit(self) {
+        #[cfg(target_os = "linux")]
+        {
+            let mut transaction = self;
+            transaction.committed = true;
+            transaction.staged.clear();
+            if let Err(error) = secret_service::delete_references(&transaction.previous) {
+                tracing::warn!("couldn't remove replaced keyring credentials: {error:#}");
+            }
+        }
+        #[cfg(not(target_os = "linux"))]
+        let _ = self;
+    }
+}
+
+impl Drop for SecretTransaction {
+    fn drop(&mut self) {
+        #[cfg(target_os = "linux")]
+        if !self.committed && !self.staged.is_empty() {
+            if let Err(error) = secret_service::delete_references(&self.staged) {
+                tracing::warn!("couldn't roll back staged keyring credentials: {error:#}");
+            }
+        }
+    }
 }
 
 /// decrypt a blob previously produced by `encrypt`.
@@ -180,7 +231,7 @@ mod secret_service {
         store_with_id(plaintext, &id)
     }
 
-    pub fn store_with_id(plaintext: &str, id: &str) -> Result<String> {
+    fn store_with_id(plaintext: &str, id: &str) -> Result<String> {
         let s = open()?;
         let mut attrs: HashMap<&str, &str> = HashMap::new();
         attrs.insert("application", "capscr");
@@ -204,7 +255,7 @@ mod secret_service {
                 s.collection.as_str(),
                 Some("org.freedesktop.Secret.Collection"),
                 "CreateItem",
-                &(props, secret, true),
+                &(props, secret, false),
             )?
             .body()
             .deserialize()?;
@@ -216,6 +267,47 @@ mod secret_service {
 
     pub fn retrieve(id: &str) -> Result<String> {
         let s = open()?;
+        let item = find_items(&s, id)?
+            .into_iter()
+            .next()
+            .ok_or_else(|| anyhow!("secret {id} not found in keyring"))?;
+        let (_session, _params, value, _content_type): (OwnedObjectPath, Vec<u8>, Vec<u8>, String) =
+            s.conn
+                .call_method(
+                    Some(BUS),
+                    item.as_str(),
+                    Some("org.freedesktop.Secret.Item"),
+                    "GetSecret",
+                    &(ObjectPath::from(&s.session),),
+                )?
+                .body()
+                .deserialize()?;
+        String::from_utf8(value).map_err(|e| anyhow!("bad utf-8 from keyring: {e}"))
+    }
+
+    pub fn delete_references(references: &[String]) -> Result<()> {
+        if references.is_empty() {
+            return Ok(());
+        }
+        let s = open()?;
+        let mut first_error = None;
+        for reference in references {
+            let Some(id) = reference.strip_prefix("keyring:") else {
+                continue;
+            };
+            match delete_items(&s, id) {
+                Ok(()) => {}
+                Err(error) if first_error.is_none() => first_error = Some(error),
+                Err(_) => {}
+            }
+        }
+        match first_error {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
+    }
+
+    fn find_items(s: &Session, id: &str) -> Result<Vec<OwnedObjectPath>> {
         let mut attrs: HashMap<&str, &str> = HashMap::new();
         attrs.insert("application", "capscr");
         attrs.insert("capscr-id", id);
@@ -230,22 +322,29 @@ mod secret_service {
             )?
             .body()
             .deserialize()?;
-        let item = unlocked
-            .first()
-            .or_else(|| locked.first())
-            .ok_or_else(|| anyhow!("secret {id} not found in keyring"))?;
-        let (_session, _params, value, _content_type): (OwnedObjectPath, Vec<u8>, Vec<u8>, String) =
-            s.conn
+        Ok(unlocked.into_iter().chain(locked).collect())
+    }
+
+    fn delete_items(s: &Session, id: &str) -> Result<()> {
+        for item in find_items(s, id)? {
+            let prompt: OwnedObjectPath = s
+                .conn
                 .call_method(
                     Some(BUS),
                     item.as_str(),
                     Some("org.freedesktop.Secret.Item"),
-                    "GetSecret",
-                    &(ObjectPath::from(&s.session),),
+                    "Delete",
+                    &(),
                 )?
                 .body()
                 .deserialize()?;
-        String::from_utf8(value).map_err(|e| anyhow!("bad utf-8 from keyring: {e}"))
+            if prompt.as_str() != "/" {
+                return Err(anyhow!(
+                    "deleting keyring credential {id} needs an interactive prompt"
+                ));
+            }
+        }
+        Ok(())
     }
 }
 
@@ -357,7 +456,11 @@ mod tests {
     #[cfg(not(target_os = "linux"))]
     fn replacement_roundtrip() {
         let old_blob = encrypt("old secret").expect("encrypt old secret");
-        let new_blob = replace("new secret", &old_blob).expect("replace secret");
+        let mut transaction = SecretTransaction::default();
+        let new_blob = transaction
+            .replace("new secret", &old_blob)
+            .expect("replace secret");
+        transaction.commit();
         assert_eq!(
             decrypt(&new_blob).expect("decrypt replacement"),
             "new secret"

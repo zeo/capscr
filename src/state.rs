@@ -6,10 +6,15 @@ use crate::recording::{GifRecorder, RecordingState};
 use crossbeam_channel::Sender;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Mutex, RwLock};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, RwLock};
 
 const RECENT_UPLOADS_CAP: usize = 5;
+const THUMBNAIL_DECODE_LIMIT: usize = 2;
+
+pub(crate) type ThumbnailResult = std::result::Result<String, String>;
+pub(crate) type ThumbnailReceiver =
+    tokio::sync::watch::Receiver<Option<ThumbnailResult>>;
 
 pub enum HotkeyCommand {
     Reload { tasks: Vec<CaptureTask> },
@@ -48,6 +53,12 @@ pub struct AppState {
     pub recent_uploads: Mutex<VecDeque<UploadRecord>>,
     pub editor_image_path: Mutex<Option<String>>,
     pub capture_in_progress: AtomicBool,
+    pub pending_file_mutations: AtomicUsize,
+    pub shutdown_in_progress: AtomicBool,
+    pub exit_worker_running: AtomicBool,
+    pub(crate) thumbnail_decode_gate: Arc<tokio::sync::Semaphore>,
+    pub(crate) thumbnail_jobs: Mutex<HashMap<PathBuf, ThumbnailReceiver>>,
+    pub pending_hub_close_requests: Mutex<HashSet<String>>,
     // user-toggled global kill switch. mirrors config.hotkeys.disabled_globally
     // for in-memory speed; AppState::new restores it from disk so the toggle
     // survives restart.
@@ -102,6 +113,14 @@ impl AppState {
             recent_uploads: Mutex::new(VecDeque::with_capacity(RECENT_UPLOADS_CAP)),
             editor_image_path: Mutex::new(None),
             capture_in_progress: AtomicBool::new(false),
+            pending_file_mutations: AtomicUsize::new(0),
+            shutdown_in_progress: AtomicBool::new(false),
+            exit_worker_running: AtomicBool::new(false),
+            thumbnail_decode_gate: Arc::new(tokio::sync::Semaphore::new(
+                THUMBNAIL_DECODE_LIMIT,
+            )),
+            thumbnail_jobs: Mutex::new(HashMap::new()),
+            pending_hub_close_requests: Mutex::new(HashSet::new()),
             hotkeys_disabled: AtomicBool::new(disabled),
             hotkey_status: Mutex::new(HashMap::new()),
             pinned_images: Mutex::new(HashMap::new()),

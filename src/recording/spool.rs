@@ -9,9 +9,9 @@ use std::time::Duration;
 const DISK_RESERVE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const MAX_SPOOL_BYTES: u64 = 16 * 1024 * 1024 * 1024;
 const MIN_SPOOL_BYTES: u64 = 64 * 1024 * 1024;
-// re-probe free space every N frames so another process filling the volume
-// mid-recording still stops us before the disk runs dry
-const REPROBE_INTERVAL: usize = 64;
+// re-probe after this much output so large frames cannot outrun the reserve
+// when another process consumes the remaining space mid-recording
+const REPROBE_INTERVAL_BYTES: u64 = 64 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy)]
 pub struct FrameMeta {
@@ -30,6 +30,7 @@ pub struct FrameSpool {
     path: PathBuf,
     metas: Vec<FrameMeta>,
     bytes_written: u64,
+    last_space_probe_at: u64,
     byte_budget: u64,
 }
 
@@ -39,17 +40,19 @@ impl FrameSpool {
             "capscr_frames_{}.rgba",
             uuid::Uuid::new_v4().as_simple()
         ));
+        let byte_budget = spool_budget(free_disk_space(&path));
+        require_recording_headroom(byte_budget)?;
         let file = OpenOptions::new()
             .read(true)
             .write(true)
             .create_new(true)
             .open(&path)?;
-        let byte_budget = spool_budget(free_disk_space(&path));
         Ok(Self {
             file,
             path,
             metas: Vec::new(),
             bytes_written: 0,
+            last_space_probe_at: 0,
             byte_budget,
         })
     }
@@ -61,9 +64,17 @@ impl FrameSpool {
         if self.bytes_written.saturating_add(len) > self.byte_budget {
             return Ok(false);
         }
-        if self.metas.len().is_multiple_of(REPROBE_INTERVAL) {
-            let live = spool_budget(free_disk_space(&self.path).map(|f| f + self.bytes_written));
+        if self
+            .bytes_written
+            .saturating_sub(self.last_space_probe_at)
+            .saturating_add(len)
+            >= REPROBE_INTERVAL_BYTES
+        {
+            let live = spool_budget(
+                free_disk_space(&self.path).map(|free| free.saturating_add(self.bytes_written)),
+            );
             self.byte_budget = self.byte_budget.min(live);
+            self.last_space_probe_at = self.bytes_written;
             if self.bytes_written.saturating_add(len) > self.byte_budget {
                 return Ok(false);
             }
@@ -117,12 +128,26 @@ impl Drop for FrameSpool {
     }
 }
 
+fn require_recording_headroom(byte_budget: u64) -> Result<()> {
+    if byte_budget == 0 {
+        return Err(anyhow!(
+            "recording needs at least 64 MiB free above the 2 GiB disk reserve"
+        ));
+    }
+    Ok(())
+}
+
 fn spool_budget(free: Option<u64>) -> u64 {
     match free {
-        Some(f) => f
-            .saturating_sub(DISK_RESERVE_BYTES)
-            .clamp(MIN_SPOOL_BYTES, MAX_SPOOL_BYTES),
-        None => MAX_SPOOL_BYTES,
+        Some(free) => {
+            let available = free.saturating_sub(DISK_RESERVE_BYTES);
+            if available < MIN_SPOOL_BYTES {
+                0
+            } else {
+                available.min(MAX_SPOOL_BYTES)
+            }
+        }
+        None => 0,
     }
 }
 
@@ -232,12 +257,39 @@ mod tests {
 
     #[test]
     fn budget_respects_reserve_and_caps() {
-        assert_eq!(spool_budget(None), MAX_SPOOL_BYTES);
-        assert_eq!(spool_budget(Some(0)), MIN_SPOOL_BYTES);
+        assert_eq!(spool_budget(None), 0);
+        assert_eq!(spool_budget(Some(0)), 0);
+        assert_eq!(spool_budget(Some(DISK_RESERVE_BYTES - 1)), 0);
+        assert_eq!(spool_budget(Some(DISK_RESERVE_BYTES)), 0);
+        assert_eq!(spool_budget(Some(DISK_RESERVE_BYTES + 1)), 0);
+        assert_eq!(
+            spool_budget(Some(DISK_RESERVE_BYTES + MIN_SPOOL_BYTES - 1)),
+            0
+        );
+        assert_eq!(
+            spool_budget(Some(DISK_RESERVE_BYTES + MIN_SPOOL_BYTES)),
+            MIN_SPOOL_BYTES
+        );
         assert_eq!(
             spool_budget(Some(DISK_RESERVE_BYTES + MIN_SPOOL_BYTES * 2)),
             MIN_SPOOL_BYTES * 2
         );
         assert_eq!(spool_budget(Some(u64::MAX)), MAX_SPOOL_BYTES);
+    }
+
+    #[test]
+    fn zero_budget_rejects_the_first_frame() {
+        let mut spool = FrameSpool::create().expect("create");
+        spool.byte_budget = 0;
+        let image = RgbaImage::new(1, 1);
+        assert!(!spool.push(&image, Duration::ZERO).expect("push"));
+        assert!(spool.is_empty());
+    }
+
+    #[test]
+    fn zero_budget_rejects_recording_start() {
+        let error = require_recording_headroom(0).expect_err("zero budget");
+        assert!(error.to_string().contains("2 GiB disk reserve"));
+        require_recording_headroom(MIN_SPOOL_BYTES).expect("minimum budget");
     }
 }

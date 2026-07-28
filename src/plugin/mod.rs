@@ -104,7 +104,7 @@ impl PluginManager {
         let mut errors = Vec::new();
         for entry in entries.flatten() {
             let path = entry.path();
-            if !path.is_dir() {
+            if !entry.file_type().is_ok_and(|file_type| file_type.is_dir()) {
                 continue;
             }
             // skip dotfiles: the marketplace stages installs into `.staging-<id>`

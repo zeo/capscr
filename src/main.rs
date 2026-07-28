@@ -287,6 +287,7 @@ fn main() {
             commands::get_default_config,
             commands::is_hdr_capture,
             commands::set_config,
+            commands::set_capture_tasks,
             commands::take_screenshot,
             commands::list_captures,
             commands::history_thumbnail,
@@ -295,7 +296,8 @@ fn main() {
             commands::reupload_capture,
             commands::open_in_explorer,
             commands::trim_mp4,
-            commands::exit_app,
+            commands::acknowledge_hub_close,
+            commands::complete_hub_close,
             commands::set_autostart,
             commands::get_autostart,
             commands::list_installed_plugins,
@@ -700,6 +702,14 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
                 "open_captures" => {
                     let st = app.state::<state::AppState>();
                     let dir = st.config.lock().unwrap().output.directory.clone();
+                    let _pending_mutation =
+                        match commands::PendingFileMutation::begin(app) {
+                            Ok(mutation) => mutation,
+                            Err(error) => {
+                                tracing::warn!("open captures blocked: {error}");
+                                return;
+                            }
+                        };
                     let _ = std::fs::create_dir_all(&dir);
                     use tauri_plugin_opener::OpenerExt;
                     let _ = app
@@ -717,15 +727,39 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
                         "dest_ftp" => config::UploadDestination::Ftp,
                         _ => config::UploadDestination::Sftp,
                     };
-                    {
-                        let mut cfg = st.config.lock().unwrap();
-                        if cfg.upload.destination != new_dest {
-                            cfg.upload.destination = new_dest;
-                            if let Err(e) = cfg.save() {
-                                tracing::warn!(
-                                    "save after destination switch failed: {e}"
-                                );
+                    let saved = {
+                        let mut stored = st.config.lock().unwrap();
+                        if stored.upload.destination == new_dest {
+                            Ok(false)
+                        } else {
+                            let _pending_mutation =
+                                match commands::PendingFileMutation::begin(app) {
+                                    Ok(mutation) => mutation,
+                                    Err(error) => {
+                                        tracing::warn!(
+                                            "destination switch blocked: {error}"
+                                        );
+                                        return;
+                                    }
+                                };
+                            let mut config = stored.clone();
+                            config.upload.destination = new_dest;
+                            match config.save_and_migrate_secrets() {
+                                Ok(()) => {
+                                    *stored = config;
+                                    Ok(true)
+                                }
+                                Err(error) => Err(error.to_string()),
                             }
+                        }
+                    };
+                    match saved {
+                        Ok(false) => return,
+                        Ok(true) => {}
+                        Err(error) => {
+                            tracing::warn!("save after destination switch failed: {error}");
+                            commands::emit_error(app, "settings", &error);
+                            return;
                         }
                     }
                     rebuild_tray_menu(app);
@@ -746,6 +780,12 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
                         st,
                     ) {
                         tracing::warn!("tray hotkey toggle failed: {e}");
+                        commands::emit_error(app, "settings", &e);
+                        let _ = crate::clipboard::show_notification(
+                            "Hotkey change failed",
+                            &e,
+                        );
+                        return;
                     }
                     let _ = crate::clipboard::show_notification(
                         if next { "Hotkeys disabled" } else { "Hotkeys enabled" },
@@ -756,7 +796,7 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
                         },
                     );
                 }
-                "exit" => commands::exit_app(app.clone()),
+                "exit" => commands::request_hub_close(app, true),
                 other if other.starts_with("recent_upload_") => {
                     let idx: usize = other
                         .trim_start_matches("recent_upload_")
@@ -1113,6 +1153,13 @@ fn dispatch_jump(app: &tauri::AppHandle, kind: Option<&str>) {
         "captures" => {
             let st = app.state::<state::AppState>();
             let dir = st.config.lock().unwrap().output.directory.clone();
+            let _pending_mutation = match commands::PendingFileMutation::begin(app) {
+                Ok(mutation) => mutation,
+                Err(error) => {
+                    tracing::warn!("open captures blocked: {error}");
+                    return;
+                }
+            };
             let _ = std::fs::create_dir_all(&dir);
             use tauri_plugin_opener::OpenerExt;
             let _ = app

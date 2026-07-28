@@ -4,7 +4,7 @@ pub mod known_hosts;
 
 use anyhow::{anyhow, Result};
 use image::RgbaImage;
-use std::io::Cursor;
+use std::io::{Cursor, Read};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, ToSocketAddrs};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
@@ -92,11 +92,8 @@ pub struct ImageUploader {
 
 static SHARED_UPLOADER: OnceLock<std::result::Result<ImageUploader, String>> = OnceLock::new();
 
-// the actual SSRF enforcement: reqwest resolves every connection — the initial
-// request and each redirect hop — through this resolver, so a hostname that
-// resolves to a private/internal address is refused at connect time. this
-// closes the gap where the redirect policy only string-matched the host and
-// where the real connect re-resolved DNS after validate_url_security's checks.
+// hostname connections use this resolver at connect time
+// parsed-url checks cover literal addresses that bypass dns resolution
 pub(crate) struct ValidatingResolver;
 
 /// a reqwest DNS resolver that refuses any host resolving to a private/internal
@@ -104,6 +101,54 @@ pub(crate) struct ValidatingResolver;
 /// the same SSRF guard the uploader has.
 pub(crate) fn ssrf_validating_resolver() -> Arc<ValidatingResolver> {
     Arc::new(ValidatingResolver)
+}
+
+pub(crate) fn validate_outbound_url(raw: &str) -> Result<url::Url> {
+    let parsed = url::Url::parse(raw).map_err(|_| anyhow!("Invalid URL format"))?;
+    if parsed.scheme() != "https" {
+        return Err(anyhow!("only https URLs are allowed"));
+    }
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err(anyhow!("URL credentials are not allowed"));
+    }
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| anyhow!("URL has no host"))?;
+    if host.is_empty() || host.len() > 253 {
+        return Err(anyhow!("Invalid hostname length"));
+    }
+
+    let host_lower = host.to_lowercase();
+    let blocked_hosts = [
+        "localhost",
+        "metadata.google.internal",
+        "metadata.google.com",
+        "metadata",
+        "instance-data",
+        "burpcollaborator.net",
+        "oastify.com",
+    ];
+    if blocked_hosts
+        .iter()
+        .any(|blocked| host_lower == *blocked || host_lower.ends_with(&format!(".{blocked}")))
+    {
+        return Err(anyhow!("Host not allowed"));
+    }
+
+    let literal = host_lower.trim_matches(|character| character == '[' || character == ']');
+    if literal
+        .parse::<IpAddr>()
+        .is_ok_and(ImageUploader::is_private_ip)
+    {
+        return Err(anyhow!("Private IP ranges are blocked"));
+    }
+
+    let port = parsed.port().unwrap_or(443);
+    let blocked_ports = [0, 22, 23, 25, 110, 143, 445, 3306, 3389, 5432, 6379, 27017];
+    if blocked_ports.contains(&port) {
+        return Err(anyhow!("Port not allowed"));
+    }
+    Ok(parsed)
 }
 
 // resolve a hostname and keep only public addresses, rejecting the whole lookup
@@ -144,6 +189,8 @@ impl ImageUploader {
         let client = reqwest::blocking::Client::builder()
             .timeout(Duration::from_secs(UPLOAD_TIMEOUT_SECS))
             .user_agent("capscr/1.0")
+            .https_only(true)
+            .no_proxy()
             .dns_resolver(Arc::new(ValidatingResolver))
             // a cheap first pass on each redirect target; the dns resolver above
             // is what actually stops a redirect to a private/internal IP (SSRF)
@@ -151,34 +198,8 @@ impl ImageUploader {
                 if attempt.previous().len() >= MAX_REDIRECTS {
                     return attempt.error("too many redirects");
                 }
-                let url = attempt.url();
-                if url.scheme() != "https" {
-                    return attempt.error("redirect to non-https url blocked");
-                }
-                if let Some(host) = url.host_str() {
-                    let h = host.to_lowercase();
-                    let blocked = [
-                        "localhost",
-                        "127.0.0.1",
-                        "0.0.0.0",
-                        "metadata.google.internal",
-                        "metadata.google.com",
-                        "instance-data",
-                    ];
-                    if blocked
-                        .iter()
-                        .any(|b| h == *b || h.ends_with(&format!(".{b}")))
-                    {
-                        return attempt.error("redirect to blocked host");
-                    }
-                    if h.starts_with("169.254.") {
-                        return attempt.error("redirect to link-local/metadata ip blocked");
-                    }
-                    if ImageUploader::is_private_ip_string(&h) {
-                        return attempt.error("redirect to private ip blocked");
-                    }
-                } else {
-                    return attempt.error("redirect has no host");
+                if validate_outbound_url(attempt.url().as_str()).is_err() {
+                    return attempt.error("redirect target blocked");
                 }
                 attempt.follow()
             }))
@@ -189,17 +210,23 @@ impl ImageUploader {
     pub(crate) fn is_private_ip(ip: IpAddr) -> bool {
         match ip {
             IpAddr::V4(ipv4) => {
+                let octets = ipv4.octets();
                 ipv4.is_loopback()
                     || ipv4.is_private()
                     || ipv4.is_link_local()
                     || ipv4.is_broadcast()
                     || ipv4.is_documentation()
+                    || ipv4.is_multicast()
                     || ipv4.is_unspecified()
-                    || ipv4.octets()[0] == 100 && (ipv4.octets()[1] & 0xC0) == 64
-                    || ipv4.octets() == [169, 254, 169, 254]
+                    || octets[0] == 0
+                    || octets[0] == 100 && (octets[1] & 0xC0) == 64
+                    || octets[0] == 192 && octets[1] == 0 && octets[2] == 0
+                    || octets[0] == 192 && octets[1] == 88 && octets[2] == 99
+                    || octets[0] == 198 && (octets[1] & 0xFE) == 18
+                    || octets[0] >= 240
             }
             IpAddr::V6(ipv6) => {
-                if ipv6.is_loopback() || ipv6.is_unspecified() {
+                if ipv6.is_loopback() || ipv6.is_unspecified() || ipv6.is_multicast() {
                     return true;
                 }
                 let o = ipv6.octets();
@@ -209,6 +236,17 @@ impl ImageUploader {
                 }
                 // link-local: fe80::/10
                 if o[0] == 0xFE && (o[1] & 0xC0) == 0x80 {
+                    return true;
+                }
+                // deprecated site-local: fec0::/10
+                if o[0] == 0xFE && (o[1] & 0xC0) == 0xC0 {
+                    return true;
+                }
+                // benchmarking and documentation ranges
+                if (o[..6] == [0x20, 0x01, 0x00, 0x02, 0x00, 0x00])
+                    || (o[..4] == [0x20, 0x01, 0x0D, 0xB8])
+                    || (o[0] == 0x3F && o[1] == 0xFF && (o[2] & 0xF0) == 0)
+                {
                     return true;
                 }
                 // IPv4-mapped: ::ffff:0:0/96 — check the embedded IPv4
@@ -222,54 +260,11 @@ impl ImageUploader {
     }
 
     fn validate_url_security(url: &str) -> Result<()> {
-        let parsed = url::Url::parse(url).map_err(|_| anyhow!("Invalid URL format"))?;
-
-        if parsed.scheme() != "https" {
-            return Err(anyhow!("Only HTTPS URLs are allowed"));
-        }
-
+        let parsed = validate_outbound_url(url)?;
         let host = parsed
             .host_str()
             .ok_or_else(|| anyhow!("URL has no host"))?;
-
-        if host.is_empty() || host.len() > 253 {
-            return Err(anyhow!("Invalid hostname length"));
-        }
-
-        let blocked_hosts = [
-            "localhost",
-            "127.0.0.1",
-            "::1",
-            "[::1]",
-            "0.0.0.0",
-            "metadata.google.internal",
-            "metadata.google.com",
-            "metadata",
-            "instance-data",
-            "burpcollaborator.net",
-            "oastify.com",
-        ];
-        let host_lower = host.to_lowercase();
-        for blocked in &blocked_hosts {
-            if host_lower == *blocked || host_lower.ends_with(&format!(".{}", blocked)) {
-                return Err(anyhow!("Host not allowed"));
-            }
-        }
-
-        if host_lower.starts_with("169.254.") || host_lower.contains("169.254.169.254") {
-            return Err(anyhow!("Cloud metadata endpoints are blocked"));
-        }
-
-        if Self::is_private_ip_string(&host_lower) {
-            return Err(anyhow!("Private IP ranges are blocked"));
-        }
-
         let port = parsed.port().unwrap_or(443);
-        let blocked_ports = [0, 22, 23, 25, 110, 143, 445, 3306, 3389, 5432, 6379, 27017];
-        if blocked_ports.contains(&port) {
-            return Err(anyhow!("Port not allowed"));
-        }
-
         let host_with_port = format!("{}:{}", host, port);
         let resolved_ips: Vec<IpAddr> = host_with_port
             .to_socket_addrs()
@@ -776,6 +771,42 @@ pub fn test_connection_ftp(_target: &FtpTarget) -> Result<Vec<TestStep>> {
 }
 
 #[cfg(feature = "sftp")]
+fn accept_sftp_host_key(
+    path: &std::path::Path,
+    host_port: &str,
+    fingerprint: &str,
+    rejection: &Arc<std::sync::Mutex<Option<String>>>,
+) -> bool {
+    if fingerprint.is_empty() {
+        *rejection.lock().unwrap() = Some(format!(
+            "SSH server {host_port} offered an empty host fingerprint"
+        ));
+        return false;
+    }
+    match known_hosts::verify_or_trust(path, host_port, fingerprint) {
+        Ok(known_hosts::TrustDecision::Trusted) => true,
+        Ok(known_hosts::TrustDecision::FirstSeen) => {
+            tracing::info!("ssh host trust-on-first-use: {host_port} -> {fingerprint}");
+            true
+        }
+        Ok(known_hosts::TrustDecision::Mismatch { stored }) => {
+            *rejection.lock().unwrap() = Some(format!(
+                "SSH host key mismatch for {host_port}: stored {stored}, server now offers \
+                 {fingerprint}. If this is intentional, forget the host in Settings > SSH \
+                 known hosts and reconnect."
+            ));
+            false
+        }
+        Err(error) => {
+            *rejection.lock().unwrap() = Some(format!(
+                "SSH host trust check failed for {host_port}: {error:#}"
+            ));
+            false
+        }
+    }
+}
+
+#[cfg(feature = "sftp")]
 pub fn test_connection_sftp(target: &SftpTarget) -> Result<Vec<TestStep>> {
     use russh::client;
     use russh::keys::HashAlg;
@@ -842,24 +873,12 @@ pub fn test_connection_sftp(target: &SftpTarget) -> Result<Vec<TestStep>> {
             key: &russh::keys::ssh_key::PublicKey,
         ) -> std::result::Result<bool, Self::Error> {
             let fp = key.fingerprint(HashAlg::Sha256).to_string();
-            let mut store = known_hosts::KnownHosts::load(&self.known_hosts_path);
-            match store.lookup(&self.host_port) {
-                Some(entry) if entry.fingerprint == fp => Ok(true),
-                Some(entry) => {
-                    *self.mismatch_error.lock().unwrap() = Some(format!(
-                        "stored {}, server now offering {}",
-                        entry.fingerprint, fp
-                    ));
-                    Ok(false)
-                }
-                None => {
-                    store.insert(self.host_port.clone(), fp.clone());
-                    if let Err(e) = store.save(&self.known_hosts_path) {
-                        tracing::warn!("ssh_known_hosts save (test) failed: {e}");
-                    }
-                    Ok(true)
-                }
-            }
+            Ok(accept_sftp_host_key(
+                &self.known_hosts_path,
+                &self.host_port,
+                &fp,
+                &self.mismatch_error,
+            ))
         }
     }
 
@@ -961,10 +980,7 @@ pub fn test_connection_sftp(target: &SftpTarget) -> Result<Vec<TestStep>> {
     });
 
     if let Some(msg) = mismatch_error.lock().unwrap().take() {
-        return Ok(vec![TestStep::fail(
-            "host-key-mismatch",
-            format!("{msg} — forget the host in Settings → SSH known hosts and reconnect"),
-        )]);
+        return Ok(vec![TestStep::fail("host-key", msg)]);
     }
 
     match result {
@@ -1091,22 +1107,24 @@ pub fn test_connection_custom(uploader: &CustomUploader) -> Result<Vec<TestStep>
     }
     steps.push(TestStep::ok("scheme", "https".into()));
 
+    if let Err(error) = ImageUploader::validate_url_security(url) {
+        steps.push(TestStep::fail("validate-url", error.to_string()));
+        return Ok(steps);
+    }
     if let Some(host) = parsed.host_str() {
-        if let Err(e) = validate_host(host) {
-            steps.push(TestStep::fail("validate-host", e.to_string()));
-            return Ok(steps);
-        }
-        let port = parsed.port_or_known_default().unwrap_or(443);
-        if let Err(e) = validate_resolved_host(host, port) {
-            steps.push(TestStep::fail("resolve-host", e.to_string()));
-            return Ok(steps);
-        }
-        steps.push(TestStep::ok("resolve-host", format!("{}:{}", host, port)));
+        steps.push(TestStep::ok(
+            "resolve-host",
+            format!("{}:{}", host, parsed.port_or_known_default().unwrap_or(443)),
+        ));
     }
 
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(15))
         .user_agent("capscr/1.0")
+        .https_only(true)
+        .no_proxy()
+        .dns_resolver(ssrf_validating_resolver())
+        .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|e| anyhow!("HTTP client init failed: {e}"))?;
 
@@ -1193,32 +1211,13 @@ pub fn upload_sftp(data: &[u8], file_name: &str, target: &SftpTarget) -> Result<
             &mut self,
             key: &russh::keys::ssh_key::PublicKey,
         ) -> std::result::Result<bool, Self::Error> {
-            let fp = match key.fingerprint(HashAlg::Sha256).to_string() {
-                s if s.is_empty() => "SHA256:<empty>".to_string(),
-                s => s,
-            };
-            let mut store = known_hosts::KnownHosts::load(&self.known_hosts_path);
-            match store.lookup(&self.host_port) {
-                Some(entry) if entry.fingerprint == fp => Ok(true),
-                Some(entry) => {
-                    let stored = entry.fingerprint.clone();
-                    *self.mismatch_error.lock().unwrap() = Some(format!(
-                        "SSH host key mismatch for {} — stored {}, server now offering {}. \
-                         If this is intentional (e.g. key rotation), forget the host in \
-                         Settings → SSH known hosts and reconnect.",
-                        self.host_port, stored, fp
-                    ));
-                    Ok(false)
-                }
-                None => {
-                    store.insert(self.host_port.clone(), fp.clone());
-                    if let Err(e) = store.save(&self.known_hosts_path) {
-                        tracing::warn!("ssh_known_hosts save failed: {e}");
-                    }
-                    tracing::info!("ssh host trust-on-first-use: {} -> {}", self.host_port, fp);
-                    Ok(true)
-                }
-            }
+            let fp = key.fingerprint(HashAlg::Sha256).to_string();
+            Ok(accept_sftp_host_key(
+                &self.known_hosts_path,
+                &self.host_port,
+                &fp,
+                &self.mismatch_error,
+            ))
         }
     }
 
@@ -1479,7 +1478,45 @@ fn sign_s3_request(
     Ok(auth_header)
 }
 
+fn validate_s3_target(target: &S3Target) -> Result<()> {
+    if target.bucket.is_empty() || target.bucket.len() > 255 {
+        return Err(anyhow!("S3 bucket name has an invalid length"));
+    }
+    let region = target.region.as_bytes();
+    if region.is_empty()
+        || region.len() > 64
+        || !region[0].is_ascii_alphanumeric()
+        || !region[region.len() - 1].is_ascii_alphanumeric()
+        || !region
+            .iter()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || *byte == b'-')
+    {
+        return Err(anyhow!("S3 region has an invalid format"));
+    }
+    if target.endpoint.is_empty() {
+        let bucket = target.bucket.as_bytes();
+        let valid_labels = target.bucket.split('.').all(|label| {
+            let bytes = label.as_bytes();
+            !bytes.is_empty()
+                && bytes[0].is_ascii_alphanumeric()
+                && bytes[bytes.len() - 1].is_ascii_alphanumeric()
+                && bytes.iter().all(|byte| {
+                    byte.is_ascii_lowercase() || byte.is_ascii_digit() || *byte == b'-'
+                })
+        });
+        if bucket.len() < 3
+            || bucket.len() > 63
+            || !valid_labels
+            || target.bucket.parse::<Ipv4Addr>().is_ok()
+        {
+            return Err(anyhow!("S3 bucket name has an invalid format"));
+        }
+    }
+    Ok(())
+}
+
 pub fn upload_s3(data: &[u8], file_name: &str, target: &S3Target) -> Result<UploadResult> {
+    validate_s3_target(target)?;
     let safe = sanitize_remote_filename(file_name);
     let filename = uniquify_remote_filename(&safe);
 
@@ -1506,14 +1543,7 @@ pub fn upload_s3(data: &[u8], file_name: &str, target: &S3Target) -> Result<Uplo
     };
 
     let request_url = url::Url::parse(&request_url_str)?;
-    // the sigv4 auth header and the image both ride this request; refuse to send
-    // them over cleartext http if the user typed an http:// custom endpoint
-    if request_url.scheme() != "https" {
-        return Err(anyhow!(
-            "S3 endpoint must use https; refusing to send credentials over {}",
-            request_url.scheme()
-        ));
-    }
+    validate_outbound_url(request_url.as_str())?;
 
     let mut hasher = Sha256::new();
     hasher.update(data);
@@ -1535,6 +1565,10 @@ pub fn upload_s3(data: &[u8], file_name: &str, target: &S3Target) -> Result<Uplo
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(UPLOAD_TIMEOUT_SECS))
         .user_agent("capscr/1.0")
+        .https_only(true)
+        .no_proxy()
+        .dns_resolver(ssrf_validating_resolver())
+        .redirect(reqwest::redirect::Policy::none())
         .build()?;
 
     let response = client
@@ -1548,7 +1582,16 @@ pub fn upload_s3(data: &[u8], file_name: &str, target: &S3Target) -> Result<Uplo
 
     let status = response.status();
     if !status.is_success() {
-        let err_body = response.text().unwrap_or_default();
+        let mut err_body = Vec::new();
+        response
+            .take(MAX_RESPONSE_SIZE as u64 + 1)
+            .read_to_end(&mut err_body)?;
+        let truncated = err_body.len() > MAX_RESPONSE_SIZE;
+        err_body.truncate(MAX_RESPONSE_SIZE);
+        let mut err_body = String::from_utf8_lossy(&err_body).into_owned();
+        if truncated {
+            err_body.push_str("...");
+        }
         return Err(anyhow!(
             "S3 upload failed with status {}: {}",
             status,
@@ -1564,14 +1607,7 @@ pub fn upload_s3(data: &[u8], file_name: &str, target: &S3Target) -> Result<Uplo
             target.bucket, target.region, filename
         )
     } else {
-        let mut ep = target.endpoint.clone();
-        if !ep.contains("://") {
-            ep = format!("https://{}", ep);
-        }
-        if !ep.ends_with('/') {
-            ep.push('/');
-        }
-        format!("{}{}/{}", ep, target.bucket, filename)
+        request_url.to_string()
     };
 
     Ok(UploadResult {
@@ -1583,8 +1619,8 @@ pub fn upload_s3(data: &[u8], file_name: &str, target: &S3Target) -> Result<Uplo
 pub fn test_connection_s3(target: &S3Target) -> Result<Vec<TestStep>> {
     let mut steps = Vec::new();
 
-    if target.bucket.is_empty() {
-        steps.push(TestStep::fail("config", "Bucket name is empty".into()));
+    if let Err(error) = validate_s3_target(target) {
+        steps.push(TestStep::fail("config", error.to_string()));
         return Ok(steps);
     }
     if target.access_key_id.is_empty() {
@@ -1671,6 +1707,58 @@ mod tests {
         };
         let err = upload_s3(b"x", "f.png", &target).unwrap_err();
         assert!(err.to_string().contains("https"), "got: {err}");
+    }
+
+    #[test]
+    fn s3_rejects_private_literal_endpoints_before_connecting() {
+        for endpoint in ["https://127.0.0.1:4443", "https://[::1]:4443"] {
+            let target = S3Target {
+                bucket: "captures".into(),
+                region: "us-east-1".into(),
+                endpoint: endpoint.into(),
+                access_key_id: "AK".into(),
+                secret_access_key: "SK".into(),
+                public_url_template: String::new(),
+            };
+            let error = upload_s3(b"x", "f.png", &target).expect_err(endpoint);
+            assert!(error.to_string().contains("Private IP"), "got: {error}");
+        }
+    }
+
+    #[test]
+    fn default_s3_endpoint_requires_dns_safe_bucket_and_region() {
+        let mut target = S3Target {
+            bucket: "user@127.0.0.1".into(),
+            region: "us-east-1".into(),
+            endpoint: String::new(),
+            access_key_id: "AK".into(),
+            secret_access_key: "SK".into(),
+            public_url_template: String::new(),
+        };
+        assert!(validate_s3_target(&target).is_err());
+        target.bucket = "valid-captures".into();
+        target.region = "us-east-1/../../".into();
+        assert!(validate_s3_target(&target).is_err());
+    }
+
+    #[test]
+    fn outbound_url_validation_rejects_private_literals() {
+        for url in [
+            "https://0.0.0.1/resource",
+            "https://127.0.0.2/resource",
+            "https://10.0.0.5/resource",
+            "https://192.0.0.1/resource",
+            "https://198.18.0.1/resource",
+            "https://240.0.0.1/resource",
+            "https://[::1]/resource",
+            "https://[fc00::1]/resource",
+            "https://[fec0::1]/resource",
+            "https://[2001:2::1]/resource",
+            "https://[2001:db8::1]/resource",
+            "https://[3fff::1]/resource",
+        ] {
+            assert!(validate_outbound_url(url).is_err(), "{url} should be blocked");
+        }
     }
 
     #[test]

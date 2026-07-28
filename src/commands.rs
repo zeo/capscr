@@ -13,6 +13,8 @@ use crate::state::{AppState, HotkeyStatus, UploadRecord};
 use crate::upload::{CustomUploader, FtpTarget, UploadService};
 use image::RgbaImage;
 use serde::{Deserialize, Serialize};
+#[cfg(any(windows, target_os = "linux"))]
+use std::io::Read;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -69,6 +71,66 @@ pub fn get_default_config() -> Config {
     Config::default()
 }
 
+fn ftp_identity_matches(requested: &Config, saved: &Config) -> bool {
+    requested.upload.ftp.host == saved.upload.ftp.host
+        && requested.upload.ftp.port == saved.upload.ftp.port
+        && requested.upload.ftp.username == saved.upload.ftp.username
+        && requested.upload.ftp.use_tls == saved.upload.ftp.use_tls
+}
+
+fn sftp_identity_matches(requested: &Config, saved: &Config) -> bool {
+    requested.upload.sftp.host == saved.upload.sftp.host
+        && requested.upload.sftp.port == saved.upload.sftp.port
+        && requested.upload.sftp.username == saved.upload.sftp.username
+        && requested.upload.sftp.private_key_path == saved.upload.sftp.private_key_path
+}
+
+fn s3_identity_matches(requested: &Config, saved: &Config) -> bool {
+    requested.upload.s3.bucket == saved.upload.s3.bucket
+        && requested.upload.s3.region == saved.upload.s3.region
+        && requested.upload.s3.endpoint == saved.upload.s3.endpoint
+        && requested.upload.s3.access_key_id == saved.upload.s3.access_key_id
+}
+
+fn bind_backend_secret_references(
+    config: &mut Config,
+    stored: &Config,
+) -> crate::secret::SecretTransaction {
+    let mut retired = crate::secret::SecretTransaction::default();
+    config.upload.ftp.password_encrypted.clear();
+    config.upload.sftp.password_encrypted.clear();
+    config
+        .upload
+        .sftp
+        .private_key_passphrase_encrypted
+        .clear();
+    config.upload.s3.secret_access_key_encrypted.clear();
+
+    if ftp_identity_matches(config, stored) {
+        config.upload.ftp.password_encrypted = stored.upload.ftp.password_encrypted.clone();
+    } else {
+        retired.retire(&stored.upload.ftp.password_encrypted);
+    }
+    if sftp_identity_matches(config, stored) {
+        config.upload.sftp.password_encrypted = stored.upload.sftp.password_encrypted.clone();
+        config.upload.sftp.private_key_passphrase_encrypted = stored
+            .upload
+            .sftp
+            .private_key_passphrase_encrypted
+            .clone();
+    } else {
+        retired.retire(&stored.upload.sftp.password_encrypted);
+        retired.retire(&stored.upload.sftp.private_key_passphrase_encrypted);
+    }
+    if s3_identity_matches(config, stored) {
+        config.upload.s3.secret_access_key_encrypted =
+            stored.upload.s3.secret_access_key_encrypted.clone();
+    } else {
+        retired.retire(&stored.upload.s3.secret_access_key_encrypted);
+    }
+    retired
+}
+
 /// cheap-ish probe: reads PNG chunks until the `cICP` chunk or `IDAT`. The
 /// editor calls this on load to know whether to warn the user that edits
 /// will flatten HDR to SDR. Returns false on any read error.
@@ -86,56 +148,42 @@ pub fn set_config(
     app: AppHandle,
     state: State<AppState>,
 ) -> Result<Config, String> {
-    // preserve encrypted secrets when the UI sent empty plaintext inputs —
-    // without this, every Settings → Save would wipe the vault unless the
-    // user retypes their secret each time. the frontend shows an empty input
-    // when an encrypted blob exists, so empty here means "keep current"
     {
-        let stored = state.config.lock().unwrap();
-        if config.upload.ftp.password.is_empty()
-            && config.upload.ftp.password_encrypted.is_empty()
-            && !stored.upload.ftp.password_encrypted.is_empty()
-        {
-            config.upload.ftp.password_encrypted = stored.upload.ftp.password_encrypted.clone();
-        }
-        if config.upload.sftp.password.is_empty()
-            && config.upload.sftp.password_encrypted.is_empty()
-            && !stored.upload.sftp.password_encrypted.is_empty()
-        {
-            config.upload.sftp.password_encrypted = stored.upload.sftp.password_encrypted.clone();
-        }
-        if config.upload.sftp.private_key_passphrase.is_empty()
-            && config
-                .upload
-                .sftp
-                .private_key_passphrase_encrypted
-                .is_empty()
-            && !stored
-                .upload
-                .sftp
-                .private_key_passphrase_encrypted
-                .is_empty()
-        {
-            config.upload.sftp.private_key_passphrase_encrypted =
-                stored.upload.sftp.private_key_passphrase_encrypted.clone();
-        }
-        if config.upload.s3.secret_access_key.is_empty()
-            && config.upload.s3.secret_access_key_encrypted.is_empty()
-            && !stored.upload.s3.secret_access_key_encrypted.is_empty()
-        {
-            config.upload.s3.secret_access_key_encrypted =
-                stored.upload.s3.secret_access_key_encrypted.clone();
-        }
+        let mut stored = state.config.lock().unwrap();
+        // encrypted references are backend-owned and never accepted from ipc
+        let retired_secrets = bind_backend_secret_references(&mut config, &stored);
+        // the global hotkey kill switch lives in the atomic (the tray and Settings
+        // toggle it there); make the persisted config agree with it so this save
+        // can't quietly clear the switch and re-enable every hotkey on next launch
+        config.hotkeys.disabled_globally = state
+            .hotkeys_disabled
+            .load(std::sync::atomic::Ordering::SeqCst);
+        config.validate().map_err(|e| e.to_string())?;
+        let _pending_mutation =
+            PendingFileMutation::begin(&app).map_err(|error| error.to_string())?;
+        let autostart = app.autolaunch();
+        let previous_autostart = autostart.is_enabled().map_err(|e| e.to_string())?;
+        apply_autostart_transaction(
+            previous_autostart,
+            config.ui.auto_start,
+            |enabled| {
+                if enabled {
+                    autostart.enable()
+                } else {
+                    autostart.disable()
+                }
+                .map_err(|e| e.to_string())
+            },
+            || {
+                config
+                    .save_and_migrate_secrets()
+                    .map_err(|e| e.to_string())?;
+                retired_secrets.commit();
+                Ok(())
+            },
+        )?;
+        *stored = config.clone();
     }
-    // the global hotkey kill switch lives in the atomic (the tray and Settings
-    // toggle it there); make the persisted config agree with it so this save
-    // can't quietly clear the switch and re-enable every hotkey on next launch
-    config.hotkeys.disabled_globally = state
-        .hotkeys_disabled
-        .load(std::sync::atomic::Ordering::SeqCst);
-    config.migrate_secrets().map_err(|e| e.to_string())?;
-    config.validate().map_err(|e| e.to_string())?;
-    config.save().map_err(|e| e.to_string())?;
     crate::install_hdr_runtime_from_config(&config);
     // respect the tray's Disable-hotkeys toggle: when off, reload with an
     // empty task list so the new config doesn't silently re-register hotkeys
@@ -155,9 +203,7 @@ pub fn set_config(
         config.capture_tasks.clone()
     };
     state.send_hotkey_reload(tasks_to_register);
-    let want_autostart = config.ui.auto_start;
     let output_dir = config.output.directory.clone();
-    *state.config.lock().unwrap() = config.clone();
     if let Err(e) = app
         .asset_protocol_scope()
         .allow_directory(&output_dir, true)
@@ -175,21 +221,43 @@ pub fn set_config(
             let _ = app.asset_protocol_scope().allow_directory(&h_can, true);
         }
     }
-    let manager = app.autolaunch();
-    let current = manager.is_enabled().unwrap_or(false);
-    if current != want_autostart {
-        let res = if want_autostart {
-            manager.enable()
-        } else {
-            manager.disable()
-        };
-        if let Err(e) = res {
-            tracing::warn!("autostart toggle failed: {e}");
-        }
-    }
     crate::rebuild_tray_menu(&app);
     let _ = app.emit("capscr://config-updated", ());
     Ok(config)
+}
+
+#[tauri::command]
+pub fn set_capture_tasks(
+    capture_tasks: Vec<CaptureTask>,
+    app: AppHandle,
+    state: State<AppState>,
+) -> Result<Vec<CaptureTask>, String> {
+    let saved_tasks = {
+        let mut stored = state.config.lock().unwrap();
+        let mut config = stored.clone();
+        config.capture_tasks = capture_tasks;
+        let _pending_mutation =
+            PendingFileMutation::begin(&app).map_err(|error| error.to_string())?;
+        config.validate().map_err(|e| e.to_string())?;
+        config
+            .save_and_migrate_secrets()
+            .map_err(|e| e.to_string())?;
+        let saved_tasks = config.capture_tasks.clone();
+        *stored = config;
+        saved_tasks
+    };
+    let tasks_to_register = if state
+        .hotkeys_disabled
+        .load(std::sync::atomic::Ordering::SeqCst)
+    {
+        Vec::new()
+    } else {
+        saved_tasks.clone()
+    };
+    state.send_hotkey_reload(tasks_to_register);
+    crate::rebuild_tray_menu(&app);
+    let _ = app.emit("capscr://config-updated", ());
+    Ok(saved_tasks)
 }
 
 #[tauri::command]
@@ -289,6 +357,14 @@ pub fn run_capture_pipeline_with_target(
     run_capture_pipeline_inner(mode, post, app, upload_target, delay_override)
 }
 
+struct CaptureGate<'a>(&'a std::sync::atomic::AtomicBool);
+
+impl Drop for CaptureGate<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
 fn run_capture_pipeline_inner(
     mode: CaptureModeArg,
     post: PostActionArg,
@@ -317,12 +393,6 @@ fn run_capture_pipeline_inner(
     }
     // reset the gate on every exit (success, error, panic) so the user never
     // has to restart capscr to unstick the trigger.
-    struct CaptureGate<'a>(&'a std::sync::atomic::AtomicBool);
-    impl<'a> Drop for CaptureGate<'a> {
-        fn drop(&mut self) {
-            self.0.store(false, std::sync::atomic::Ordering::SeqCst);
-        }
-    }
     let _gate = CaptureGate(&gate_state.capture_in_progress);
 
     // wayland compositors bake the pointer into the grab; windows composites
@@ -1065,10 +1135,45 @@ fn maybe_write_hdr_sidecar(
     }
 }
 
-// returns Some(path) when a fresh file was written *this call*. Callers
-// rely on this to tie the HDR sidecar to the right basename — reading
-// `state.last_save` would surface a previous capture's path when this
-// action was clipboard-only.
+pub(crate) struct PendingFileMutation(AppHandle);
+
+impl PendingFileMutation {
+    pub(crate) fn begin(app: &AppHandle) -> Result<Self, &'static str> {
+        let state = app.state::<AppState>();
+        if state
+            .shutdown_in_progress
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err("application shutdown is already in progress");
+        }
+        state
+            .pending_file_mutations
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if state
+            .shutdown_in_progress
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            state
+                .pending_file_mutations
+                .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+            return Err("application shutdown is already in progress");
+        }
+        Ok(Self(app.clone()))
+    }
+}
+
+impl Drop for PendingFileMutation {
+    fn drop(&mut self) {
+        self.0
+            .state::<AppState>()
+            .pending_file_mutations
+            .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+// returns Some(path) when a fresh file was written by this call
+// callers use it to tie the HDR sidecar to the right basename because
+// state.last_save may refer to an earlier clipboard-only capture
 fn run_post_action(
     app: &AppHandle,
     state: &AppState,
@@ -1090,6 +1195,7 @@ fn run_post_action(
      -> anyhow::Result<PathBuf> {
         let base = config.output_path();
         let path = get_unique_filepath(&base);
+        let pending_write = PendingFileMutation::begin(&app_handle).map_err(anyhow::Error::msg)?;
         if let Err(e) = std::fs::create_dir_all(&config.output.directory) {
             tracing::warn!("failed to create output dir: {e}");
         }
@@ -1099,6 +1205,7 @@ fn run_post_action(
         let quality = config.output.quality;
         let config_clone = config.clone();
         std::thread::spawn(move || {
+            let _pending_write = pending_write;
             let t0 = std::time::Instant::now();
             match save_image(&img, &path_clone, format, quality) {
                 Ok(()) => {
@@ -1135,6 +1242,13 @@ fn run_post_action(
         if !config.ui.save_clipboard_to_history {
             return None;
         }
+        let pending_write = match PendingFileMutation::begin(&app_handle) {
+            Ok(pending_write) => pending_write,
+            Err(error) => {
+                tracing::warn!("history save skipped: {error}");
+                return None;
+            }
+        };
         let history_dir = history_dir()?;
         if let Err(e) = std::fs::create_dir_all(&history_dir) {
             tracing::warn!("failed to create history dir: {e}");
@@ -1153,9 +1267,11 @@ fn run_post_action(
         let quality = config.output.quality;
         let config_clone = config.clone();
         std::thread::spawn(move || {
+            let _pending_write = pending_write;
             let t0 = std::time::Instant::now();
             if let Err(e) = save_image(&img, &path_clone, format, quality) {
                 tracing::error!("Background save_image to history failed: {e:#}");
+                let _ = std::fs::remove_file(&path_clone);
             } else {
                 maybe_write_hdr_sidecar(&path_clone, &hdr, &config_clone);
                 tracing::info!(
@@ -1450,22 +1566,30 @@ fn is_path_allowed(canonical: &std::path::Path, config: &Config) -> bool {
 }
 
 #[tauri::command]
-pub fn delete_capture(path: String, state: State<AppState>) -> Result<(), String> {
+pub fn delete_capture(
+    path: String,
+    app: AppHandle,
+    state: State<AppState>,
+) -> Result<(), String> {
     let buf = PathBuf::from(&path);
     let config = state.config.lock().unwrap().clone();
     let canonical = std::fs::canonicalize(&buf).map_err(|e| e.to_string())?;
     if !is_path_allowed(&canonical, &config) {
         return Err("Path is outside the allowed directories".into());
     }
-    // also remove the `<stem>.hdr.png` sidecar if present, so deleting a
-    // capture from History doesn't leave orphan HDR data on disk.
-    if let Some(stem) = canonical.file_stem().and_then(|s| s.to_str()) {
-        let sidecar = canonical.with_file_name(format!("{stem}.hdr.png"));
-        if sidecar.exists() && sidecar != canonical {
-            let _ = std::fs::remove_file(&sidecar);
+    let _pending_mutation =
+        PendingFileMutation::begin(&app).map_err(|error| error.to_string())?;
+    let sidecar = canonical
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .map(|stem| canonical.with_file_name(format!("{stem}.hdr.png")));
+    std::fs::remove_file(&canonical).map_err(|e| e.to_string())?;
+    if let Some(sidecar) = sidecar {
+        if sidecar != canonical {
+            let _ = std::fs::remove_file(sidecar);
         }
     }
-    std::fs::remove_file(&canonical).map_err(|e| e.to_string())
+    Ok(())
 }
 
 #[tauri::command]
@@ -1544,6 +1668,8 @@ pub fn reupload_capture(
         .to_string();
     let uploader = crate::upload::shared_uploader().map_err(|e| e.to_string())?;
     let service = build_upload_service(&config);
+    let _pending_mutation =
+        PendingFileMutation::begin(&app).map_err(|error| error.to_string())?;
     let result = uploader
         .upload_raw(&bytes, mime, &file_name, &service)
         .map_err(|e| e.to_string())?;
@@ -1604,25 +1730,162 @@ fn reveal_in_file_manager(app: &AppHandle, path: &std::path::Path) {
     }
 }
 
-#[tauri::command]
+struct ExitWorkerGuard {
+    app: AppHandle,
+    reset_on_drop: bool,
+}
+
+impl ExitWorkerGuard {
+    fn claim(app: &AppHandle) -> Option<Self> {
+        app.state::<AppState>()
+            .exit_worker_running
+            .compare_exchange(
+                false,
+                true,
+                std::sync::atomic::Ordering::SeqCst,
+                std::sync::atomic::Ordering::SeqCst,
+            )
+            .ok()
+            .map(|_| Self {
+                app: app.clone(),
+                reset_on_drop: true,
+            })
+    }
+
+    fn commit(mut self) {
+        self.reset_on_drop = false;
+    }
+}
+
+impl Drop for ExitWorkerGuard {
+    fn drop(&mut self) {
+        if self.reset_on_drop {
+            self.app
+                .state::<AppState>()
+                .exit_worker_running
+                .store(false, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+}
+
+struct MutationShutdownGuard {
+    app: AppHandle,
+    reset_on_drop: bool,
+}
+
+impl MutationShutdownGuard {
+    fn claim(app: &AppHandle) -> Result<Self, &'static str> {
+        app.state::<AppState>()
+            .shutdown_in_progress
+            .compare_exchange(
+                false,
+                true,
+                std::sync::atomic::Ordering::SeqCst,
+                std::sync::atomic::Ordering::SeqCst,
+            )
+            .map_err(|_| "application shutdown is already in progress")?;
+        Ok(Self {
+            app: app.clone(),
+            reset_on_drop: true,
+        })
+    }
+
+    fn commit(mut self) {
+        self.reset_on_drop = false;
+    }
+}
+
+impl Drop for MutationShutdownGuard {
+    fn drop(&mut self) {
+        if self.reset_on_drop {
+            self.app
+                .state::<AppState>()
+                .shutdown_in_progress
+                .store(false, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+}
+
 pub fn exit_app(app: AppHandle) {
-    // save any active recording before exiting so the user doesn't lose frames
+    let Some(exit_guard) = ExitWorkerGuard::claim(&app) else {
+        return;
+    };
+    let report_app = app.clone();
+    if let Err(error) = std::thread::Builder::new()
+        .name("capscr-exit".into())
+        .spawn(move || run_exit_worker(app, exit_guard))
+    {
+        report_app
+            .state::<AppState>()
+            .exit_worker_running
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        emit_error(
+            &report_app,
+            "exit",
+            &format!("couldn't start exit worker: {error}"),
+        );
+    }
+}
+
+fn run_exit_worker(app: AppHandle, exit_guard: ExitWorkerGuard) {
     let state = app.state::<AppState>();
+    UnifiedSelector::cancel_active_selection();
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let _capture_gate = loop {
+        if state
+            .capture_in_progress
+            .compare_exchange(
+                false,
+                true,
+                std::sync::atomic::Ordering::SeqCst,
+                std::sync::atomic::Ordering::SeqCst,
+            )
+            .is_ok()
+        {
+            break CaptureGate(&state.capture_in_progress);
+        }
+        if std::time::Instant::now() >= deadline {
+            emit_error(
+                &app,
+                "exit",
+                "capture is still busy; quit again when it finishes",
+            );
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    let shutdown_guard = match MutationShutdownGuard::claim(&app) {
+        Ok(guard) => guard,
+        Err(error) => {
+            emit_error(&app, "exit", error);
+            return;
+        }
+    };
+    if let Err(error) = require_editor_closed(&app, "exiting capscr") {
+        emit_error(&app, "exit", &error);
+        return;
+    }
+
+    // save any active recording before exiting so the user doesn't lose frames
     let cfg = state.config.lock().unwrap().clone();
-    let mut recorder = state.gif_recorder.lock().unwrap().take();
-    if let Some(ref mut rec) = recorder {
-        rec.stop();
+    let mut recorder_slot = state.gif_recorder.lock().unwrap();
+    let mut saved_recording = None;
+    if let Some(mut recorder) = recorder_slot.take() {
+        recorder.stop();
         // let the capture thread drain its last frames before we save, the same
         // way finalize_gif_recording does, so we don't clip the tail
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        while !matches!(rec.state(), crate::recording::RecordingState::Processing) {
+        while !matches!(
+            recorder.state(),
+            crate::recording::RecordingState::Processing
+        ) {
             if std::time::Instant::now() >= deadline {
                 break;
             }
             std::thread::sleep(Duration::from_millis(20));
         }
 
-        let is_mp4 = rec.format() == crate::recording::RecordingFormat::Mp4;
+        let is_mp4 = recorder.format() == crate::recording::RecordingFormat::Mp4;
         let mut path = cfg.output_path();
         path.set_extension(if is_mp4 { "mp4" } else { "gif" });
         let path = get_unique_filepath(&path);
@@ -1630,26 +1893,64 @@ pub fn exit_app(app: AppHandle) {
             tracing::warn!("failed to create output dir on exit: {e}");
         }
         let save_result = if is_mp4 {
-            rec.save_mp4(&path).map(|_| ())
+            recorder.save_mp4(&path).map(|_| ())
         } else {
-            rec.save(&path)
+            recorder.save(&path)
         };
-        match save_result {
-            Ok(()) => {
-                notify_capture_saved(&app, &path);
-                if cfg.ui.show_notifications {
-                    let title = if is_mp4 { "Video saved" } else { "GIF saved" };
-                    let _ = show_notification(title, &path.to_string_lossy());
-                }
-            }
-            Err(e) => {
-                tracing::warn!("recording save on exit failed: {e}");
-                let err_type = if is_mp4 { "mp4-save" } else { "gif-save" };
-                emit_error(&app, err_type, &e.to_string());
-            }
+        if let Err(error) = save_result {
+            *recorder_slot = Some(recorder);
+            drop(recorder_slot);
+            tracing::warn!("recording save on exit failed: {error}");
+            let err_type = if is_mp4 { "mp4-save" } else { "gif-save" };
+            emit_error(&app, err_type, &error.to_string());
+            return;
+        }
+        saved_recording = Some((is_mp4, path));
+    }
+    drop(recorder_slot);
+    if let Some((is_mp4, path)) = saved_recording {
+        notify_capture_saved(&app, &path);
+        if cfg.ui.show_notifications {
+            let title = if is_mp4 { "Video saved" } else { "GIF saved" };
+            let _ = show_notification(title, &path.to_string_lossy());
         }
     }
+
+    let recording_deadline = std::time::Instant::now() + Duration::from_secs(30);
+    while matches!(
+        *state.recording_state.lock().unwrap(),
+        crate::recording::RecordingState::Processing
+    ) {
+        if std::time::Instant::now() >= recording_deadline {
+            emit_error(
+                &app,
+                "exit",
+                "the recording is still being saved; quit again when it finishes",
+            );
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    while state
+        .pending_file_mutations
+        .load(std::sync::atomic::Ordering::SeqCst)
+        > 0
+    {
+        if std::time::Instant::now() >= deadline {
+            emit_error(
+                &app,
+                "exit",
+                "files are still being updated; quit again when they finish",
+            );
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
     app.exit(0);
+    shutdown_guard.commit();
+    exit_guard.commit();
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1786,30 +2087,118 @@ pub async fn install_update(app: AppHandle) -> Result<(), String> {
                     download the new release instead"
             .into());
     }
-    // wait for any in-flight capture to finish so we don't restart mid-encode
-    {
-        let state = app.state::<AppState>();
-        let mut waited = 0u32;
-        while state
-            .capture_in_progress
-            .load(std::sync::atomic::Ordering::SeqCst)
-            && waited < 50
-        {
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-            waited += 1;
+    // claim the capture gate before launching the updater so a hotkey cannot
+    // start new work between the idle check and process exit
+    let state = app.state::<AppState>();
+    let mut waited = 0u32;
+    let _capture_gate = loop {
+        match state.capture_in_progress.compare_exchange(
+            false,
+            true,
+            std::sync::atomic::Ordering::SeqCst,
+            std::sync::atomic::Ordering::SeqCst,
+        ) {
+            Ok(_) => break CaptureGate(&state.capture_in_progress),
+            Err(_) if waited < 50 => {
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                waited += 1;
+            }
+            Err(_) => {
+                let recording = *state.recording_state.lock().unwrap();
+                let reason = update_blocker(true, recording, 0)
+                    .expect("a busy capture always blocks an update");
+                return Err(reason.to_string());
+            }
         }
+    };
+    let shutdown_guard = MutationShutdownGuard::claim(&app).map_err(|error| error.to_string())?;
+    require_editor_closed(&app, "installing an update")?;
+    let mut pending_mutations = state
+        .pending_file_mutations
+        .load(std::sync::atomic::Ordering::SeqCst);
+    let mut waited_for_mutations = 0u32;
+    while pending_mutations > 0 && waited_for_mutations < 300 {
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        waited_for_mutations += 1;
+        pending_mutations = state
+            .pending_file_mutations
+            .load(std::sync::atomic::Ordering::SeqCst);
     }
-    let installer = shared_installer().ok_or_else(|| "shared updater is not installed".to_string())?;
+    let recording = *state.recording_state.lock().unwrap();
+    if let Some(reason) = update_blocker(false, recording, pending_mutations) {
+        return Err(reason.to_string());
+    }
+    let installer =
+        shared_installer().ok_or_else(|| "shared updater is not installed".to_string())?;
     std::process::Command::new(installer)
-        .args(["update", "capscr", "--wait-pid", &std::process::id().to_string()])
+        .args([
+            "update",
+            "capscr",
+            "--wait-pid",
+            &std::process::id().to_string(),
+        ])
         .spawn()
         .map_err(|error| format!("start updater: {error}"))?;
     app.exit(0);
+    shutdown_guard.commit();
     Ok(())
 }
 
+fn update_blocker(
+    capture_busy: bool,
+    recording: crate::recording::RecordingState,
+    pending_mutations: usize,
+) -> Option<&'static str> {
+    if capture_busy {
+        return Some("capture is still busy; try the update again when it finishes");
+    }
+    match recording {
+        crate::recording::RecordingState::Idle if pending_mutations == 0 => None,
+        crate::recording::RecordingState::Idle => {
+            Some("files are still being updated; try the update again when they finish")
+        }
+        crate::recording::RecordingState::Recording => {
+            Some("stop the active recording before installing an update")
+        }
+        crate::recording::RecordingState::Processing => {
+            Some("wait for the recording to finish saving before installing an update")
+        }
+    }
+}
+
+#[cfg(test)]
+mod update_tests {
+    #[cfg(any(windows, target_os = "linux"))]
+    use super::ffmpeg_redirect_allowed;
+    use super::update_blocker;
+    use crate::recording::RecordingState;
+
+    #[test]
+    fn update_requires_capture_and_recording_to_be_idle() {
+        assert_eq!(update_blocker(false, RecordingState::Idle, 0), None);
+        assert!(update_blocker(true, RecordingState::Idle, 0).is_some());
+        assert!(update_blocker(false, RecordingState::Recording, 0).is_some());
+        assert!(update_blocker(false, RecordingState::Processing, 0).is_some());
+        assert!(update_blocker(false, RecordingState::Idle, 1).is_some());
+    }
+
+    #[cfg(any(windows, target_os = "linux"))]
+    #[test]
+    fn ffmpeg_redirects_stay_on_https() {
+        let https = url::Url::parse("https://cdn.example/ffmpeg.zip").expect("https url");
+        let http = url::Url::parse("http://cdn.example/ffmpeg.zip").expect("http url");
+        assert!(ffmpeg_redirect_allowed(&https, 4));
+        assert!(!ffmpeg_redirect_allowed(&http, 0));
+        assert!(!ffmpeg_redirect_allowed(&https, 5));
+    }
+}
+
 fn shared_installer() -> Option<std::path::PathBuf> {
-    let name = if cfg!(windows) { "rot-installer.exe" } else { "rot-installer" };
+    let name = if cfg!(windows) {
+        "rot-installer.exe"
+    } else {
+        "rot-installer"
+    };
     let mut candidates = Vec::new();
     if let Ok(current) = std::env::current_exe() {
         if let Some(parent) = current.parent() {
@@ -1820,19 +2209,37 @@ fn shared_installer() -> Option<std::path::PathBuf> {
     #[cfg(windows)]
     {
         if let Some(root) = std::env::var_os("ProgramFiles") {
-            candidates.push(std::path::PathBuf::from(root).join("rot").join("installer").join(name));
+            candidates.push(
+                std::path::PathBuf::from(root)
+                    .join("rot")
+                    .join("installer")
+                    .join(name),
+            );
         }
         if let Some(root) = std::env::var_os("LOCALAPPDATA") {
-            candidates.push(std::path::PathBuf::from(root).join("Programs").join("rot-installer").join(name));
+            candidates.push(
+                std::path::PathBuf::from(root)
+                    .join("Programs")
+                    .join("rot-installer")
+                    .join(name),
+            );
         }
     }
     #[cfg(target_os = "linux")]
     {
         candidates.push(std::path::PathBuf::from("/opt/rot/installer").join(name));
         if let Some(data) = std::env::var_os("XDG_DATA_HOME") {
-            candidates.push(std::path::PathBuf::from(data).join("rot/apps/installer").join(name));
+            candidates.push(
+                std::path::PathBuf::from(data)
+                    .join("rot/apps/installer")
+                    .join(name),
+            );
         } else if let Some(home) = std::env::var_os("HOME") {
-            candidates.push(std::path::PathBuf::from(home).join(".local/share/rot/apps/installer").join(name));
+            candidates.push(
+                std::path::PathBuf::from(home)
+                    .join(".local/share/rot/apps/installer")
+                    .join(name),
+            );
         }
     }
     candidates.into_iter().find(|path| path.is_file())
@@ -1907,8 +2314,7 @@ pub fn canonical_app_url(app: &AppHandle) -> Option<url::Url> {
 
 pub fn remember_canonical_url(app: &AppHandle, url: &url::Url) {
     if url.scheme() != "about" {
-        *app
-            .state::<AppState>()
+        *app.state::<AppState>()
             .canonical_webview_url
             .lock()
             .unwrap() = Some(url.clone());
@@ -1921,8 +2327,7 @@ fn heal_stuck_boot(window: tauri::WebviewWindow) {
     std::thread::spawn(move || {
         for delay_ms in [3000u64, 8000] {
             std::thread::sleep(Duration::from_millis(delay_ms));
-            let _ =
-                window.eval("if (document.getElementById('boot')) window.location.reload()");
+            let _ = window.eval("if (document.getElementById('boot')) window.location.reload()");
         }
     });
 }
@@ -2001,41 +2406,68 @@ fn fit_window_to_work_area(window: &tauri::WebviewWindow, min_width: f64, min_he
     }
 }
 
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HubCloseRequest {
+    request_id: String,
+    force_exit: bool,
+}
+
+fn emit_hub_close_request(
+    app: &AppHandle,
+    window: &tauri::WebviewWindow,
+    force_exit: bool,
+) -> bool {
+    let request_id = uuid::Uuid::new_v4().as_simple().to_string();
+    app.state::<AppState>()
+        .pending_hub_close_requests
+        .lock()
+        .unwrap()
+        .insert(request_id.clone());
+    let request = HubCloseRequest {
+        request_id: request_id.clone(),
+        force_exit,
+    };
+    if window.emit("capscr://close-requested", request).is_err() {
+        app.state::<AppState>()
+            .pending_hub_close_requests
+            .lock()
+            .unwrap()
+            .remove(&request_id);
+        return false;
+    }
+
+    let fallback_app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        let pending = fallback_app
+            .state::<AppState>()
+            .pending_hub_close_requests
+            .lock()
+            .unwrap()
+            .remove(&request_id);
+        if pending {
+            let close_app = fallback_app.clone();
+            let direct_app = fallback_app.clone();
+            if fallback_app
+                .run_on_main_thread(move || complete_hub_close_with_report(force_exit, close_app))
+                .is_err()
+            {
+                complete_hub_close_with_report(force_exit, direct_app);
+            }
+        }
+    });
+    true
+}
+
 fn intercept_hub_close(window: tauri::WebviewWindow) {
     let app = window.app_handle().clone();
     window.clone().on_window_event(move |event| {
         match event {
             tauri::WindowEvent::CloseRequested { api, .. } => {
                 api.prevent_close();
-                let state = app.state::<AppState>();
-                let close_behavior = {
-                    let cfg = state.config.lock().unwrap();
-                    cfg.ui.close_behavior
-                };
-                match close_behavior {
-                    crate::config::CloseBehavior::MinimizeToTray => {
-                        // on linux the hidden hub's webkit processes would
-                        // keep ~100mb resident; destroy and recreate on
-                        // demand (webkitgtk cold boot is fast). windows keeps
-                        // the warm WebView2 (see the prewarm rationale).
-                        #[cfg(target_os = "linux")]
-                        {
-                            if let Ok(url) = window.url() {
-                                remember_canonical_url(&app, &url);
-                            }
-                            let _ = window.destroy();
-                        }
-                        #[cfg(not(target_os = "linux"))]
-                        {
-                            let _ = window.hide();
-                        }
-                    }
-                    crate::config::CloseBehavior::MinimizeToTaskbar => {
-                        let _ = window.minimize();
-                    }
-                    crate::config::CloseBehavior::Exit => {
-                        exit_app(app.clone());
-                    }
+                if !emit_hub_close_request(&app, &window, false) {
+                    complete_hub_close_with_report(false, app.clone());
                 }
             }
             // record what the OS actually dropped so upload_file can trust the
@@ -2048,6 +2480,86 @@ fn intercept_hub_close(window: tauri::WebviewWindow) {
             _ => {}
         }
     });
+}
+
+pub fn request_hub_close(app: &AppHandle, force_exit: bool) {
+    if let Some(window) = app.get_webview_window(HUB_LABEL) {
+        if emit_hub_close_request(app, &window, force_exit) {
+            return;
+        }
+    }
+    complete_hub_close_with_report(force_exit, app.clone());
+}
+
+#[tauri::command]
+pub fn acknowledge_hub_close(request_id: String, state: State<'_, AppState>) -> bool {
+    state
+        .pending_hub_close_requests
+        .lock()
+        .unwrap()
+        .remove(&request_id)
+}
+
+#[tauri::command]
+pub fn complete_hub_close(force_exit: bool, app: AppHandle) -> Result<(), String> {
+    if force_exit {
+        require_editor_closed(&app, "exiting capscr")?;
+        exit_app(app);
+        return Ok(());
+    }
+    let close_behavior = app
+        .state::<AppState>()
+        .config
+        .lock()
+        .unwrap()
+        .ui
+        .close_behavior;
+    match close_behavior {
+        crate::config::CloseBehavior::MinimizeToTray => {
+            let Some(window) = app.get_webview_window(HUB_LABEL) else {
+                return Ok(());
+            };
+            // on linux the hidden hub's webkit processes would keep ~100mb
+            // resident; destroy and recreate on demand
+            #[cfg(target_os = "linux")]
+            {
+                if let Ok(url) = window.url() {
+                    remember_canonical_url(&app, &url);
+                }
+                let _ = window.destroy();
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                let _ = window.hide();
+            }
+        }
+        crate::config::CloseBehavior::MinimizeToTaskbar => {
+            if let Some(window) = app.get_webview_window(HUB_LABEL) {
+                let _ = window.minimize();
+            }
+        }
+        crate::config::CloseBehavior::Exit => {
+            require_editor_closed(&app, "exiting capscr")?;
+            exit_app(app);
+        }
+    }
+    Ok(())
+}
+
+fn complete_hub_close_with_report(force_exit: bool, app: AppHandle) {
+    if let Err(error) = complete_hub_close(force_exit, app.clone()) {
+        emit_error(&app, "exit", &error);
+    }
+}
+
+fn require_editor_closed(app: &AppHandle, action: &str) -> Result<(), String> {
+    if let Some(editor) = app.get_webview_window(EDITOR_LABEL) {
+        let _ = editor.show();
+        let _ = editor.unminimize();
+        let _ = editor.set_focus();
+        return Err(format!("close the editor before {action}"));
+    }
+    Ok(())
 }
 
 pub fn open_hub_window(app: &AppHandle) -> tauri::Result<()> {
@@ -2161,6 +2673,22 @@ pub async fn open_editor(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
+    let _capture_gate = state
+        .capture_in_progress
+        .compare_exchange(
+            false,
+            true,
+            std::sync::atomic::Ordering::SeqCst,
+            std::sync::atomic::Ordering::SeqCst,
+        )
+        .map(|_| CaptureGate(&state.capture_in_progress))
+        .map_err(|_| "capture or shutdown is already in progress".to_string())?;
+    if state
+        .shutdown_in_progress
+        .load(std::sync::atomic::Ordering::SeqCst)
+    {
+        return Err("application shutdown is already in progress".to_string());
+    }
     let buf = PathBuf::from(&path);
     let canonical = std::fs::canonicalize(&buf).map_err(|e| e.to_string())?;
     let cfg = state.config.lock().unwrap().clone();
@@ -2203,28 +2731,31 @@ pub fn save_edited_image(
     if bytes.len() > 100 * 1024 * 1024 {
         return Err("Image too large to save".into());
     }
+    let _pending_mutation =
+        PendingFileMutation::begin(&app).map_err(|error| error.to_string())?;
     // atomic write: stage to a sibling temp file, then rename. A disk-full
     // or permission-denied mid-write would otherwise truncate the original
     // — the user would lose the un-edited capture too.
-    let mut tmp = buf.clone();
     let stem = buf.file_name().and_then(|s| s.to_str()).unwrap_or("edited");
-    tmp.set_file_name(format!(".{stem}.editing.tmp"));
-    if let Err(e) = std::fs::write(&tmp, &bytes) {
+    let tmp = buf.with_file_name(format!(
+        ".{stem}.{}.editing.tmp",
+        uuid::Uuid::new_v4().as_simple()
+    ));
+    let write_result = (|| -> std::io::Result<()> {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)?;
+        std::io::Write::write_all(&mut file, &bytes)?;
+        file.sync_all()
+    })();
+    if let Err(e) = write_result {
         let _ = std::fs::remove_file(&tmp);
         return Err(format!("write failed: {e}"));
     }
     if let Err(e) = std::fs::rename(&tmp, &buf) {
         let _ = std::fs::remove_file(&tmp);
         return Err(format!("rename failed: {e}"));
-    }
-    // the hdr sidecar (<stem>.hdr.png) was captured from the original unedited
-    // pixels — once we overwrite the sdr file the sidecar no longer represents
-    // the image content, so remove it rather than leaving a misleading orphan
-    if let Some(stem) = buf.file_stem().and_then(|s| s.to_str()) {
-        let sidecar = buf.with_file_name(format!("{stem}.hdr.png"));
-        if sidecar.exists() {
-            let _ = std::fs::remove_file(&sidecar);
-        }
     }
     // surface the edit to the History tab so its tile picks up the new mtime
     notify_capture_saved(&app, &buf);
@@ -2287,6 +2818,8 @@ pub fn upload_file(
 
     let uploader = crate::upload::shared_uploader().map_err(|e| e.to_string())?;
     let service = build_upload_service(&config);
+    let _pending_mutation =
+        PendingFileMutation::begin(&app).map_err(|error| error.to_string())?;
     let result = uploader
         .upload_raw(&bytes, mime, &file_name, &service)
         .map_err(|e| e.to_string())?;
@@ -2318,6 +2851,8 @@ pub fn upload_edited_image(
     let config = state.config.lock().unwrap().clone();
     let uploader = crate::upload::shared_uploader().map_err(|e| e.to_string())?;
     let service = build_upload_service(&config);
+    let _pending_mutation =
+        PendingFileMutation::begin(&app).map_err(|error| error.to_string())?;
     let result = uploader
         .upload(&rgba, &service)
         .map_err(|e| e.to_string())?;
@@ -2388,6 +2923,34 @@ pub fn run_task(task: &CaptureTask, app: &AppHandle) -> anyhow::Result<()> {
 use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(any(windows, target_os = "linux"))]
 static FFMPEG_DOWNLOADING: AtomicBool = AtomicBool::new(false);
+#[cfg(any(windows, target_os = "linux"))]
+struct FfmpegDownloadGuard {
+    _mutation: PendingFileMutation,
+}
+#[cfg(any(windows, target_os = "linux"))]
+impl FfmpegDownloadGuard {
+    fn begin(app: &AppHandle) -> Result<Self, &'static str> {
+        let mutation = PendingFileMutation::begin(app)?;
+        FFMPEG_DOWNLOADING
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .map_err(|_| "FFmpeg is already downloading")?;
+        Ok(Self {
+            _mutation: mutation,
+        })
+    }
+}
+#[cfg(any(windows, target_os = "linux"))]
+impl Drop for FfmpegDownloadGuard {
+    fn drop(&mut self) {
+        FFMPEG_DOWNLOADING.store(false, Ordering::SeqCst);
+    }
+}
+#[cfg(any(windows, target_os = "linux"))]
+const MAX_FFMPEG_ARCHIVE_BYTES: u64 = 256 * 1024 * 1024;
+#[cfg(any(windows, target_os = "linux"))]
+const MAX_FFMPEG_BINARY_BYTES: u64 = 512 * 1024 * 1024;
+#[cfg(any(windows, target_os = "linux"))]
+const MAX_FFMPEG_REDIRECTS: usize = 5;
 
 // a repacked static ffmpeg for linux (johnvansickle 7.0.2, md5-verified
 // against the vendor before repack), hosted on the same origin capscr
@@ -2399,13 +2962,38 @@ static FFMPEG_DOWNLOADING: AtomicBool = AtomicBool::new(false);
 #[cfg(target_os = "linux")]
 const LINUX_FFMPEG_URL: &str = "https://rot.lt/capscr/ffmpeg/ffmpeg-linux-x64.zip";
 #[cfg(target_os = "linux")]
-const LINUX_FFMPEG_SHA256: &str = "98aaf9bae2daf2f731aa1b1bc4b22eb458caa3d89061c5b94e1e3c39e41a61e8";
+const LINUX_FFMPEG_SHA256: &str =
+    "98aaf9bae2daf2f731aa1b1bc4b22eb458caa3d89061c5b94e1e3c39e41a61e8";
 
 // download a zip over TLS, verify it against an expected sha256, extract the
 // ffmpeg binary into data_dir, and mark it executable. shared by the windows
 // (gyan.dev, sidecar hash) and linux (rot.lt, embedded hash) paths.
 #[cfg(any(windows, target_os = "linux"))]
-fn download_verified_ffmpeg(url: &str, expected_sha256: &str, bin_name: &str) -> anyhow::Result<()> {
+fn ffmpeg_redirect_allowed(url: &url::Url, previous: usize) -> bool {
+    url.scheme() == "https" && previous < MAX_FFMPEG_REDIRECTS
+}
+
+#[cfg(any(windows, target_os = "linux"))]
+fn ffmpeg_redirect_policy() -> reqwest::redirect::Policy {
+    reqwest::redirect::Policy::custom(|attempt| {
+        if ffmpeg_redirect_allowed(attempt.url(), attempt.previous().len()) {
+            attempt.follow()
+        } else {
+            attempt.error("ffmpeg redirect blocked")
+        }
+    })
+}
+
+#[cfg(any(windows, target_os = "linux"))]
+fn download_verified_ffmpeg(
+    url: &str,
+    expected_sha256: &str,
+    bin_name: &str,
+) -> anyhow::Result<()> {
+    let source = url::Url::parse(url)?;
+    if source.scheme() != "https" {
+        return Err(anyhow::anyhow!("ffmpeg download URL must use https"));
+    }
     let proj_dirs = directories::ProjectDirs::from("com", "capscr", "capscr")
         .ok_or_else(|| anyhow::anyhow!("failed to locate app data directory"))?;
     let data_dir = proj_dirs.data_dir();
@@ -2414,23 +3002,37 @@ fn download_verified_ffmpeg(url: &str, expected_sha256: &str, bin_name: &str) ->
 
     let client = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(300))
+        .https_only(true)
+        .redirect(ffmpeg_redirect_policy())
         .build()?;
     let resp = client.get(url).send()?;
     if !resp.status().is_success() {
         return Err(anyhow::anyhow!("http error: {}", resp.status()));
     }
-    let zip_bytes = resp.bytes()?;
+    if resp
+        .content_length()
+        .is_some_and(|length| length > MAX_FFMPEG_ARCHIVE_BYTES)
+    {
+        return Err(anyhow::anyhow!("ffmpeg archive exceeds download size cap"));
+    }
+    let mut zip_bytes = Vec::new();
+    std::io::Read::take(resp, MAX_FFMPEG_ARCHIVE_BYTES + 1).read_to_end(&mut zip_bytes)?;
+    if zip_bytes.len() as u64 > MAX_FFMPEG_ARCHIVE_BYTES {
+        return Err(anyhow::anyhow!("ffmpeg archive exceeds download size cap"));
+    }
 
     // the payload is verified against a sha256 before we write and later
     // execute it, so a truncated, corrupted, or mirror-tampered download is
     // rejected. windows resolves the expected hash from the vendor's sidecar;
     // linux pins it in the binary, which makes the mirror untrusted storage.
     let expected = if expected_sha256.is_empty() {
-        client
+        let response = client
             .get(format!("{url}.sha256"))
             .send()?
-            .error_for_status()?
-            .text()?
+            .error_for_status()?;
+        let mut sidecar = String::new();
+        std::io::Read::take(response, 4096).read_to_string(&mut sidecar)?;
+        sidecar
             .split_whitespace()
             .next()
             .unwrap_or_default()
@@ -2443,14 +3045,14 @@ fn download_verified_ffmpeg(url: &str, expected_sha256: &str, bin_name: &str) ->
             "ffmpeg checksum missing or malformed; refusing to install unverified binary"
         ));
     }
-    let got = hex::encode(<sha2::Sha256 as sha2::Digest>::digest(zip_bytes.as_ref()));
+    let got = hex::encode(<sha2::Sha256 as sha2::Digest>::digest(&zip_bytes));
     if got != expected {
         return Err(anyhow::anyhow!(
             "ffmpeg download failed its integrity check (sha256 mismatch)"
         ));
     }
 
-    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(zip_bytes.as_ref()))?;
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(zip_bytes.as_slice()))?;
     for i in 0..archive.len() {
         let mut file = archive.by_index(i)?;
         let name = file.name();
@@ -2459,14 +3061,37 @@ fn download_verified_ffmpeg(url: &str, expected_sha256: &str, bin_name: &str) ->
             || name.ends_with("/ffmpeg")
             || name == "ffmpeg"
         {
-            let mut out_file = std::fs::File::create(&dest_path)?;
-            std::io::copy(&mut file, &mut out_file)?;
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let mut perms = std::fs::metadata(&dest_path)?.permissions();
-                perms.set_mode(0o755);
-                std::fs::set_permissions(&dest_path, perms)?;
+            if file.size() > MAX_FFMPEG_BINARY_BYTES {
+                return Err(anyhow::anyhow!("ffmpeg binary exceeds extraction size cap"));
+            }
+            let temp_path = dest_path
+                .with_extension(format!("download-{}.tmp", uuid::Uuid::new_v4().as_simple()));
+            let install_result = (|| -> anyhow::Result<()> {
+                let mut out_file = std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&temp_path)?;
+                let written = std::io::copy(
+                    &mut std::io::Read::take(&mut file, MAX_FFMPEG_BINARY_BYTES + 1),
+                    &mut out_file,
+                )?;
+                if written > MAX_FFMPEG_BINARY_BYTES {
+                    return Err(anyhow::anyhow!("ffmpeg binary exceeds extraction size cap"));
+                }
+                drop(out_file);
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let mut perms = std::fs::metadata(&temp_path)?.permissions();
+                    perms.set_mode(0o755);
+                    std::fs::set_permissions(&temp_path, perms)?;
+                }
+                std::fs::rename(&temp_path, &dest_path)?;
+                Ok(())
+            })();
+            if let Err(error) = install_result {
+                let _ = std::fs::remove_file(&temp_path);
+                return Err(error);
             }
             return Ok(());
         }
@@ -2533,8 +3158,15 @@ fn handle_missing_ffmpeg(app: &AppHandle) -> anyhow::Result<()> {
             .blocking_show();
         return Ok(());
     }
-    FFMPEG_DOWNLOADING.store(true, Ordering::SeqCst);
+    let download_guard = match FfmpegDownloadGuard::begin(app) {
+        Ok(guard) => guard,
+        Err(error) => {
+            let _ = show_notification("FFmpeg Download", error);
+            return Ok(());
+        }
+    };
     std::thread::spawn(move || {
+        let _download_guard = download_guard;
         let _ = show_notification("FFmpeg Download", "Downloading a verified FFmpeg build...");
         match download_verified_ffmpeg(LINUX_FFMPEG_URL, LINUX_FFMPEG_SHA256, "ffmpeg") {
             Ok(()) => {
@@ -2548,7 +3180,6 @@ fn handle_missing_ffmpeg(app: &AppHandle) -> anyhow::Result<()> {
                 let _ = show_notification("FFmpeg Download Failed", &format!("{e}"));
             }
         }
-        FFMPEG_DOWNLOADING.store(false, Ordering::SeqCst);
     });
     Ok(())
 }
@@ -2577,8 +3208,15 @@ fn handle_missing_ffmpeg(app: &AppHandle) -> anyhow::Result<()> {
         .blocking_show();
 
     if is_confirmed {
-        FFMPEG_DOWNLOADING.store(true, Ordering::SeqCst);
+        let download_guard = match FfmpegDownloadGuard::begin(app) {
+            Ok(guard) => guard,
+            Err(error) => {
+                let _ = show_notification("FFmpeg Download", error);
+                return Ok(());
+            }
+        };
         std::thread::spawn(move || {
+            let _download_guard = download_guard;
             let _ = show_notification(
                 "FFmpeg Download",
                 "Starting FFmpeg download (approx. 90MB)...",
@@ -2598,7 +3236,6 @@ fn handle_missing_ffmpeg(app: &AppHandle) -> anyhow::Result<()> {
                     );
                 }
             }
-            FFMPEG_DOWNLOADING.store(false, Ordering::SeqCst);
         });
     }
 
@@ -2654,8 +3291,8 @@ fn run_gif_task(task: &CaptureTask, app: &AppHandle) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    // gate is held only during selection so a screenshot hotkey pressed while
-    // the region selector is visible doesn't open a second overlay
+    // hold the gate until recording state is live so updater startup cannot
+    // slip between the selector closing and recorder startup
     use std::sync::atomic::Ordering as OrdGif;
     if state
         .capture_in_progress
@@ -2665,8 +3302,8 @@ fn run_gif_task(task: &CaptureTask, app: &AppHandle) -> anyhow::Result<()> {
         tracing::info!("capture already in progress; dropping gif trigger");
         return Ok(());
     }
+    let _capture_gate = CaptureGate(&state.capture_in_progress);
     let selection = UnifiedSelector::select(None);
-    state.capture_in_progress.store(false, OrdGif::SeqCst);
 
     let region = match selection {
         SelectionResult::Region(r) => r,
@@ -2902,6 +3539,7 @@ pub async fn trim_mp4(
     start_secs: f64,
     end_secs: f64,
     fast: bool,
+    app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<String, String> {
     let config = state.config.lock().unwrap().clone();
@@ -2926,7 +3564,10 @@ pub async fn trim_mp4(
     };
     #[cfg(not(windows))]
     let resolved = canonical.to_string_lossy().into_owned();
+    let pending_mutation =
+        PendingFileMutation::begin(&app).map_err(|error| error.to_string())?;
     tauri::async_runtime::spawn_blocking(move || {
+        let _pending_mutation = pending_mutation;
         trim_mp4_blocking(&resolved, start_secs, end_secs, fast).map_err(|e| e.to_string())
     })
     .await
@@ -3042,7 +3683,15 @@ fn apply_gif_post_action(
             let path = path.to_path_buf();
             let cfg = cfg.clone();
             let target_override = task.target_destination;
+            let pending_mutation = match PendingFileMutation::begin(&app2) {
+                Ok(mutation) => mutation,
+                Err(error) => {
+                    emit_error(&app2, "upload", error);
+                    return;
+                }
+            };
             std::thread::spawn(move || {
+                let _pending_mutation = pending_mutation;
                 let bytes = match std::fs::read(&path) {
                     Ok(b) => b,
                     Err(e) => {
@@ -3126,6 +3775,55 @@ impl PostActionArg {
     }
 }
 
+fn apply_autostart_transaction(
+    previous: bool,
+    desired: bool,
+    mut set_enabled: impl FnMut(bool) -> Result<(), String>,
+    persist: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    let changed = previous != desired;
+    if changed {
+        set_enabled(desired)
+            .map_err(|error| format!("couldn't update system autostart: {error}"))?;
+    }
+    if let Err(error) = persist() {
+        if changed {
+            if let Err(rollback_error) = set_enabled(previous) {
+                return Err(format!(
+                    "couldn't save settings: {error}; restoring system autostart failed: \
+                     {rollback_error}"
+                ));
+            }
+        }
+        return Err(format!("couldn't save settings: {error}"));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod autostart_transaction_tests {
+    use super::apply_autostart_transaction;
+    use std::cell::RefCell;
+
+    #[test]
+    fn failed_persistence_restores_the_previous_system_state() {
+        let changes = RefCell::new(Vec::new());
+        let error = apply_autostart_transaction(
+            false,
+            true,
+            |enabled| {
+                changes.borrow_mut().push(enabled);
+                Ok(())
+            },
+            || Err("disk full".to_string()),
+        )
+        .expect_err("persistence should fail");
+
+        assert_eq!(*changes.borrow(), vec![true, false]);
+        assert!(error.contains("disk full"));
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct ErrorEventPayload {
     pub kind: String,
@@ -3177,16 +3875,32 @@ pub fn emit_upload_success(app: &AppHandle, result: &crate::upload::UploadResult
 
 #[tauri::command]
 pub fn set_autostart(app: AppHandle, enabled: bool, state: State<AppState>) -> Result<(), String> {
+    let _pending_mutation =
+        PendingFileMutation::begin(&app).map_err(|error| error.to_string())?;
     let manager = app.autolaunch();
-    if enabled {
-        manager.enable().map_err(|e| e.to_string())?;
-    } else {
-        manager.disable().map_err(|e| e.to_string())?;
-    }
-    let mut config = state.config.lock().unwrap();
-    config.ui.auto_start = enabled;
-    config.save().map_err(|e| e.to_string())?;
-    Ok(())
+    let previous = manager.is_enabled().map_err(|e| e.to_string())?;
+    apply_autostart_transaction(
+        previous,
+        enabled,
+        |target| {
+            if target {
+                manager.enable()
+            } else {
+                manager.disable()
+            }
+            .map_err(|e| e.to_string())
+        },
+        || {
+            let mut stored = state.config.lock().unwrap();
+            let mut config = stored.clone();
+            config.ui.auto_start = enabled;
+            config
+                .save_and_migrate_secrets()
+                .map_err(|e| e.to_string())?;
+            *stored = config;
+            Ok(())
+        },
+    )
 }
 
 #[tauri::command]
@@ -3398,10 +4112,13 @@ pub fn list_installed_plugins() -> Result<Vec<InstalledPlugin>, String> {
     let mut out = Vec::new();
     let entries = std::fs::read_dir(&dir).map_err(|e| e.to_string())?;
     for entry in entries.flatten() {
-        let path = entry.path();
-        if !path.is_dir() {
+        if entry.file_name().to_string_lossy().starts_with('.') {
             continue;
         }
+        if !entry.file_type().is_ok_and(|file_type| file_type.is_dir()) {
+            continue;
+        }
+        let path = entry.path();
         let manifest_path = path.join("plugin.toml");
         if !manifest_path.exists() {
             continue;
@@ -3441,6 +4158,8 @@ pub fn plugin_load_errors(state: State<AppState>) -> Vec<String> {
 #[tauri::command]
 pub fn open_plugins_folder(app: AppHandle) -> Result<(), String> {
     let dir = plugins_dir()?;
+    let _pending_mutation =
+        PendingFileMutation::begin(&app).map_err(|error| error.to_string())?;
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     app.opener()
         .open_path(dir.to_string_lossy().to_string(), None::<&str>)
@@ -3468,8 +4187,9 @@ pub async fn marketplace_browse(
 }
 
 #[tauri::command]
-pub async fn marketplace_install(id: String, state: State<'_, AppState>) -> Result<bool, String> {
-    let url = state
+pub async fn marketplace_install(id: String, app: AppHandle) -> Result<bool, String> {
+    let url = app
+        .state::<AppState>()
         .config
         .lock()
         .unwrap()
@@ -3477,7 +4197,9 @@ pub async fn marketplace_install(id: String, state: State<'_, AppState>) -> Resu
         .registry_url
         .clone();
     let plugins = plugins_dir()?;
+    let pending_mutation = PendingFileMutation::begin(&app).map_err(|error| error.to_string())?;
     tokio::task::spawn_blocking(move || -> anyhow::Result<bool> {
+        let _pending_mutation = pending_mutation;
         let registry = crate::marketplace::fetch_registry(&url)?;
         let entry = registry
             .plugins
@@ -3492,31 +4214,33 @@ pub async fn marketplace_install(id: String, state: State<'_, AppState>) -> Resu
 }
 
 #[tauri::command]
-pub fn marketplace_uninstall(id: String) -> Result<(), String> {
+pub async fn marketplace_uninstall(id: String, app: AppHandle) -> Result<(), String> {
     let plugins = plugins_dir()?;
-    crate::marketplace::uninstall_plugin(&plugins, &id).map_err(|e| e.to_string())
+    let pending_mutation = PendingFileMutation::begin(&app).map_err(|error| error.to_string())?;
+    tokio::task::spawn_blocking(move || {
+        let _pending_mutation = pending_mutation;
+        crate::marketplace::uninstall_plugin(&plugins, &id)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+    .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
-pub fn toggle_plugin_enabled(id: String, enabled: bool) -> Result<(), String> {
-    crate::marketplace::validate_id(&id).map_err(|e| e.to_string())?;
+pub async fn toggle_plugin_enabled(
+    id: String,
+    enabled: bool,
+    app: AppHandle,
+) -> Result<(), String> {
     let plugins = plugins_dir()?;
-    let plugin_dir = plugins.join(&id);
-    if !plugin_dir.is_dir() {
-        return Err(format!("plugin '{}' not found", id));
-    }
-    let canonical_plugin = std::fs::canonicalize(&plugin_dir).map_err(|e| e.to_string())?;
-    let canonical_plugins = std::fs::canonicalize(&plugins).map_err(|e| e.to_string())?;
-    if !canonical_plugin.starts_with(&canonical_plugins) {
-        return Err("plugin path escapes plugins dir".to_string());
-    }
-    let manifest_path = canonical_plugin.join("plugin.toml");
-    let body = std::fs::read_to_string(&manifest_path).map_err(|e| e.to_string())?;
-    let mut table: toml::Table = toml::from_str(&body).map_err(|e| e.to_string())?;
-    table.insert("enabled".to_string(), toml::Value::Boolean(enabled));
-    let new_body = toml::to_string(&table).map_err(|e| e.to_string())?;
-    std::fs::write(&manifest_path, new_body).map_err(|e| e.to_string())?;
-    Ok(())
+    let pending_mutation = PendingFileMutation::begin(&app).map_err(|error| error.to_string())?;
+    tokio::task::spawn_blocking(move || {
+        let _pending_mutation = pending_mutation;
+        crate::marketplace::set_plugin_enabled(&plugins, &id, enabled)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+    .map_err(|error| error.to_string())
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -3596,9 +4320,15 @@ pub fn record_hotkey_status(
 #[tauri::command]
 pub fn dismiss_tray_hint(app: AppHandle, state: State<AppState>) -> Result<(), String> {
     {
-        let mut cfg = state.config.lock().unwrap();
-        cfg.ui.tray_hint_dismissed = true;
-        cfg.save().map_err(|e| e.to_string())?;
+        let mut stored = state.config.lock().unwrap();
+        let mut config = stored.clone();
+        let _pending_mutation =
+            PendingFileMutation::begin(&app).map_err(|error| error.to_string())?;
+        config.ui.tray_hint_dismissed = true;
+        config
+            .save_and_migrate_secrets()
+            .map_err(|e| e.to_string())?;
+        *stored = config;
     }
     let _ = app.emit("capscr://config-updated", ());
     Ok(())
@@ -3685,8 +4415,7 @@ pub fn gnome_companion_status() -> GnomeCompanionStatus {
         GnomeCompanionStatus {
             on_gnome: crate::shell::desktop() == crate::shell::DesktopEnv::Gnome,
             active: crate::capture::gnome_shell::available(),
-            installed: gnome_extension_dir()
-                .is_some_and(|dir| dir.join("extension.js").exists()),
+            installed: gnome_extension_dir().is_some_and(|dir| dir.join("extension.js").exists()),
         }
     }
     #[cfg(not(target_os = "linux"))]
@@ -3708,15 +4437,16 @@ pub fn install_gnome_companion(app: AppHandle) -> Result<GnomeCompanionStatus, S
     {
         use tauri::path::BaseDirectory;
         let target = gnome_extension_dir().ok_or("no home directory")?;
+        let _pending_mutation =
+            PendingFileMutation::begin(&app).map_err(|error| error.to_string())?;
         std::fs::create_dir_all(&target).map_err(|e| e.to_string())?;
         for file in ["extension.js", "metadata.json"] {
             let bundled = app
                 .path()
                 .resolve(format!("gnome-extension/{file}"), BaseDirectory::Resource)
                 .map_err(|e| e.to_string())?;
-            std::fs::copy(&bundled, target.join(file)).map_err(|e| {
-                format!("copying {} failed: {e}", bundled.display())
-            })?;
+            std::fs::copy(&bundled, target.join(file))
+                .map_err(|e| format!("copying {} failed: {e}", bundled.display()))?;
         }
         // records the enabled flag against the freshly copied files; the
         // running shell picks it up at the next login
@@ -3844,7 +4574,7 @@ pub struct SftpKnownHost {
 pub fn sftp_known_hosts() -> Result<Vec<SftpKnownHost>, String> {
     let path = crate::upload::known_hosts::KnownHosts::default_path()
         .ok_or_else(|| "config dir unresolvable".to_string())?;
-    let kh = crate::upload::known_hosts::KnownHosts::load(&path);
+    let kh = crate::upload::known_hosts::load_locked(&path).map_err(|e| e.to_string())?;
     let mut out: Vec<SftpKnownHost> = kh
         .hosts
         .into_iter()
@@ -3865,6 +4595,83 @@ pub struct ConnectionTestReport {
     pub steps: Vec<crate::upload::TestStep>,
 }
 
+fn connection_test_config(
+    destination: &str,
+    mut requested: Config,
+    saved: &Config,
+) -> Result<Config, String> {
+    requested.upload.ftp.password_encrypted.clear();
+    requested.upload.sftp.password_encrypted.clear();
+    requested
+        .upload
+        .sftp
+        .private_key_passphrase_encrypted
+        .clear();
+    requested.upload.s3.secret_access_key_encrypted.clear();
+
+    match destination {
+        "Ftp" | "ftp" => {
+            let same_identity = ftp_identity_matches(&requested, saved);
+            if requested.upload.ftp.password.is_empty() && same_identity {
+                requested.upload.ftp.password_encrypted =
+                    saved.upload.ftp.password_encrypted.clone();
+            }
+            if requested.upload.ftp.password.is_empty()
+                && requested.upload.ftp.password_encrypted.is_empty()
+            {
+                return Err(
+                    "enter the FTP password before testing a different connection".to_string(),
+                );
+            }
+        }
+        "Sftp" | "sftp" => {
+            let same_identity = sftp_identity_matches(&requested, saved);
+            if same_identity {
+                if requested.upload.sftp.password.is_empty() {
+                    requested.upload.sftp.password_encrypted =
+                        saved.upload.sftp.password_encrypted.clone();
+                }
+                if requested.upload.sftp.private_key_passphrase.is_empty() {
+                    requested
+                        .upload
+                        .sftp
+                        .private_key_passphrase_encrypted = saved
+                        .upload
+                        .sftp
+                        .private_key_passphrase_encrypted
+                        .clone();
+                }
+            }
+            if requested.upload.sftp.private_key_path.is_empty()
+                && requested.upload.sftp.password.is_empty()
+                && requested.upload.sftp.password_encrypted.is_empty()
+            {
+                return Err(
+                    "enter an SFTP password or choose a private key before testing".to_string(),
+                );
+            }
+        }
+        "S3" | "s3" => {
+            let same_identity = s3_identity_matches(&requested, saved);
+            if requested.upload.s3.secret_access_key.is_empty() && same_identity {
+                requested.upload.s3.secret_access_key_encrypted =
+                    saved.upload.s3.secret_access_key_encrypted.clone();
+            }
+            if requested.upload.s3.secret_access_key.is_empty()
+                && requested.upload.s3.secret_access_key_encrypted.is_empty()
+            {
+                return Err(
+                    "enter the S3 secret access key before testing a different connection"
+                        .to_string(),
+                );
+            }
+        }
+        _ => {}
+    }
+
+    Ok(requested)
+}
+
 // invoke wrapper around trigger_task so the hub UI can dry-run a task
 // without the user needing to press its hotkey. hides the hub window first
 // because a region/window capture overlay launched from a focused hub paints
@@ -3883,8 +4690,18 @@ pub fn fire_task(task_id: String, app: AppHandle) -> Result<(), String> {
 pub fn test_upload_connection(
     destination: String,
     config: Config,
+    app: AppHandle,
+    state: State<AppState>,
 ) -> Result<ConnectionTestReport, String> {
-    let cfg = config;
+    let cfg = {
+        let saved = state.config.lock().unwrap();
+        connection_test_config(&destination, config, &saved)?
+    };
+    let _pending_sftp_trust = if matches!(destination.as_str(), "Sftp" | "sftp") {
+        Some(PendingFileMutation::begin(&app).map_err(|error| error.to_string())?)
+    } else {
+        None
+    };
     let steps = match destination.as_str() {
         "Ftp" | "ftp" => {
             let target = crate::upload::FtpTarget {
@@ -3943,16 +4760,165 @@ pub fn test_upload_connection(
     })
 }
 
+#[cfg(test)]
+mod connection_test_config_tests {
+    use super::*;
+
+    fn saved_config() -> Config {
+        let mut config = Config::default();
+        config.upload.ftp.host = "ftp.example.com".into();
+        config.upload.ftp.port = 990;
+        config.upload.ftp.username = "ftp-user".into();
+        config.upload.ftp.use_tls = true;
+        config.upload.ftp.password_encrypted = "keyring:saved-ftp".into();
+
+        config.upload.sftp.host = "sftp.example.com".into();
+        config.upload.sftp.port = 2222;
+        config.upload.sftp.username = "sftp-user".into();
+        config.upload.sftp.private_key_path = "C:\\keys\\capture".into();
+        config.upload.sftp.password_encrypted = "keyring:saved-sftp".into();
+        config.upload.sftp.private_key_passphrase_encrypted = "keyring:saved-key".into();
+
+        config.upload.s3.bucket = "captures".into();
+        config.upload.s3.region = "eu-central-1".into();
+        config.upload.s3.endpoint = "https://s3.example.com".into();
+        config.upload.s3.access_key_id = "saved-access-key".into();
+        config.upload.s3.secret_access_key_encrypted = "keyring:saved-s3".into();
+        config
+    }
+
+    #[test]
+    fn probes_take_references_from_backend_state_for_saved_identities() {
+        let saved = saved_config();
+        let mut requested = saved.clone();
+        requested.upload.ftp.password_encrypted = "keyring:client-ftp".into();
+        requested.upload.sftp.password_encrypted = "keyring:client-sftp".into();
+        requested.upload.sftp.private_key_passphrase_encrypted = "keyring:client-key".into();
+        requested.upload.s3.secret_access_key_encrypted = "keyring:client-s3".into();
+
+        let ftp = connection_test_config("Ftp", requested.clone(), &saved).unwrap();
+        assert_eq!(
+            ftp.upload.ftp.password_encrypted,
+            "keyring:saved-ftp"
+        );
+        assert!(ftp.upload.sftp.password_encrypted.is_empty());
+        assert!(ftp.upload.s3.secret_access_key_encrypted.is_empty());
+
+        let sftp = connection_test_config("Sftp", requested.clone(), &saved).unwrap();
+        assert_eq!(
+            sftp.upload.sftp.password_encrypted,
+            "keyring:saved-sftp"
+        );
+        assert_eq!(
+            sftp.upload.sftp.private_key_passphrase_encrypted,
+            "keyring:saved-key"
+        );
+
+        let s3 = connection_test_config("S3", requested, &saved).unwrap();
+        assert_eq!(
+            s3.upload.s3.secret_access_key_encrypted,
+            "keyring:saved-s3"
+        );
+    }
+
+    #[test]
+    fn settings_restore_backend_references_for_saved_identities() {
+        let saved = saved_config();
+        let mut requested = saved.clone();
+        requested.upload.ftp.password_encrypted = "keyring:client-ftp".into();
+        requested.upload.sftp.password_encrypted = "keyring:client-sftp".into();
+        requested.upload.sftp.private_key_passphrase_encrypted = "keyring:client-key".into();
+        requested.upload.s3.secret_access_key_encrypted = "keyring:client-s3".into();
+
+        let _retired = bind_backend_secret_references(&mut requested, &saved);
+
+        assert_eq!(
+            requested.upload.ftp.password_encrypted,
+            "keyring:saved-ftp"
+        );
+        assert_eq!(
+            requested.upload.sftp.password_encrypted,
+            "keyring:saved-sftp"
+        );
+        assert_eq!(
+            requested
+                .upload
+                .sftp
+                .private_key_passphrase_encrypted,
+            "keyring:saved-key"
+        );
+        assert_eq!(
+            requested.upload.s3.secret_access_key_encrypted,
+            "keyring:saved-s3"
+        );
+    }
+
+    #[test]
+    fn settings_do_not_rebind_secrets_after_identity_changes() {
+        let saved = saved_config();
+        let mut requested = saved.clone();
+        requested.upload.ftp.host = "other-ftp.example.com".into();
+        requested.upload.sftp.username = "other-sftp-user".into();
+        requested.upload.s3.access_key_id = "other-access-key".into();
+        requested.upload.ftp.password_encrypted = "keyring:client-ftp".into();
+        requested.upload.sftp.password_encrypted = "keyring:client-sftp".into();
+        requested.upload.sftp.private_key_passphrase_encrypted = "keyring:client-key".into();
+        requested.upload.s3.secret_access_key_encrypted = "keyring:client-s3".into();
+
+        let _retired = bind_backend_secret_references(&mut requested, &saved);
+
+        assert!(requested.upload.ftp.password_encrypted.is_empty());
+        assert!(requested.upload.sftp.password_encrypted.is_empty());
+        assert!(
+            requested
+                .upload
+                .sftp
+                .private_key_passphrase_encrypted
+                .is_empty()
+        );
+        assert!(requested.upload.s3.secret_access_key_encrypted.is_empty());
+    }
+
+    #[test]
+    fn probes_reject_stored_references_for_changed_identities() {
+        let saved = saved_config();
+
+        let mut ftp = saved.clone();
+        ftp.upload.ftp.username = "other-user".into();
+        ftp.upload.ftp.password_encrypted = "keyring:saved-ftp".into();
+        assert!(connection_test_config("Ftp", ftp.clone(), &saved).is_err());
+        ftp.upload.ftp.password = "fresh password".into();
+        let ftp = connection_test_config("Ftp", ftp, &saved).unwrap();
+        assert!(ftp.upload.ftp.password_encrypted.is_empty());
+
+        let mut sftp = saved.clone();
+        sftp.upload.sftp.private_key_path = "C:\\keys\\other".into();
+        let sftp = connection_test_config("Sftp", sftp, &saved).unwrap();
+        assert!(sftp.upload.sftp.password_encrypted.is_empty());
+        assert!(
+            sftp.upload
+                .sftp
+                .private_key_passphrase_encrypted
+                .is_empty()
+        );
+
+        let mut s3 = saved.clone();
+        s3.upload.s3.bucket = "other-bucket".into();
+        s3.upload.s3.secret_access_key_encrypted = "keyring:saved-s3".into();
+        assert!(connection_test_config("S3", s3.clone(), &saved).is_err());
+        s3.upload.s3.secret_access_key = "fresh secret".into();
+        let s3 = connection_test_config("S3", s3, &saved).unwrap();
+        assert!(s3.upload.s3.secret_access_key_encrypted.is_empty());
+    }
+}
+
 #[tauri::command]
-pub fn sftp_forget_host(host_port: String) -> Result<bool, String> {
+pub fn sftp_forget_host(host_port: String, app: AppHandle) -> Result<bool, String> {
     let path = crate::upload::known_hosts::KnownHosts::default_path()
         .ok_or_else(|| "config dir unresolvable".to_string())?;
-    let mut kh = crate::upload::known_hosts::KnownHosts::load(&path);
-    let removed = kh.forget(&host_port);
-    if removed {
-        kh.save(&path).map_err(|e| e.to_string())?;
-    }
-    Ok(removed)
+    let _pending_mutation =
+        PendingFileMutation::begin(&app).map_err(|error| error.to_string())?;
+    crate::upload::known_hosts::forget_locked(&path, &host_port).map_err(|e| e.to_string())
 }
 
 /// Arm the LL hook to capture the next non-modifier keydown as a hotkey.
@@ -3994,27 +4960,30 @@ pub fn set_hotkeys_disabled(
     state: State<AppState>,
 ) -> Result<(), String> {
     use std::sync::atomic::Ordering;
-    let was = state.hotkeys_disabled.swap(disabled, Ordering::SeqCst);
-    if was == disabled {
-        return Ok(());
-    }
-    // persist into config so the toggle survives restart
-    {
-        let mut cfg = state.config.lock().unwrap();
-        cfg.hotkeys.disabled_globally = disabled;
-        if let Err(e) = cfg.save() {
-            tracing::warn!("hotkeys_disabled persist failed: {e}");
+    let _pending_mutation =
+        PendingFileMutation::begin(&app).map_err(|error| error.to_string())?;
+    let tasks = {
+        let mut stored = state.config.lock().unwrap();
+        let was = state.hotkeys_disabled.load(Ordering::SeqCst);
+        if was == disabled {
+            return Ok(());
         }
-    }
+        let mut config = stored.clone();
+        config.hotkeys.disabled_globally = disabled;
+        if let Err(error) = config.save_and_migrate_secrets() {
+            return Err(error.to_string());
+        }
+        let tasks = if disabled {
+            Vec::new()
+        } else {
+            config.capture_tasks.clone()
+        };
+        state.hotkeys_disabled.store(disabled, Ordering::SeqCst);
+        *stored = config;
+        tasks
+    };
     #[cfg(windows)]
     crate::hotkeys::ll_hook::set_enabled(!disabled);
-    // re-emit reload so the manager status reflects the new state. when
-    // disabled we send an empty Vec; when re-enabled we send the live tasks.
-    let tasks = if disabled {
-        Vec::new()
-    } else {
-        state.config.lock().unwrap().capture_tasks.clone()
-    };
     state.send_hotkey_reload(tasks);
     crate::rebuild_tray_menu(&app);
     let _ = app.emit("capscr://hotkey-status", ());
@@ -4246,12 +5215,98 @@ pub async fn history_thumbnail(
         .app_cache_dir()
         .map_err(|e| e.to_string())?
         .join("thumbs");
-    tokio::task::spawn_blocking(move || {
-        thumbnail_for(&cache_dir, &canonical).map_err(|e| e.to_string())
-    })
-    .await
-    .map_err(|e| e.to_string())?
-    .map(|thumb| thumb.to_string_lossy().to_string())
+    let (sender, receiver) = claim_thumbnail_job(&state, &canonical);
+    if let Some(sender) = sender {
+        let worker_app = app.clone();
+        let worker_path = canonical.clone();
+        let gate = state.thumbnail_decode_gate.clone();
+        tauri::async_runtime::spawn(async move {
+            let result = async {
+                let _permit = gate
+                    .acquire_owned()
+                    .await
+                    .map_err(|_| "thumbnail worker is unavailable".to_string())?;
+                let _pending_mutation = PendingFileMutation::begin(&worker_app)
+                    .map_err(|error| error.to_string())?;
+                tokio::task::spawn_blocking(move || {
+                    thumbnail_for(&cache_dir, &worker_path)
+                        .map(|thumb| thumb.to_string_lossy().to_string())
+                        .map_err(|error| error.to_string())
+                })
+                .await
+                .map_err(|error| error.to_string())?
+            }
+            .await;
+            let _ = sender.send(Some(result));
+            worker_app
+                .state::<AppState>()
+                .thumbnail_jobs
+                .lock()
+                .unwrap()
+                .remove(&canonical);
+        });
+    }
+    await_thumbnail(receiver).await
+}
+
+fn claim_thumbnail_job(
+    state: &AppState,
+    path: &std::path::Path,
+) -> (
+    Option<tokio::sync::watch::Sender<Option<crate::state::ThumbnailResult>>>,
+    crate::state::ThumbnailReceiver,
+) {
+    let mut jobs = state.thumbnail_jobs.lock().unwrap();
+    if let Some(receiver) = jobs.get(path) {
+        return (None, receiver.clone());
+    }
+    let (sender, receiver) =
+        tokio::sync::watch::channel::<Option<crate::state::ThumbnailResult>>(None);
+    jobs.insert(path.to_path_buf(), receiver.clone());
+    (Some(sender), receiver)
+}
+
+async fn await_thumbnail(
+    mut receiver: crate::state::ThumbnailReceiver,
+) -> Result<String, String> {
+    loop {
+        if let Some(result) = receiver.borrow().clone() {
+            return result;
+        }
+        receiver
+            .changed()
+            .await
+            .map_err(|_| "thumbnail worker stopped before completing".to_string())?;
+    }
+}
+
+#[cfg(test)]
+mod thumbnail_request_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn same_path_reuses_the_active_thumbnail_job() {
+        let state = AppState::new(Config::default());
+        let path = std::path::Path::new("same-capture.png");
+
+        let (owner, first) = claim_thumbnail_job(&state, path);
+        let (duplicate_owner, second) = claim_thumbnail_job(&state, path);
+
+        assert!(duplicate_owner.is_none());
+        owner
+            .expect("first request owns the job")
+            .send(Some(Ok("cached-thumbnail.jpg".to_string())))
+            .expect("publish result");
+        assert_eq!(
+            await_thumbnail(first).await.expect("first result"),
+            "cached-thumbnail.jpg"
+        );
+        assert_eq!(
+            await_thumbnail(second).await.expect("second result"),
+            "cached-thumbnail.jpg"
+        );
+        assert_eq!(state.thumbnail_decode_gate.available_permits(), 2);
+    }
 }
 
 fn thumbnail_for(cache_dir: &std::path::Path, path: &std::path::Path) -> anyhow::Result<PathBuf> {
@@ -4263,7 +5318,7 @@ fn thumbnail_for(cache_dir: &std::path::Path, path: &std::path::Path) -> anyhow:
     meta.len().hash(&mut hasher);
     if let Ok(modified) = meta.modified() {
         if let Ok(age) = modified.duration_since(std::time::UNIX_EPOCH) {
-            age.as_secs().hash(&mut hasher);
+            age.hash(&mut hasher);
         }
     }
     std::fs::create_dir_all(cache_dir)?;
@@ -4296,9 +5351,16 @@ fn thumbnail_for(cache_dir: &std::path::Path, path: &std::path::Path) -> anyhow:
     let rgb = image::DynamicImage::ImageRgba8(small).to_rgb8();
     // atomic-ish: encode to a temp name then rename, so a torn write never
     // caches as a valid thumb
-    let staging = thumb.with_extension("jpg.tmp");
-    rgb.save_with_format(&staging, image::ImageFormat::Jpeg)?;
-    std::fs::rename(&staging, &thumb)?;
+    let staging =
+        thumb.with_extension(format!("jpg.{}.tmp", uuid::Uuid::new_v4().as_simple()));
+    if let Err(error) = rgb.save_with_format(&staging, image::ImageFormat::Jpeg) {
+        let _ = std::fs::remove_file(&staging);
+        return Err(error.into());
+    }
+    if let Err(error) = std::fs::rename(&staging, &thumb) {
+        let _ = std::fs::remove_file(&staging);
+        return Err(error.into());
+    }
     Ok(thumb)
 }
 
@@ -4373,8 +5435,7 @@ pub async fn pin_image(
     // those pins drag through pin_set_position.
     #[cfg(target_os = "linux")]
     if crate::capture::gui_is_wayland() {
-        if !crate::shell::wayland_globals().plasma_shell
-            && crate::capture::gnome_shell::available()
+        if !crate::shell::wayland_globals().plasma_shell && crate::capture::gnome_shell::available()
         {
             let index = state.pinned_images.lock().unwrap().len().saturating_sub(1);
             let base = 48 + (index as i32 % 6) * 36;
@@ -4407,7 +5468,10 @@ pub async fn pin_image(
             // pins don't land exactly on top of one another
             let index = state.pinned_images.lock().unwrap().len().saturating_sub(1);
             let base = 48 + (index as i32 % 6) * 36;
-            PIN_POSITIONS.lock().unwrap().insert(label.clone(), (base, base));
+            PIN_POSITIONS
+                .lock()
+                .unwrap()
+                .insert(label.clone(), (base, base));
             let app2 = app.clone();
             let label2 = label.clone();
             let _ = app.run_on_main_thread(move || {
@@ -4445,8 +5509,7 @@ pub async fn pin_image(
 // true once any pin is placed via layer-shell, where the compositor won't
 // move the surface and PinView must drive dragging through pin_move_by
 #[cfg(target_os = "linux")]
-static PIN_MANUAL_DRAG: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
+static PIN_MANUAL_DRAG: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 // layer-shell pins have no compositor-reported position, so capscr tracks
 // each pin's global logical top-left here and applies drag deltas against it

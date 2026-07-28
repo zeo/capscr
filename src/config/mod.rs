@@ -1236,9 +1236,7 @@ impl Config {
                             .iter()
                             .any(|blob| !blob.is_empty() && !blob.starts_with("keyring:"));
                         if needs_secret_migration {
-                            if let Err(e) = config.migrate_secrets() {
-                                tracing::warn!("secret migration deferred: {e}");
-                            } else if let Err(e) = config.save() {
+                            if let Err(e) = config.save_and_migrate_secrets() {
                                 tracing::warn!(
                                     "secret migration save failed: {e}; \
                                      plaintext password stays on disk for now"
@@ -1273,25 +1271,33 @@ impl Config {
         }
     }
 
-    pub fn save(&self) -> Result<()> {
-        self.validate()?;
-        // migrate any plaintext FTP password into the DPAPI vault on save so
-        // the on-disk config never carries credentials in the clear once the
-        // user has done at least one save with 0.3.43+
-        let mut to_persist = self.clone();
-        to_persist.migrate_secrets()?;
-        if let Some(dir) = Self::config_dir() {
-            fs::create_dir_all(&dir)?;
-            if let Some(path) = Self::config_path() {
-                let content = toml::to_string_pretty(&to_persist)?;
-                // atomic write: write to a temp file, then rename so a crash
-                // mid-write can't leave config.toml truncated/corrupted
-                let tmp = path.with_extension("toml.tmp");
-                fs::write(&tmp, &content)?;
-                fs::rename(&tmp, &path)?;
-            }
-        }
+    pub(crate) fn save_and_migrate_secrets(&mut self) -> Result<()> {
+        *self = self.persisted_copy()?;
         Ok(())
+    }
+
+    fn persisted_copy(&self) -> Result<Self> {
+        self.validate()?;
+        let mut to_persist = self.clone();
+        let transaction = to_persist.migrate_secrets()?;
+        let dir = Self::config_dir().ok_or_else(|| anyhow!("config directory is unavailable"))?;
+        fs::create_dir_all(&dir)?;
+        let path = dir.join("config.toml");
+        let content = toml::to_string_pretty(&to_persist)?;
+        // atomic write: write to a temp file, then rename so a crash
+        // mid-write can't leave config.toml truncated/corrupted
+        let tmp =
+            path.with_extension(format!("toml.{}.tmp", uuid::Uuid::new_v4().as_simple()));
+        if let Err(error) = fs::write(&tmp, &content) {
+            let _ = fs::remove_file(&tmp);
+            return Err(anyhow!("config temp write failed: {error}"));
+        }
+        if let Err(error) = fs::rename(&tmp, &path) {
+            let _ = fs::remove_file(&tmp);
+            return Err(anyhow!("config atomic rename failed: {error}"));
+        }
+        transaction.commit();
+        Ok(to_persist)
     }
 
     fn has_plaintext_secrets(&self) -> bool {
@@ -1304,7 +1310,8 @@ impl Config {
     /// in-place: encrypt any plaintext secrets that haven't been wrapped yet
     /// and clear the plaintext field. Idempotent — running twice is a no-op
     /// after the first.
-    pub fn migrate_secrets(&mut self) -> Result<()> {
+    fn migrate_secrets(&mut self) -> Result<crate::secret::SecretTransaction> {
+        let mut transaction = crate::secret::SecretTransaction::default();
         #[cfg(target_os = "linux")]
         for blob in [
             &mut self.upload.ftp.password_encrypted,
@@ -1315,7 +1322,8 @@ impl Config {
             if !blob.is_empty() && !blob.starts_with("keyring:") {
                 let plaintext = crate::secret::decrypt(blob)
                     .context("couldn't read a legacy on-disk credential")?;
-                *blob = crate::secret::encrypt(&plaintext)
+                *blob = transaction
+                    .replace(&plaintext, blob)
                     .context("couldn't move a legacy credential into the system keyring")?;
             }
         }
@@ -1324,23 +1332,27 @@ impl Config {
             &mut self.upload.ftp.password,
             &mut self.upload.ftp.password_encrypted,
             "FTP password",
+            &mut transaction,
         )?;
         migrate_secret(
             &mut self.upload.sftp.password,
             &mut self.upload.sftp.password_encrypted,
             "SFTP password",
+            &mut transaction,
         )?;
         migrate_secret(
             &mut self.upload.sftp.private_key_passphrase,
             &mut self.upload.sftp.private_key_passphrase_encrypted,
             "SFTP key passphrase",
+            &mut transaction,
         )?;
         migrate_secret(
             &mut self.upload.s3.secret_access_key,
             &mut self.upload.s3.secret_access_key_encrypted,
             "S3 secret access key",
+            &mut transaction,
         )?;
-        Ok(())
+        Ok(transaction)
     }
 
     pub fn ensure_output_dir(&self) -> Result<()> {
@@ -1394,11 +1406,17 @@ impl Config {
     }
 }
 
-fn migrate_secret(plaintext: &mut String, encrypted: &mut String, label: &str) -> Result<()> {
+fn migrate_secret(
+    plaintext: &mut String,
+    encrypted: &mut String,
+    label: &str,
+    transaction: &mut crate::secret::SecretTransaction,
+) -> Result<()> {
     if plaintext.is_empty() {
         return Ok(());
     }
-    let blob = crate::secret::replace(plaintext, encrypted)
+    let blob = transaction
+        .replace(plaintext, encrypted)
         .map_err(|error| anyhow!("couldn't store {label} in the credential vault: {error:#}"))?;
     plaintext.clear();
     *encrypted = blob;
@@ -1558,7 +1576,8 @@ mod tests {
         config.upload.s3.secret_access_key = "new s3".into();
         config.upload.s3.secret_access_key_encrypted = old;
 
-        config.migrate_secrets().expect("migrate replacements");
+        let transaction = config.migrate_secrets().expect("migrate replacements");
+        transaction.commit();
 
         assert!(!config.has_plaintext_secrets());
         assert_eq!(config.upload.ftp.password_plaintext(), "new ftp");
@@ -1568,6 +1587,26 @@ mod tests {
             "new passphrase"
         );
         assert_eq!(config.upload.s3.secret_access_key_plaintext(), "new s3");
+    }
+
+    #[test]
+    fn rejected_save_does_not_replace_stored_credentials() {
+        let mut config = Config::default();
+        config.output.quality = MAX_QUALITY + 1;
+        config.upload.ftp.password = "pending replacement".into();
+        config.upload.ftp.password_encrypted = "keyring:stored".into();
+
+        let error = config
+            .save_and_migrate_secrets()
+            .expect_err("invalid config must be rejected");
+
+        assert!(error.to_string().contains("quality"));
+        assert_eq!(config.upload.ftp.password, "pending replacement");
+        assert_eq!(
+            config.upload.ftp.password_encrypted,
+            "keyring:stored",
+            "validation must run before credential storage"
+        );
     }
 
     #[test]

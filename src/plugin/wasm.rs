@@ -824,6 +824,8 @@ fn host_request(
 
     let client = reqwest::blocking::Client::builder()
         .timeout(timeout)
+        .https_only(true)
+        .no_proxy()
         .redirect(reqwest::redirect::Policy::none())
         // validate_resolved_host only vets a resolution taken a moment ago;
         // reqwest re-resolves at connect time, so without this the guard is a
