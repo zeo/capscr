@@ -11,6 +11,7 @@ import { api } from "../api";
 interface Props {
   value: string;
   onChange: (next: string) => void;
+  disabled?: boolean;
 }
 
 interface CapturedPayload {
@@ -77,7 +78,7 @@ export function HotkeyInput(props: Props) {
   };
 
   const begin = async () => {
-    if (capturing()) return;
+    if (capturing() || props.disabled) return;
     setWarning(null);
 
     try {
@@ -161,17 +162,28 @@ export function HotkeyInput(props: Props) {
       <div
         class="hk"
         classList={{ "is-capturing": capturing() }}
-        onClick={begin}
-        role="button"
-        tabIndex={0}
-        onKeyDown={(e) => {
-          if (!capturing() && (e.key === "Enter" || e.key === " ")) {
-            e.preventDefault();
-            begin();
-          }
-        }}
+        data-disabled={props.disabled ? "true" : undefined}
       >
-        <div class="hk-display">
+        <div
+          class="hk-display"
+          onClick={begin}
+          role="button"
+          aria-disabled={props.disabled}
+          aria-label={
+            capturing()
+              ? "press a key combination"
+              : props.value
+                ? `change hotkey, current binding ${props.value}`
+                : "bind hotkey"
+          }
+          tabIndex={props.disabled ? -1 : 0}
+          onKeyDown={(e) => {
+            if (!capturing() && !props.disabled && (e.key === "Enter" || e.key === " ")) {
+              e.preventDefault();
+              begin();
+            }
+          }}
+        >
           <Show
             when={capturing()}
             fallback={
@@ -193,7 +205,7 @@ export function HotkeyInput(props: Props) {
             <span>press a key… (esc to cancel)</span>
           </Show>
         </div>
-        <Show when={props.value && !capturing()}>
+        <Show when={props.value && !capturing() && !props.disabled}>
           <button
             type="button"
             class="hk-clear"

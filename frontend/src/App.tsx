@@ -1,17 +1,24 @@
 import { createResource, createSignal, For, lazy, Match, onCleanup, onMount, Show, Suspense, Switch } from "solid-js";
-import { listen, UnlistenFn } from "@tauri-apps/api/event";
-import { getCurrentWindow } from "@tauri-apps/api/window";
+import { listen, TauriEvent, UnlistenFn } from "@tauri-apps/api/event";
+import { getCurrentWindow, Window } from "@tauri-apps/api/window";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { Copy, ExternalLink, Trash2, X, Download } from "lucide-solid";
 import { Titlebar } from "./components/Titlebar";
-import { api, HotkeyDiagnostics, UpdateInfo } from "./api";
+import { api, type AppConfig, HotkeyDiagnostics, UpdateInfo } from "./api";
 import { configDirty, setConfigDirty } from "./dirty";
 import { Settings } from "./views/Settings";
 import { History } from "./views/History";
 import { Destinations } from "./views/Destinations";
 import { Tasks } from "./views/Tasks";
-import { config, refetchConfig, mutateConfig } from "./store";
+import {
+  captureTaskSaveState,
+  config,
+  discardFailedCaptureTaskSave,
+  mutateConfig,
+  saveCaptureTasks,
+  waitForCaptureTaskSaves,
+} from "./store";
 import { HotkeyInput } from "./components/HotkeyInput";
 import { PinView } from "./views/PinView";
 import { Selector } from "./views/Selector";
@@ -36,6 +43,11 @@ interface UploadCard {
   id: number;
   url: string;
   deleteUrl: string | null;
+}
+
+interface EditorExitDecision {
+  requestId: string;
+  allowed: boolean;
 }
 
 type Tab = {
@@ -100,6 +112,7 @@ function Hub() {
   const [updateDismissed, setUpdateDismissed] = createSignal(false);
   const [trayMissing, setTrayMissing] = createSignal(false);
   const [updating, setUpdating] = createSignal(false);
+  const [onboardingSaving, setOnboardingSaving] = createSignal(false);
   const [showShortcuts, setShowShortcuts] = createSignal(false);
   const [hotkeyDiag, { refetch: refetchHotkeyDiag }] = createResource<HotkeyDiagnostics>(
     api.hotkeyDiagnostics,
@@ -161,8 +174,65 @@ function Hub() {
     });
   };
 
+  const confirmEditorExit = async () => {
+    const editor = await Window.getByLabel("editor");
+    if (!editor) return true;
+
+    const requestId = crypto.randomUUID();
+    let resolveDecision!: (allowed: boolean) => void;
+    const decision = new Promise<boolean>((resolve) => {
+      resolveDecision = resolve;
+    });
+    let resolved = false;
+    let timedOut = false;
+    const finish = (allowed: boolean) => {
+      if (resolved) return;
+      resolved = true;
+      resolveDecision(allowed);
+    };
+
+    const stopDecision = await win.listen<EditorExitDecision>(
+      "capscr://editor-exit-decision",
+      (event) => {
+        if (event.payload.requestId === requestId) {
+          finish(event.payload.allowed);
+        }
+      },
+    );
+    let stopDestroyed: UnlistenFn | undefined;
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+      stopDestroyed = await editor.once(TauriEvent.WINDOW_DESTROYED, () => finish(true));
+      if (!(await Window.getByLabel("editor"))) return true;
+
+      timeout = setTimeout(() => {
+        timedOut = true;
+        finish(false);
+      }, 120_000);
+      await win.emitTo(
+        { kind: "Window", label: "editor" },
+        "capscr://editor-exit-request",
+        { requestId },
+      );
+      const allowed = await decision;
+      if (timedOut) throw new Error("editor did not respond; action cancelled");
+      return allowed;
+    } finally {
+      if (timeout) clearTimeout(timeout);
+      stopDestroyed?.();
+      stopDecision();
+    }
+  };
+
   onMount(async () => {
     unlisteners.push(
+      await listen<{ requestId: string; forceExit: boolean }>("capscr://close-requested", (e) => {
+        void api.acknowledgeHubClose(e.payload.requestId)
+          .then((acknowledged) => {
+            if (acknowledged) void closeHub(e.payload.forceExit);
+          })
+          .catch((error) => pushToast("close", String(error)));
+      }),
       await listen<{ kind: string; msg: string }>(
         "capscr://error",
         (e) => pushToast(e.payload.kind, e.payload.msg),
@@ -211,7 +281,11 @@ function Hub() {
       // refetch replaces the whole store, so mid-edit it would silently drop
       // the user's pending changes. their next save wins instead.
       await listen("capscr://config-updated", async () => {
-        if (configDirty()) {
+        if (
+          configDirty() ||
+          captureTaskSaveState().kind === "saving" ||
+          captureTaskSaveState().kind === "error"
+        ) {
           // don't clobber unsaved edits, but still pick up the one field the
           // tray can change out from under the user — the upload destination —
           // so their next save doesn't silently revert the tray switch
@@ -222,6 +296,14 @@ function Hub() {
               mutateConfig({
                 ...cur,
                 upload: { ...cur.upload, destination: fresh.upload.destination },
+                hotkeys: {
+                  ...cur.hotkeys,
+                  disabled_globally: fresh.hotkeys.disabled_globally,
+                },
+                ui: {
+                  ...cur.ui,
+                  tray_hint_dismissed: fresh.ui.tray_hint_dismissed,
+                },
               });
             }
           } catch {
@@ -230,7 +312,7 @@ function Hub() {
           return;
         }
         try {
-          await refetchConfig();
+          await reloadSavedConfig();
         } catch {
           /* config refetch best-effort */
         }
@@ -323,39 +405,100 @@ function Hub() {
 
   onCleanup(() => unlisteners.forEach((u) => u()));
 
-  const confirmDiscardEdits = (): boolean =>
-    !configDirty() || window.confirm("Discard unsaved settings changes?");
+  const hasUnsavedConfig = () =>
+    configDirty() || captureTaskSaveState().kind === "error";
 
-  const tryChangeTab = (next: Tab) => {
+  const reloadSavedConfig = async () => {
+    mutateConfig(await api.getConfig());
+  };
+
+  let changingTab = false;
+  const tryChangeTab = async (next: Tab) => {
     if (tab().id === next.id) return;
-    if (!confirmDiscardEdits()) return;
-    setConfigDirty(false);
+    if (changingTab) return;
+    if (hasUnsavedConfig()) {
+      if (!window.confirm("Discard unsaved settings changes?")) return;
+      changingTab = true;
+      try {
+        await reloadSavedConfig();
+      } catch (error) {
+        pushToast("config", `failed to reload saved settings: ${error}`);
+        changingTab = false;
+        return;
+      }
+      discardFailedCaptureTaskSave();
+      setConfigDirty(false);
+      changingTab = false;
+    }
     setTab(next);
   };
 
-  const onClose = () => {
-    if (!confirmDiscardEdits()) return;
-    setConfigDirty(false);
-    void win.close();
+  const confirmPendingEdits = async (requireEditor: boolean) => {
+    await waitForCaptureTaskSaves();
+    const discardConfig = hasUnsavedConfig();
+    if (discardConfig && !window.confirm("Discard unsaved settings changes?")) {
+      return false;
+    }
+    let savedConfig: AppConfig | undefined;
+    if (discardConfig) {
+      try {
+        savedConfig = await api.getConfig();
+      } catch (error) {
+        pushToast("config", `failed to reload saved settings: ${error}`);
+        return false;
+      }
+    }
+    const closeBehavior = (savedConfig ?? config())?.ui.close_behavior;
+    const includeEditor =
+      requireEditor || closeBehavior === undefined || closeBehavior === "exit";
+    if (includeEditor && !(await confirmEditorExit())) return false;
+    if (savedConfig) {
+      mutateConfig(savedConfig);
+      discardFailedCaptureTaskSave();
+      setConfigDirty(false);
+    }
+    return true;
+  };
+
+  let exitActionPending = false;
+  const closeHub = async (forceExit: boolean) => {
+    if (exitActionPending) return;
+    exitActionPending = true;
+    try {
+      if (!(await confirmPendingEdits(forceExit))) return;
+      await api.completeHubClose(forceExit);
+    } catch (error) {
+      pushToast("close", String(error));
+    } finally {
+      exitActionPending = false;
+    }
   };
 
   const runUpdate = async () => {
-    setUpdating(true);
+    if (updating() || recording() || exitActionPending) return;
+    exitActionPending = true;
     try {
+      if (!(await confirmPendingEdits(true))) return;
+      setUpdating(true);
       await api.installUpdate();
-      // installUpdate triggers app.restart() on success, so we shouldn't
-      // get here. If we do, treat it as the update having installed without
-      // a restart (rare).
     } catch (e) {
-      pushToast("update", String(e));
-      void openUrl(RELEASES_URL);
+      const message = String(e);
+      pushToast("update", message);
+      if (message.includes("not installed")) {
+        void openUrl(RELEASES_URL);
+      }
       setUpdating(false);
+    } finally {
+      exitActionPending = false;
     }
   };
 
   return (
     <div class="app">
-      <Titlebar context={tab().context} onClose={onClose} />
+      <Titlebar
+        context={tab().context}
+        onClose={() => void closeHub(false)}
+      />
 
       <Show when={needsOnboarding()}>
         <div class="onboarding-overlay">
@@ -368,22 +511,24 @@ function Hub() {
             <div style="margin: 24px 0 12px 0; width: 280px; align-self: center;">
               <HotkeyInput
                 value=""
+                disabled={onboardingSaving()}
                 onChange={async (nextHotkey) => {
-                  if (!nextHotkey) return;
+                  if (!nextHotkey || onboardingSaving()) return;
                   const c = config();
                   if (!c) return;
                   const index = c.capture_tasks.findIndex((t) => t.id === "screenshot-save-clipboard");
                   if (index !== -1) {
                     const next = [...c.capture_tasks];
                     next[index] = { ...next[index], hotkey: nextHotkey };
-                    const nextConfig = { ...c, capture_tasks: next };
-                    mutateConfig(nextConfig);
+                    setOnboardingSaving(true);
                     try {
-                      mutateConfig(await api.setConfig(nextConfig));
-                      setConfigDirty(false);
+                      await saveCaptureTasks(next);
                       pushToast("config", "screenshot hotkey bound successfully");
                     } catch (e) {
+                      discardFailedCaptureTaskSave();
                       pushToast("config", `failed to save: ${e}`);
+                    } finally {
+                      setOnboardingSaving(false);
                     }
                   }
                 }}
@@ -510,9 +655,20 @@ function Hub() {
               class="btn"
               data-variant="ghost"
               data-size="xs"
-              onClick={() => {
-                setTrayMissing(false);
-                void api.dismissTrayHint();
+              onClick={async () => {
+                try {
+                  await api.dismissTrayHint();
+                  const current = config();
+                  if (current) {
+                    mutateConfig({
+                      ...current,
+                      ui: { ...current.ui, tray_hint_dismissed: true },
+                    });
+                  }
+                  setTrayMissing(false);
+                } catch (error) {
+                  pushToast("tray", `failed to save tray preference: ${error}`);
+                }
               }}
             >
               don't show again
@@ -569,7 +725,12 @@ function Hub() {
                 class="btn"
                 data-size="xs"
                 onClick={runUpdate}
-                disabled={updating()}
+                disabled={updating() || recording()}
+                title={
+                  recording()
+                    ? "stop the recording and wait for it to save before updating"
+                    : undefined
+                }
               >
                 <Download size={11} stroke-width={1.5} />
                 {updating() ? "installing..." : "install + restart"}

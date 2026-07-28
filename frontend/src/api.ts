@@ -102,6 +102,7 @@ export interface UiConfig {
   auto_start: boolean;
   check_updates_on_launch: boolean;
   save_clipboard_to_history: boolean;
+  tray_hint_dismissed: boolean;
 }
 
 export interface CaptureTask {
@@ -250,6 +251,12 @@ export const api = {
   getConfig: () => invoke<AppConfig>("get_config"),
   getDefaultConfig: () => invoke<AppConfig>("get_default_config"),
   setConfig: (config: AppConfig) => invoke<AppConfig>("set_config", { config }),
+  setCaptureTasks: (captureTasks: CaptureTask[]) =>
+    invoke<CaptureTask[]>("set_capture_tasks", { captureTasks }),
+  acknowledgeHubClose: (requestId: string) =>
+    invoke<boolean>("acknowledge_hub_close", { requestId }),
+  completeHubClose: (forceExit: boolean) =>
+    invoke<void>("complete_hub_close", { forceExit }),
   takeScreenshot: (mode: CaptureMode, post: PostAction) =>
     invoke<void>("take_screenshot", { mode, post }),
   listCaptures: () => invoke<HistoryEntry[]>("list_captures"),
@@ -262,7 +269,6 @@ export const api = {
   openInExplorer: (path: string) => invoke<void>("open_in_explorer", { path }),
   trimMp4: (path: string, startSecs: number, endSecs: number, fast: boolean) =>
     invoke<string>("trim_mp4", { path, startSecs, endSecs, fast }),
-  exitApp: () => invoke<void>("exit_app"),
 
   listInstalledPlugins: () => invoke<InstalledPlugin[]>("list_installed_plugins"),
   pluginLoadErrors: () => invoke<string[]>("plugin_load_errors"),

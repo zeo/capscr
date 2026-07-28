@@ -1,5 +1,5 @@
 import { createSignal, For, onCleanup, onMount, Show } from "solid-js";
-import { getCurrentWindow } from "@tauri-apps/api/window";
+import { getCurrentWindow, Window } from "@tauri-apps/api/window";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { api } from "../api";
@@ -102,6 +102,10 @@ interface HighlightOp {
   width: number;
 }
 
+interface EditorExitRequest {
+  requestId: string;
+}
+
 type Op =
   | ArrowOp
   | RectOp
@@ -142,15 +146,20 @@ export function Editor() {
   const [hdrSidecarPath, setHdrSidecarPath] = createSignal<string | null>(null);
 
   let dragStart: Point | null = null;
+  let loadGeneration = 0;
 
   const win = getCurrentWindow();
 
   const loadImage = async (path: string) => {
+    const generation = ++loadGeneration;
+    const isCurrent = () => generation === loadGeneration;
     setLoaded(false);
     setStatus(null);
     setOps([]);
     setRedoStack([]);
     setDraft(null);
+    setTextInputAt(null);
+    setTextBuffer("");
     setHasPastedContent(false);
     baseImage = null;
     setIsHdrSource(false);
@@ -168,32 +177,38 @@ export function Editor() {
 
     setImagePath(path);
 
+    let baseIsHdr = false;
     try {
-      const hdr = await api.isHdrCapture(path);
-      setIsHdrSource(hdr);
-      if (hdr) {
-        const dot = path.lastIndexOf(".");
-        const stem = dot > 0 ? path.slice(0, dot) : path;
-        const sidecar = `${stem}.hdr.png`;
-        try {
-          const sidecarIsHdr = await api.isHdrCapture(sidecar);
-          if (sidecarIsHdr) setHdrSidecarPath(sidecar);
-        } catch {
-          // sidecar absent
-        }
-      }
+      baseIsHdr = await api.isHdrCapture(path);
     } catch {
-      // probe failure isn't fatal — fall through to normal load
+      // probe failure isn't fatal
     }
+    if (!isCurrent()) return;
+
+    const dot = path.lastIndexOf(".");
+    const stem = dot > 0 ? path.slice(0, dot) : path;
+    const sidecar = `${stem}.hdr.png`;
+    let sidecarIsHdr = false;
+    try {
+      sidecarIsHdr = await api.isHdrCapture(sidecar);
+    } catch {
+      // sidecar absent
+    }
+    if (!isCurrent()) return;
+    if (sidecarIsHdr) setHdrSidecarPath(sidecar);
+    setIsHdrSource(baseIsHdr || sidecarIsHdr);
 
     const img = new Image();
     img.src = convertFileSrc(path);
     try {
       await img.decode();
     } catch (e) {
-      setStatus({ tone: "err", msg: `image load failed: ${e}` });
+      if (isCurrent()) {
+        setStatus({ tone: "err", msg: `image load failed: ${e}` });
+      }
       return;
     }
+    if (!isCurrent()) return;
     baseImage = img;
     canvasRef.width = img.naturalWidth;
     canvasRef.height = img.naturalHeight;
@@ -202,7 +217,9 @@ export function Editor() {
   };
 
   onMount(async () => {
+    const generation = loadGeneration;
     const path = await invoke<string | null>("get_editor_image_path");
+    if (generation !== loadGeneration) return;
     if (!path) {
       setStatus({ tone: "err", msg: "no image path received from backend" });
       return;
@@ -214,17 +231,34 @@ export function Editor() {
   // event instead of opening a fresh window. Without a listener here the
   // canvas would keep showing the previous image while imagePath() points to
   // the new file — any save would overwrite the wrong file.
-  onMount(async () => {
-    const unlisten = await listen<string>("capscr://editor-load", async (e) => {
-      if (ops().length > 0 || draft() !== null) {
+  onMount(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void listen<string>("capscr://editor-load", async (e) => {
+      if (isDirty()) {
         const ok = window.confirm(
           "Discard unsaved annotations and open a new image?",
         );
         if (!ok) return;
       }
       await loadImage(e.payload);
+    })
+      .then((stopListening) => {
+        if (disposed) {
+          stopListening();
+        } else {
+          unlisten = stopListening;
+        }
+      })
+      .catch((error) => {
+        if (!disposed) {
+          setStatus({ tone: "err", msg: `editor listener failed: ${error}` });
+        }
+      });
+    onCleanup(() => {
+      disposed = true;
+      unlisten?.();
     });
-    onCleanup(unlisten);
   });
 
   const stepZoom = (dir: 1 | -1) => {
@@ -255,7 +289,7 @@ export function Editor() {
       e.preventDefault();
       setZoom(1.0);
     } else if (e.key === "Escape") {
-      void confirmCloseEditor();
+      void win.close();
     } else if (e.key === "1") setTool("arrow");
     else if (e.key === "2") setTool("rect");
     else if (e.key === "3") {
@@ -284,17 +318,25 @@ export function Editor() {
       const blob = it.getAsFile();
       if (!blob) continue;
       e.preventDefault();
+      const generation = ++loadGeneration;
+      const isCurrent = () => generation === loadGeneration;
       const url = URL.createObjectURL(blob);
       try {
         const img = new Image();
         img.src = url;
         await img.decode();
+        if (!isCurrent()) return;
         baseImage = img;
         canvasRef.width = img.naturalWidth;
         canvasRef.height = img.naturalHeight;
         setOps([]);
         setRedoStack([]);
+        setDraft(null);
+        setTextInputAt(null);
+        setTextBuffer("");
         setHasPastedContent(true);
+        setIsHdrSource(false);
+        setHdrSidecarPath(null);
         setLoaded(true);
         setStatus({
           tone: "ok",
@@ -302,7 +344,9 @@ export function Editor() {
         });
         redraw();
       } catch (err) {
-        setStatus({ tone: "err", msg: `paste failed: ${err}` });
+        if (isCurrent()) {
+          setStatus({ tone: "err", msg: `paste failed: ${err}` });
+        }
       } finally {
         URL.revokeObjectURL(url);
       }
@@ -314,20 +358,28 @@ export function Editor() {
   // truthy when there's at least one committed edit (or a draft mid-drag).
   // used by the dirty-state guard so Escape / the close button warn before
   // throwing away the user's work.
-  const isDirty = () => ops().length > 0 || draft() !== null || hasPastedContent();
+  const isDirty = () =>
+    ops().length > 0 ||
+    draft() !== null ||
+    hasPastedContent() ||
+    (textInputAt() !== null && textBuffer().trim().length > 0);
 
-  const confirmCloseEditor = async () => {
-    if (!isDirty()) {
-      void win.close();
-      return;
-    }
+  const confirmDiscardEdits = () => {
+    if (!isDirty()) return true;
     const msg = hasPastedContent()
       ? "Discard pasted image and unsaved annotations? Changes aren't written to disk until you press Save."
       : "Discard unsaved annotations? They aren't written back to disk until you press Save.";
-    const ok = window.confirm(msg);
-    if (ok) {
-      void win.close();
-    }
+    return window.confirm(msg);
+  };
+
+  const sendEditorExitDecision = (requestId: string, allowed: boolean) => {
+    void win.emitTo(
+      { kind: "Window", label: "hub" },
+      "capscr://editor-exit-decision",
+      { requestId, allowed },
+    ).catch((error) => {
+      setStatus({ tone: "err", msg: `close response failed: ${error}` });
+    });
   };
 
   onMount(() => {
@@ -342,18 +394,107 @@ export function Editor() {
   // intercept the close button on the titlebar. Without this, clicking X
   // discards unsaved annotations silently — the same data-loss footgun the
   // Settings tab already guards against.
+  let appExitApproved = false;
+  let pendingExitRequestId: string | null = null;
   let closeUnlisten: (() => void) | null = null;
-  onMount(async () => {
+
+  const registerCloseGuard = async () => {
     closeUnlisten = await win.onCloseRequested(async (ev) => {
-      if (!isDirty()) return;
-      const msg = hasPastedContent()
-        ? "Discard pasted image and unsaved annotations? Changes aren't written to disk until you press Save."
-        : "Discard unsaved annotations? They aren't written back to disk until you press Save.";
-      const ok = window.confirm(msg);
-      if (!ok) ev.preventDefault();
+      ev.preventDefault();
+      if (!appExitApproved && !confirmDiscardEdits()) return;
+      appExitApproved = true;
+      if (await closeApprovedEditor()) return;
+      const requestId = pendingExitRequestId;
+      pendingExitRequestId = null;
+      if (requestId) sendEditorExitDecision(requestId, false);
+    });
+  };
+
+  const closeApprovedEditor = async () => {
+    const stopCloseGuard = closeUnlisten;
+    closeUnlisten = null;
+    try {
+      if (stopCloseGuard) await stopCloseGuard();
+      await win.close();
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      if (!(await Window.getByLabel("editor"))) return true;
+      setStatus({ tone: "err", msg: "editor window did not close" });
+    } catch (error) {
+      setStatus({ tone: "err", msg: `editor close failed: ${error}` });
+    }
+    appExitApproved = false;
+    try {
+      await registerCloseGuard();
+    } catch (error) {
+      setStatus({ tone: "err", msg: `close listener failed: ${error}` });
+    }
+    return false;
+  };
+
+  onMount(() => {
+    let disposed = false;
+    void registerCloseGuard()
+      .then(() => {
+        if (!disposed) return;
+        closeUnlisten?.();
+        closeUnlisten = null;
+      })
+      .catch((error) => {
+        if (!disposed) {
+          setStatus({ tone: "err", msg: `close listener failed: ${error}` });
+        }
+      });
+    onCleanup(() => {
+      disposed = true;
+      closeUnlisten?.();
+      closeUnlisten = null;
     });
   });
-  onCleanup(() => closeUnlisten?.());
+
+  onMount(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void win.listen<EditorExitRequest>("capscr://editor-exit-request", async (event) => {
+      try {
+        if (isDirty()) {
+          await win.show();
+          await win.unminimize();
+          await win.setFocus();
+        }
+        if (!confirmDiscardEdits()) {
+          sendEditorExitDecision(event.payload.requestId, false);
+          return;
+        }
+        appExitApproved = true;
+        pendingExitRequestId = event.payload.requestId;
+        await win.close();
+        return;
+      } catch (error) {
+        if (!disposed) {
+          setStatus({ tone: "err", msg: `editor close failed: ${error}` });
+        }
+      }
+      appExitApproved = false;
+      pendingExitRequestId = null;
+      sendEditorExitDecision(event.payload.requestId, false);
+    })
+      .then((stopListening) => {
+        if (disposed) {
+          stopListening();
+        } else {
+          unlisten = stopListening;
+        }
+      })
+      .catch((error) => {
+        if (!disposed) {
+          setStatus({ tone: "err", msg: `close listener failed: ${error}` });
+        }
+      });
+    onCleanup(() => {
+      disposed = true;
+      unlisten?.();
+    });
+  });
 
   function pointFromEvent(e: MouseEvent): Point {
     const rect = canvasRef.getBoundingClientRect();
@@ -1080,7 +1221,13 @@ export function Editor() {
 
       <footer class="editor-foot">
         <Show when={status()}>
-          <span class="flash" data-tone={status()!.tone}>
+          <span
+            class="flash"
+            data-tone={status()!.tone}
+            role={status()!.tone === "err" ? "alert" : "status"}
+            aria-live={status()!.tone === "err" ? "assertive" : "polite"}
+            aria-atomic="true"
+          >
             {status()!.msg}
           </span>
         </Show>

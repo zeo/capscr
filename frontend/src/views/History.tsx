@@ -22,7 +22,7 @@ import {
   Type,
   Pin,
 } from "lucide-solid";
-import { api } from "../api";
+import { api, type HistoryEntry } from "../api";
 import { hdrSupported } from "../hdrSupport";
 import { TrimModal } from "../components/TrimModal";
 
@@ -38,23 +38,86 @@ const FILTER_PILLS = () =>
 // <img> decode to gigabytes across a grid, and files outside the asset
 // scope render blank
 function ThumbImg(props: { path: string; alt: string }) {
+  const [shouldLoad, setShouldLoad] = createSignal(false);
+  const [failed, setFailed] = createSignal(false);
   const [thumb] = createResource(
-    () => props.path,
+    () => shouldLoad() && props.path,
     (path) => api.historyThumbnail(path).catch(() => null),
   );
+  let target!: HTMLDivElement;
+  onMount(() => {
+    if (typeof IntersectionObserver === "undefined") {
+      setShouldLoad(true);
+      return;
+    }
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (!entry?.isIntersecting) return;
+        observer.disconnect();
+        setShouldLoad(true);
+      },
+      { rootMargin: "320px 0px" },
+    );
+    observer.observe(target);
+    onCleanup(() => observer.disconnect());
+  });
   return (
-    <Show when={thumb()} fallback={<div class="tile-img" />}>
+    <Show
+      when={thumb() && !failed()}
+      fallback={<div ref={target} class="tile-img" aria-hidden="true" />}
+    >
       <img
         class="tile-img"
         src={convertFileSrc(thumb()!)}
         alt={props.alt}
         loading="lazy"
         decoding="async"
-        onError={(ev) => {
-          (ev.currentTarget as HTMLImageElement).style.opacity = "0.3";
-        }}
+        onError={() => setFailed(true)}
       />
     </Show>
+  );
+}
+
+function ThumbVideo(props: { path: string }) {
+  const [shouldLoad, setShouldLoad] = createSignal(false);
+  let target!: HTMLVideoElement;
+  onMount(() => {
+    if (typeof IntersectionObserver === "undefined") {
+      setShouldLoad(true);
+      return;
+    }
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (!entry?.isIntersecting) return;
+        observer.disconnect();
+        setShouldLoad(true);
+      },
+      { rootMargin: "320px 0px" },
+    );
+    observer.observe(target);
+    onCleanup(() => observer.disconnect());
+  });
+  return (
+    <video
+      ref={target}
+      class="tile-img"
+      src={shouldLoad() ? `${convertFileSrc(props.path)}#t=0.1` : undefined}
+      muted
+      loop
+      playsinline
+      preload="metadata"
+      aria-hidden="true"
+      onMouseEnter={(event) => {
+        setShouldLoad(true);
+        void event.currentTarget.play().catch(() => {});
+      }}
+      onMouseLeave={(event) => {
+        event.currentTarget.pause();
+        if (event.currentTarget.readyState >= HTMLMediaElement.HAVE_METADATA) {
+          event.currentTarget.currentTime = 0.1;
+        }
+      }}
+    />
   );
 }
 
@@ -79,6 +142,7 @@ export function History() {
   const [outputDir, setOutputDir] = createSignal<string>("");
   const [screenshotHotkey, setScreenshotHotkey] = createSignal<string>("your screenshot key");
   const [recordGifHotkey, setRecordGifHotkey] = createSignal<string>("Ctrl+Shift+G");
+
   onMount(() => {
     api.getConfig().then((c) => {
       setOutputDir(c.output.directory);
@@ -107,18 +171,30 @@ export function History() {
   // (e.g. a GIF + sidecar landing back-to-back) into one refetch.
   let refreshTimer: ReturnType<typeof setTimeout> | null = null;
   let unlisten: UnlistenFn | null = null;
-  onMount(async () => {
-    unlisten = await listen("capscr://capture-saved", () => {
+  onMount(() => {
+    let disposed = false;
+    void listen("capscr://capture-saved", () => {
       if (refreshTimer) clearTimeout(refreshTimer);
       refreshTimer = setTimeout(() => {
         refetch();
         refreshTimer = null;
       }, 250);
+    })
+      .then((stopListening) => {
+        if (disposed) {
+          stopListening();
+        } else {
+          unlisten = stopListening;
+        }
+      })
+      .catch((error) => {
+        if (!disposed) showFlash("err", `history listener failed: ${error}`);
+      });
+    onCleanup(() => {
+      disposed = true;
+      if (refreshTimer) clearTimeout(refreshTimer);
+      unlisten?.();
     });
-  });
-  onCleanup(() => {
-    if (refreshTimer) clearTimeout(refreshTimer);
-    unlisten?.();
   });
 
   const filtered = createMemo(() => {
@@ -157,6 +233,12 @@ export function History() {
     setFlash({ tone, msg });
     clearTimeout(flashTimer);
     flashTimer = setTimeout(() => setFlash(null), tone === "err" ? 6000 : 2500);
+  };
+  const openCapture = (entry: HistoryEntry) => {
+    const action = entry.is_gif || entry.is_mp4
+      ? api.openInExplorer(entry.path)
+      : api.openEditor(entry.path);
+    action.catch((error: unknown) => showFlash("err", `open failed: ${error}`));
   };
   const doReupload = (path: string) => {
     showFlash("ok", "uploading...");
@@ -266,7 +348,14 @@ export function History() {
       </div>
 
       <Show when={flash()}>
-        <div class="flash" data-tone={flash()!.tone} style="margin-bottom: 12px;">
+        <div
+          class="flash"
+          data-tone={flash()!.tone}
+          style="margin-bottom: 12px;"
+          role={flash()!.tone === "err" ? "alert" : "status"}
+          aria-live={flash()!.tone === "err" ? "assertive" : "polite"}
+          aria-atomic="true"
+        >
           {flash()!.msg}
         </div>
       </Show>
@@ -317,41 +406,41 @@ export function History() {
             {(e) => (
               <div
                 class="tile"
-                onClick={(ev) => {
-                  // don't open the editor when the click landed on an
-                  // overlay button.
-                  if ((ev.target as HTMLElement).closest(".tile-actions")) return;
-                  // recordings can't be edited — clicking them reveals the
-                  // file instead of opening the editor
-                  if (e.is_gif || e.is_mp4) {
-                    void api.openInExplorer(e.path);
-                    return;
-                  }
-                  void api.openEditor(e.path);
-                }}
+                role="group"
+                aria-label={e.filename}
               >
-                <Show
-                  when={e.is_mp4}
-                  fallback={<ThumbImg path={e.path} alt={e.filename} />}
+                <button
+                  type="button"
+                  class="tile-open"
+                  aria-label={`open ${e.filename}`}
+                  onClick={() => openCapture(e)}
                 >
-                  <video
-                    class="tile-img"
-                    // #t=0.1 makes the browser render the first frame as a
-                    // still poster; metadata-only preload plus play-on-hover
-                    // keeps dozens of clips from all decoding and looping at once
-                    src={`${convertFileSrc(e.path)}#t=0.1`}
-                    muted
-                    loop
-                    playsinline
-                    preload="metadata"
-                    onMouseEnter={(ev) => void ev.currentTarget.play().catch(() => {})}
-                    onMouseLeave={(ev) => {
-                      ev.currentTarget.pause();
-                      ev.currentTarget.currentTime = 0.1;
-                    }}
-                    style={{ "object-fit": "cover" }}
-                  />
-                </Show>
+                  <Show
+                    when={e.is_mp4}
+                    fallback={<ThumbImg path={e.path} alt="" />}
+                  >
+                    <ThumbVideo path={e.path} />
+                  </Show>
+                  <div class="tile-meta">
+                    <div class="name" title={e.path}>
+                      {e.filename}
+                    </div>
+                    <div class="stats">
+                      <span>{formatBytes(e.size_bytes)}</span>
+                      <span>·</span>
+                      <span>{formatDate(e.modified_unix)}</span>
+                      <Show when={e.has_hdr}>
+                        <span>·</span>
+                        <span
+                          class="tile-tag"
+                          title="HDR sidecar present (.hdr.png)"
+                        >
+                          HDR
+                        </span>
+                      </Show>
+                    </div>
+                  </div>
+                </button>
                 <div class="tile-actions">
                   <Show when={e.is_mp4}>
                     <button
@@ -422,25 +511,6 @@ export function History() {
                   >
                     <Trash2 size={12} stroke-width={1.5} />
                   </button>
-                </div>
-                <div class="tile-meta">
-                  <div class="name" title={e.path}>
-                    {e.filename}
-                  </div>
-                  <div class="stats">
-                    <span>{formatBytes(e.size_bytes)}</span>
-                    <span>·</span>
-                    <span>{formatDate(e.modified_unix)}</span>
-                    <Show when={e.has_hdr}>
-                      <span>·</span>
-                      <span
-                        class="tile-tag"
-                        title="HDR sidecar present (.hdr.png)"
-                      >
-                        HDR
-                      </span>
-                    </Show>
-                  </div>
                 </div>
               </div>
             )}

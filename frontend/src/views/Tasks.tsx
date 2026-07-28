@@ -1,10 +1,14 @@
 import { createResource, createSignal, For, onCleanup, Show } from "solid-js";
 import { listen } from "@tauri-apps/api/event";
 import { Plus, Trash2, Zap } from "lucide-solid";
-import { api, AppConfig, CaptureTask, HotkeyDiagnostics } from "../api";
-import { setConfigDirty } from "../dirty";
+import { api, type CaptureTask, type HotkeyDiagnostics } from "../api";
 import { HotkeyInput } from "../components/HotkeyInput";
-import { config, mutateConfig, refetchConfig } from "../store";
+import {
+  captureTaskSaveState,
+  config,
+  queueCaptureTasks,
+  retryCaptureTaskSave,
+} from "../store";
 
 const CAPTURE_MODES: { id: CaptureTask["capture_mode"]; label: string }[] = [
   { id: "region", label: "region (drag a rect)" },
@@ -52,11 +56,18 @@ export function Tasks() {
   const [diag, { refetch: refetchDiag }] = createResource<HotkeyDiagnostics>(
     api.hotkeyDiagnostics,
   );
+  let disposed = false;
   const unlistenPromise = listen("capscr://hotkey-status", () => {
     refetchDiag();
+  }).catch((error) => {
+    if (!disposed) {
+      setStatus({ tone: "err", msg: `hotkey listener failed: ${error}` });
+    }
+    return undefined;
   });
   onCleanup(() => {
-    unlistenPromise.then((u) => u());
+    disposed = true;
+    void unlistenPromise.then((unlisten) => unlisten?.());
   });
 
   const statusFor = (taskId: string) => {
@@ -78,40 +89,41 @@ export function Tasks() {
     }, 4000);
   };
 
-  const saveConfig = async (c: AppConfig) => {
-    const bound = c.capture_tasks.map((t) => t.hotkey).filter(Boolean);
-    const dupes = bound.filter((h, i) => bound.indexOf(h) !== i);
-    if (dupes.length > 0) {
-      setStatus({ tone: "err", msg: `duplicate hotkey: ${[...new Set(dupes)].join(", ")} — each task needs a unique key combo` });
-      // the rejected edit already mutated the in-memory store; pull the saved
-      // config back from disk so the UI stops showing the unsaved duplicate
-      refetchConfig();
-      return;
-    }
-
-    setStatus({ tone: "", msg: "saving..." });
-    try {
-      mutateConfig(await api.setConfig(c));
-      setStatus({
+  const visibleStatus = () => {
+    const local = status();
+    if (local) return local;
+    const save = captureTaskSaveState();
+    if (save.kind === "saving") return { tone: "", msg: "saving..." };
+    if (save.kind === "saved") {
+      return {
         tone: "ok",
-        msg: `${c.capture_tasks.length} task${c.capture_tasks.length === 1 ? "" : "s"} live.`,
-      });
-      setConfigDirty(false);
-    } catch (e) {
-      setStatus({ tone: "err", msg: `err: ${e}` });
+        msg: `${save.count} task${save.count === 1 ? "" : "s"} live.`,
+      };
     }
+    if (save.kind === "error") return { tone: "err", msg: `err: ${save.message}` };
+    return null;
   };
 
-  // task edits apply immediately — binding a hotkey should register it, not wait
-  // behind a Save click. the status flash reports the result
+  const applyTasks = (captureTasks: CaptureTask[]) => {
+    const bound = captureTasks.map((task) => task.hotkey).filter(Boolean);
+    const duplicates = [...new Set(bound.filter((hotkey, i) => bound.indexOf(hotkey) !== i))];
+    if (duplicates.length > 0) {
+      setStatus({
+        tone: "err",
+        msg: `duplicate hotkey: ${duplicates.join(", ")}, each task needs a unique key combo`,
+      });
+      return;
+    }
+    setStatus(null);
+    queueCaptureTasks(captureTasks);
+  };
+
   const updateTask = (index: number, partial: Partial<CaptureTask>) => {
     const c = config();
     if (!c) return;
     const next = [...c.capture_tasks];
     next[index] = { ...next[index], ...partial } as CaptureTask;
-    const nextConfig = { ...c, capture_tasks: next };
-    mutateConfig(nextConfig);
-    saveConfig(nextConfig);
+    applyTasks(next);
   };
 
   const deleteTask = (index: number) => {
@@ -120,9 +132,7 @@ export function Tasks() {
     clearTimeout(armTimer);
     setConfirmDelete(null);
     const next = c.capture_tasks.filter((_, i) => i !== index);
-    const nextConfig = { ...c, capture_tasks: next };
-    mutateConfig(nextConfig);
-    saveConfig(nextConfig);
+    applyTasks(next);
   };
 
   const addTask = () => {
@@ -137,9 +147,7 @@ export function Tasks() {
       post_action: "save-and-clipboard",
       target_destination: null,
     };
-    const nextConfig = { ...c, capture_tasks: [...c.capture_tasks, newTask] };
-    mutateConfig(nextConfig);
-    saveConfig(nextConfig);
+    applyTasks([...c.capture_tasks, newTask]);
   };
 
   return (
@@ -171,10 +179,23 @@ export function Tasks() {
                   new
                 </button>
               </div>
-              <Show when={status()}>
-                <span class="flash" data-tone={status()!.tone}>
-                  {status()!.msg}
-                </span>
+              <Show when={visibleStatus()}>
+                <div class="btn-row">
+                  <span
+                    class="flash"
+                    data-tone={visibleStatus()!.tone}
+                    role={visibleStatus()!.tone === "err" ? "alert" : "status"}
+                    aria-live={visibleStatus()!.tone === "err" ? "assertive" : "polite"}
+                    aria-atomic="true"
+                  >
+                    {visibleStatus()!.msg}
+                  </span>
+                  <Show when={captureTaskSaveState().kind === "error"}>
+                    <button class="btn" data-size="xs" onClick={retryCaptureTaskSave}>
+                      retry
+                    </button>
+                  </Show>
+                </div>
               </Show>
             </div>
 

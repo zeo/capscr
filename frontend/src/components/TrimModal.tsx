@@ -20,6 +20,8 @@ export function TrimModal(props: {
   onDone: (msg: string) => void;
 }) {
   let video: HTMLVideoElement | undefined;
+  let dialog: HTMLDivElement | undefined;
+  let closeButton: HTMLButtonElement | undefined;
   const [dur, setDur] = createSignal(0);
   const [start, setStart] = createSignal(0);
   const [end, setEnd] = createSignal(0);
@@ -30,14 +32,49 @@ export function TrimModal(props: {
   // Escape closes the modal (unless a trim is in progress), matching the editor
   // and shortcuts overlay
   onMount(() => {
+    const previousFocus =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
     const onKey = (ev: KeyboardEvent) => {
       if (ev.key === "Escape" && !busy()) {
         ev.preventDefault();
         props.onClose();
+        return;
+      }
+      if (ev.key !== "Tab" || !dialog) return;
+      const focusable = Array.from(
+        dialog.querySelectorAll<HTMLElement>(
+          'button:not([disabled]), input:not([disabled]), video[controls], [href], [tabindex]:not([tabindex="-1"])',
+        ),
+      );
+      const first = focusable[0];
+      const last = focusable.at(-1);
+      if (!first || !last) {
+        ev.preventDefault();
+        dialog.focus();
+      } else if (
+        ev.shiftKey &&
+        (document.activeElement === first ||
+          !dialog.contains(document.activeElement))
+      ) {
+        ev.preventDefault();
+        last.focus();
+      } else if (
+        !ev.shiftKey &&
+        (document.activeElement === last ||
+          !dialog.contains(document.activeElement))
+      ) {
+        ev.preventDefault();
+        first.focus();
       }
     };
     window.addEventListener("keydown", onKey);
-    onCleanup(() => window.removeEventListener("keydown", onKey));
+    (closeButton ?? dialog)?.focus();
+    onCleanup(() => {
+      window.removeEventListener("keydown", onKey);
+      if (previousFocus?.isConnected) previousFocus.focus();
+    });
   });
 
   const onMeta = () => {
@@ -76,14 +113,23 @@ export function TrimModal(props: {
         if (e.target === e.currentTarget && !busy()) props.onClose();
       }}
     >
-      <div class="modal trim-modal">
+      <div
+        ref={dialog}
+        class="modal trim-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="trim-dialog-title"
+        tabIndex={-1}
+      >
         <div class="modal-head">
-          <h2>
+          <h2 id="trim-dialog-title">
             <Scissors size={13} stroke-width={1.5} /> trim recording
           </h2>
           <button
+            ref={closeButton}
             class="icon-btn"
             title="close"
+            aria-label="close trim dialog"
             disabled={busy()}
             onClick={() => props.onClose()}
           >
@@ -96,13 +142,17 @@ export function TrimModal(props: {
           class="trim-video"
           src={convertFileSrc(props.path)}
           controls
+          aria-label={`recording preview for ${basename(props.path)}`}
           onLoadedMetadata={onMeta}
         />
 
         <div class="trim-row">
-          <span class="trim-label">start <b>{fmt(start())}</b></span>
+          <span id="trim-start-label" class="trim-label">
+            start <b>{fmt(start())}</b>
+          </span>
           <input
             type="range"
+            aria-labelledby="trim-start-label"
             min={0}
             max={dur()}
             step={0.05}
@@ -121,9 +171,12 @@ export function TrimModal(props: {
         </div>
 
         <div class="trim-row">
-          <span class="trim-label">end <b>{fmt(end())}</b></span>
+          <span id="trim-end-label" class="trim-label">
+            end <b>{fmt(end())}</b>
+          </span>
           <input
             type="range"
+            aria-labelledby="trim-end-label"
             min={0}
             max={dur()}
             step={0.05}
@@ -157,7 +210,7 @@ export function TrimModal(props: {
         </div>
 
         <Show when={err()}>
-          <div class="flash" data-tone="err">
+          <div class="flash" data-tone="err" role="alert" aria-atomic="true">
             {err()}
           </div>
         </Show>

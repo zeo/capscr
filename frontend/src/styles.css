@@ -842,7 +842,7 @@ button.btn,
 .search-clear:focus-visible,
 .toast-close:focus-visible,
 .hk-clear:focus-visible,
-.tile:focus-visible,
+.tile-open:focus-visible,
 .titlebar-btn:focus-visible {
   outline: 2px solid var(--paper);
   outline-offset: -2px;
@@ -946,6 +946,20 @@ button.btn,
 
 .hk:hover {
   border-color: var(--text);
+}
+
+.hk[data-disabled="true"] {
+  cursor: wait;
+  opacity: 0.55;
+}
+
+.hk[data-disabled="true"]:hover {
+  border-color: var(--rule-2);
+}
+
+.hk-display:focus-visible {
+  outline: 1px solid var(--paper);
+  outline-offset: -2px;
 }
 
 .hk-display {
@@ -1109,21 +1123,26 @@ button.btn,
   flex-direction: column;
   position: relative;
   overflow: hidden;
+}
+
+.tile-open {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
   cursor: pointer;
+  font: inherit;
+  text-align: left;
 }
 
 .tile-img {
   width: 100%;
   aspect-ratio: 16 / 10;
-  object-fit: cover;
+  object-fit: contain;
   background: var(--ink-3);
   display: block;
-  filter: grayscale(1) contrast(1.02);
-  transition: filter 120ms var(--easing);
-}
-
-.tile:hover .tile-img {
-  filter: none;
 }
 
 .tile-meta {
@@ -1256,7 +1275,8 @@ button.btn,
   transition: opacity 80ms var(--easing);
 }
 
-.tile:hover .tile-actions {
+.tile:hover .tile-actions,
+.tile:focus-within .tile-actions {
   opacity: 1;
 }
 
@@ -2032,10 +2052,6 @@ kbd {
 @keyframes skeleton-shimmer {
   from { background-position: 100% 0; }
   to { background-position: -100% 0; }
-}
-
-.tile {
-  cursor: pointer;
 }
 
 .icon-btn.is-arm,
