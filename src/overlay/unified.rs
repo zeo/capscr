@@ -49,28 +49,24 @@ mod windows_impl {
                 HOLLOW_BRUSH, MONITORINFO, MONITOR_DEFAULTTONEAREST, OPAQUE, PAINTSTRUCT, PS_SOLID,
                 SRCCOPY, TRANSPARENT,
             },
-            System::{
-                LibraryLoader::GetModuleHandleW,
-                Threading::{AttachThreadInput, GetCurrentThreadId},
-            },
+            System::LibraryLoader::GetModuleHandleW,
             UI::{
                 Input::KeyboardAndMouse::{
                     SetFocus, VK_CONTROL, VK_DOWN, VK_ESCAPE, VK_LEFT, VK_RETURN, VK_RIGHT,
                     VK_SHIFT, VK_SPACE, VK_UP,
                 },
                 WindowsAndMessaging::{
-                    BringWindowToTop, ChildWindowFromPointEx, CreateWindowExW, DefWindowProcW,
-                    DestroyWindow, DispatchMessageW, EnumWindows, GetAncestor, GetCursorPos,
-                    GetForegroundWindow, GetMessageW, GetSystemMetrics, GetWindowLongW,
-                    GetWindowRect, GetWindowThreadProcessId, IsIconic, IsWindowVisible,
-                    PostQuitMessage, RegisterClassW, SetCursorPos, SetForegroundWindow,
-                    SetLayeredWindowAttributes, ShowWindow, TranslateMessage, CS_HREDRAW,
-                    CS_VREDRAW, CWP_SKIPINVISIBLE, CWP_SKIPTRANSPARENT, GA_ROOT, GWL_EXSTYLE,
-                    GWL_STYLE, LWA_ALPHA, LWA_COLORKEY, MSG, SM_CXVIRTUALSCREEN,
-                    SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SW_SHOWNORMAL,
-                    WM_DESTROY, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE,
-                    WM_MOUSEWHEEL, WM_PAINT, WM_RBUTTONDOWN, WNDCLASSW, WS_EX_LAYERED,
-                    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP, WS_VISIBLE,
+                    AllowSetForegroundWindow, ASFW_ANY, BringWindowToTop, ChildWindowFromPointEx,
+                    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, EnumWindows,
+                    GetAncestor, GetCursorPos, GetForegroundWindow, GetMessageW, GetSystemMetrics,
+                    GetWindowLongW, GetWindowRect, IsIconic, IsWindowVisible, PostQuitMessage,
+                    RegisterClassW, SetCursorPos, SetForegroundWindow, SetLayeredWindowAttributes,
+                    ShowWindow, TranslateMessage, CS_HREDRAW, CS_VREDRAW, CWP_SKIPINVISIBLE,
+                    CWP_SKIPTRANSPARENT, GA_ROOT, GWL_EXSTYLE, GWL_STYLE, LWA_ALPHA, LWA_COLORKEY,
+                    MSG, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN,
+                    SM_YVIRTUALSCREEN, SW_SHOWNORMAL, WM_DESTROY, WM_KEYDOWN, WM_LBUTTONDOWN,
+                    WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_PAINT, WM_RBUTTONDOWN,
+                    WNDCLASSW, WS_EX_LAYERED, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP, WS_VISIBLE,
                 },
             },
         },
@@ -776,30 +772,14 @@ mod windows_impl {
             );
 
             let _ = ShowWindow(hwnd, SW_SHOWNORMAL);
-            // grab foreground + keyboard focus so Escape, the arrow nudges, and
-            // Enter reach WM_KEYDOWN. the hotkey that spawned us was swallowed by
-            // the low-level hook, so Windows can refuse a bare SetForegroundWindow
-            // from this non-foreground worker thread; attach to the current
-            // foreground thread's input queue for the call so the grant lands,
-            // and SetFocus as a backstop. without this the overlay paints but key
-            // input goes to whatever window had focus before the hotkey fired.
+            // grab foreground + keyboard focus so Escape, arrow nudges, and Enter reach
+            // WM_KEYDOWN. allow foreground activation across threads without attaching input queues
+            // (which can deadlock when low-level mouse hooks are active).
             {
-                let fg = GetForegroundWindow();
-                let our_thread = GetCurrentThreadId();
-                let fg_thread = if fg.is_invalid() {
-                    0
-                } else {
-                    GetWindowThreadProcessId(fg, None)
-                };
-                let attached = fg_thread != 0
-                    && fg_thread != our_thread
-                    && AttachThreadInput(our_thread, fg_thread, true).as_bool();
+                let _ = AllowSetForegroundWindow(ASFW_ANY);
                 let _ = SetForegroundWindow(hwnd);
                 let _ = BringWindowToTop(hwnd);
                 let _ = SetFocus(hwnd);
-                if attached {
-                    let _ = AttachThreadInput(our_thread, fg_thread, false);
-                }
             }
 
             let mut msg = MSG::default();

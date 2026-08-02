@@ -43,6 +43,7 @@ pub enum HookEvent {
 // layouts, NumLock state, and FN-combined laptop keys.
 pub static CAPTURE_REQUEST: AtomicBool = AtomicBool::new(false);
 static LAST_CAPTURED_XBUTTON: AtomicU8 = AtomicU8::new(0);
+static LAST_FIRED_XBUTTON_DOWN: AtomicU8 = AtomicU8::new(0);
 
 pub fn begin_capture() {
     CAPTURE_REQUEST.store(true, Ordering::SeqCst);
@@ -320,6 +321,7 @@ unsafe extern "system" fn mouse_hook_proc(code: i32, wparam: WPARAM, lparam: LPA
                 match tx.try_send(HookEvent::Fire { task_id }) {
                     Ok(()) => {
                         HOOK_DISPATCH_SENT.fetch_add(1, Ordering::SeqCst);
+                        LAST_FIRED_XBUTTON_DOWN.store(vk as u8, Ordering::SeqCst);
                         return LRESULT(1);
                     }
                     Err(_) => {
@@ -328,17 +330,11 @@ unsafe extern "system" fn mouse_hook_proc(code: i32, wparam: WPARAM, lparam: LPA
                 }
             }
         } else if is_up {
-            // consume release event if it was just captured or matches an active binding
+            // consume release event only if it was captured or its corresponding down event was consumed
             let was_captured = LAST_CAPTURED_XBUTTON.swap(0, Ordering::SeqCst) == vk as u8;
-            let is_bound = {
-                let reg = match registry().lock() {
-                    Ok(g) => g,
-                    Err(_) => return unsafe { CallNextHookEx(None, code, wparam, lparam) },
-                };
-                reg.enabled && reg.bindings.keys().any(|b| b.vk == vk)
-            };
+            let was_fired_down = LAST_FIRED_XBUTTON_DOWN.swap(0, Ordering::SeqCst) == vk as u8;
 
-            if was_captured || is_bound {
+            if was_captured || was_fired_down {
                 return LRESULT(1);
             }
         }
@@ -560,5 +556,12 @@ mod tests {
         assert!(!current_enabled());
         set_enabled(true);
         assert!(current_enabled());
+    }
+
+    #[test]
+    fn xbutton_down_up_consumption_tracking() {
+        LAST_FIRED_XBUTTON_DOWN.store(0x05, Ordering::SeqCst);
+        assert_eq!(LAST_FIRED_XBUTTON_DOWN.swap(0, Ordering::SeqCst), 0x05);
+        assert_eq!(LAST_FIRED_XBUTTON_DOWN.load(Ordering::SeqCst), 0);
     }
 }
