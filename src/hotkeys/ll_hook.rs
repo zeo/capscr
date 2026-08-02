@@ -254,10 +254,14 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
     if let (Some(task_id), Some(tx)) = (task_id, tx) {
         HOOK_MATCHED_CALLS.fetch_add(1, Ordering::SeqCst);
         match tx.try_send(HookEvent::Fire { task_id }) {
-            Ok(()) => HOOK_DISPATCH_SENT.fetch_add(1, Ordering::SeqCst),
-            Err(_) => HOOK_DISPATCH_DROPPED.fetch_add(1, Ordering::SeqCst),
-        };
-        return LRESULT(1);
+            Ok(()) => {
+                HOOK_DISPATCH_SENT.fetch_add(1, Ordering::SeqCst);
+                return LRESULT(1);
+            }
+            Err(_) => {
+                HOOK_DISPATCH_DROPPED.fetch_add(1, Ordering::SeqCst);
+            }
+        }
     }
 
     unsafe { CallNextHookEx(None, code, wparam, lparam) }
@@ -314,10 +318,14 @@ unsafe extern "system" fn mouse_hook_proc(code: i32, wparam: WPARAM, lparam: LPA
             if let (Some(task_id), Some(tx)) = (task_id, tx) {
                 HOOK_MATCHED_CALLS.fetch_add(1, Ordering::SeqCst);
                 match tx.try_send(HookEvent::Fire { task_id }) {
-                    Ok(()) => HOOK_DISPATCH_SENT.fetch_add(1, Ordering::SeqCst),
-                    Err(_) => HOOK_DISPATCH_DROPPED.fetch_add(1, Ordering::SeqCst),
-                };
-                return LRESULT(1);
+                    Ok(()) => {
+                        HOOK_DISPATCH_SENT.fetch_add(1, Ordering::SeqCst);
+                        return LRESULT(1);
+                    }
+                    Err(_) => {
+                        HOOK_DISPATCH_DROPPED.fetch_add(1, Ordering::SeqCst);
+                    }
+                }
             }
         } else if is_up {
             // consume release event if it was just captured or matches an active binding

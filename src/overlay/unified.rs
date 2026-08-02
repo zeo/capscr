@@ -116,6 +116,80 @@ mod windows_impl {
 
     static SELECTOR_HWND: Mutex<Option<isize>> = Mutex::new(None);
 
+    fn recover_lock<T>(slot: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+        match slot.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        }
+    }
+
+    fn take_handle(slot: &Mutex<Option<isize>>) -> Option<isize> {
+        recover_lock(slot).take()
+    }
+
+    fn set_selector_hwnd(hwnd: Option<HWND>) {
+        *recover_lock(&SELECTOR_HWND) = hwnd.map(|window| window.0 as isize);
+    }
+
+    fn clear_window_list() {
+        recover_lock(&WINDOW_LIST).clear();
+    }
+
+    unsafe fn cleanup_selector_resources() {
+        if let Some(dc) = take_handle(&BACK_DC) {
+            let _ = DeleteDC(HDC(dc as *mut _));
+        }
+        if let Some(bmp) = take_handle(&BACK_BITMAP) {
+            let _ = DeleteObject(HBITMAP(bmp as *mut _));
+        }
+        if let Some(dc) = take_handle(&DIM_DC) {
+            let _ = DeleteDC(HDC(dc as *mut _));
+        }
+        if let Some(bmp) = take_handle(&DIM_BITMAP) {
+            let _ = DeleteObject(HBITMAP(bmp as *mut _));
+        }
+        if let Some(dc) = take_handle(&SCREEN_DC) {
+            let _ = DeleteDC(HDC(dc as *mut _));
+        }
+        if let Some(bmp) = take_handle(&SCREEN_BITMAP) {
+            let _ = DeleteObject(HBITMAP(bmp as *mut _));
+        }
+    }
+
+    struct SelectorCleanup {
+        hwnd: Option<HWND>,
+    }
+
+    impl SelectorCleanup {
+        fn new() -> Self {
+            Self { hwnd: None }
+        }
+
+        fn attach(&mut self, hwnd: HWND) {
+            self.hwnd = Some(hwnd);
+        }
+
+        fn disarm(&mut self) {
+            self.hwnd = None;
+        }
+    }
+
+    impl Drop for SelectorCleanup {
+        fn drop(&mut self) {
+            if let Some(hwnd) = self.hwnd.take() {
+                unsafe {
+                    let _ = DestroyWindow(hwnd);
+                }
+            }
+            SELECTING.store(false, Ordering::SeqCst);
+            set_selector_hwnd(None);
+            unsafe {
+                cleanup_selector_resources();
+            }
+            clear_window_list();
+        }
+    }
+
     fn alt_held() -> bool {
         unsafe {
             let state = windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState(
@@ -192,7 +266,7 @@ mod windows_impl {
     pub fn cancel_active_selection() {
         if SELECTING.load(Ordering::SeqCst) {
             CANCELLED.store(true, Ordering::SeqCst);
-            let hwnd_val = *SELECTOR_HWND.lock().unwrap();
+            let hwnd_val = *recover_lock(&SELECTOR_HWND);
             if let Some(h) = hwnd_val {
                 unsafe {
                     let _ = windows::Win32::UI::WindowsAndMessaging::PostMessageW(
@@ -475,6 +549,7 @@ mod windows_impl {
             tracing::info!("selector already active — dropping overlapping invocation");
             return SelectionResult::Cancelled;
         }
+        let mut cleanup = SelectorCleanup::new();
         START_X.store(0, Ordering::SeqCst);
         START_Y.store(0, Ordering::SeqCst);
         END_X.store(0, Ordering::SeqCst);
@@ -632,21 +707,6 @@ mod windows_impl {
             let instance = match GetModuleHandleW(PCWSTR::null()) {
                 Ok(i) => i,
                 Err(_) => {
-                    if let Some(dc) = SCREEN_DC.lock().unwrap().take() {
-                        let _ = DeleteDC(HDC(dc as *mut _));
-                    }
-                    if let Some(bmp) = SCREEN_BITMAP.lock().unwrap().take() {
-                        let _ = DeleteObject(HBITMAP(bmp as *mut _));
-                    }
-                    // the dim layer was built before this early return; WM_DESTROY
-                    // never runs without a window, so free it here too
-                    if let Some(dc) = DIM_DC.lock().unwrap().take() {
-                        let _ = DeleteDC(HDC(dc as *mut _));
-                    }
-                    if let Some(bmp) = DIM_BITMAP.lock().unwrap().take() {
-                        let _ = DeleteObject(HBITMAP(bmp as *mut _));
-                    }
-                    SELECTING.store(false, Ordering::SeqCst);
                     return SelectionResult::Cancelled;
                 }
             };
@@ -665,21 +725,6 @@ mod windows_impl {
                 ) {
                     Ok(c) => c,
                     Err(_) => {
-                        if let Some(dc) = SCREEN_DC.lock().unwrap().take() {
-                            let _ = DeleteDC(HDC(dc as *mut _));
-                        }
-                        if let Some(bmp) = SCREEN_BITMAP.lock().unwrap().take() {
-                            let _ = DeleteObject(HBITMAP(bmp as *mut _));
-                        }
-                        // the dim layer was built before this early return;
-                        // WM_DESTROY never runs without a window, so free it here
-                        if let Some(dc) = DIM_DC.lock().unwrap().take() {
-                            let _ = DeleteDC(HDC(dc as *mut _));
-                        }
-                        if let Some(bmp) = DIM_BITMAP.lock().unwrap().take() {
-                            let _ = DeleteObject(HBITMAP(bmp as *mut _));
-                        }
-                        SELECTING.store(false, Ordering::SeqCst);
                         return SelectionResult::Cancelled;
                     }
                 },
@@ -704,25 +749,11 @@ mod windows_impl {
             ) {
                 Ok(h) => h,
                 Err(_) => {
-                    if let Some(dc) = SCREEN_DC.lock().unwrap().take() {
-                        let _ = DeleteDC(HDC(dc as *mut _));
-                    }
-                    if let Some(bmp) = SCREEN_BITMAP.lock().unwrap().take() {
-                        let _ = DeleteObject(HBITMAP(bmp as *mut _));
-                    }
-                    // the dim layer was built before this early return; WM_DESTROY
-                    // never runs without a window, so free it here too
-                    if let Some(dc) = DIM_DC.lock().unwrap().take() {
-                        let _ = DeleteDC(HDC(dc as *mut _));
-                    }
-                    if let Some(bmp) = DIM_BITMAP.lock().unwrap().take() {
-                        let _ = DeleteObject(HBITMAP(bmp as *mut _));
-                    }
-                    SELECTING.store(false, Ordering::SeqCst);
                     return SelectionResult::Cancelled;
                 }
             };
-            *SELECTOR_HWND.lock().unwrap() = Some(hwnd.0 as isize);
+            set_selector_hwnd(Some(hwnd));
+            cleanup.attach(hwnd);
 
             // layered-window attributes: black background paints at 70%
             // alpha (dim layer over live HDR desktop), magic green colorkey
@@ -782,16 +813,10 @@ mod windows_impl {
             }
 
             let _ = DestroyWindow(hwnd);
-            *SELECTOR_HWND.lock().unwrap() = None;
-
-            if let Some(dc) = SCREEN_DC.lock().unwrap().take() {
-                let _ = DeleteDC(HDC(dc as *mut _));
-            }
-            if let Some(bmp) = SCREEN_BITMAP.lock().unwrap().take() {
-                let _ = DeleteObject(HBITMAP(bmp as *mut _));
-            }
-
-            WINDOW_LIST.lock().unwrap().clear();
+            set_selector_hwnd(None);
+            cleanup_selector_resources();
+            clear_window_list();
+            cleanup.disarm();
 
             if CANCELLED.load(Ordering::SeqCst) {
                 return SelectionResult::Cancelled;
@@ -1484,20 +1509,10 @@ mod windows_impl {
                 LRESULT(0)
             }
             WM_DESTROY => {
-                // release the cached back buffer + dim bitmap that the
-                // selector allocated on demand — leaks ~64 MB of GDI
-                // memory per selector invocation otherwise.
-                if let Some(dc) = BACK_DC.lock().unwrap().take() {
-                    let _ = DeleteDC(HDC(dc as *mut _));
-                }
-                if let Some(bmp) = BACK_BITMAP.lock().unwrap().take() {
-                    let _ = DeleteObject(HBITMAP(bmp as *mut _));
-                }
-                if let Some(dc) = DIM_DC.lock().unwrap().take() {
-                    let _ = DeleteDC(HDC(dc as *mut _));
-                }
-                if let Some(bmp) = DIM_BITMAP.lock().unwrap().take() {
-                    let _ = DeleteObject(HBITMAP(bmp as *mut _));
+                // release every selector resource even when teardown follows
+                // an interrupted capture or a poisoned state lock
+                unsafe {
+                    cleanup_selector_resources();
                 }
                 SELECTING.store(false, Ordering::SeqCst);
                 PostQuitMessage(0);
@@ -1612,6 +1627,19 @@ mod windows_impl {
         }
 
         Some(hbmp)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn cleanup_guard_resets_selector_state_without_a_window() {
+            SELECTING.store(true, Ordering::SeqCst);
+            let cleanup = SelectorCleanup::new();
+            drop(cleanup);
+            assert!(!SELECTING.load(Ordering::SeqCst));
+        }
     }
 }
 

@@ -13,6 +13,7 @@ use crate::state::{AppState, HotkeyStatus, UploadRecord};
 use crate::upload::{CustomUploader, FtpTarget, UploadService};
 use image::RgbaImage;
 use serde::{Deserialize, Serialize};
+use std::any::Any;
 #[cfg(any(windows, target_os = "linux"))]
 use std::io::Read;
 use std::path::PathBuf;
@@ -268,25 +269,10 @@ pub fn take_screenshot(
 ) -> Result<(), String> {
     let app_handle = app;
     std::thread::spawn(move || {
-        // catch_unwind so a panic in any capture sub-step (D3D11, GIF encoder,
-        // image crate, plugin host) gets reported as a normal error instead
-        // of silently killing the worker thread with no user feedback.
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            run_capture_pipeline(mode, post, &app_handle)
-        }));
-        let outcome = match result {
-            Ok(r) => r,
-            Err(panic_info) => {
-                let msg = if let Some(s) = panic_info.downcast_ref::<&'static str>() {
-                    (*s).to_string()
-                } else if let Some(s) = panic_info.downcast_ref::<String>() {
-                    s.clone()
-                } else {
-                    "internal panic (no message)".to_string()
-                };
-                Err(anyhow::anyhow!("capture pipeline panicked: {msg}"))
-            }
-        };
+        let outcome = catch_panic(
+            || run_capture_pipeline(mode, post, &app_handle),
+            "capture pipeline",
+        );
         if let Err(e) = outcome {
             tracing::warn!("capture failed: {e:#}");
             let friendly = humanize_capture_error(&e);
@@ -299,6 +285,37 @@ pub fn take_screenshot(
         }
     });
     Ok(())
+}
+
+fn catch_panic<T>(operation: impl FnOnce() -> anyhow::Result<T>, label: &str) -> anyhow::Result<T> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(operation))
+        .map_err(|panic_info| anyhow::anyhow!("{label} panicked: {}", panic_message(panic_info)))
+        .and_then(|outcome| outcome)
+}
+
+fn panic_message(panic_info: Box<dyn Any + Send>) -> String {
+    if let Some(message) = panic_info.downcast_ref::<&'static str>() {
+        (*message).to_string()
+    } else if let Some(message) = panic_info.downcast_ref::<String>() {
+        message.clone()
+    } else {
+        "internal panic (no message)".to_string()
+    }
+}
+
+#[cfg(test)]
+mod task_failure_tests {
+    use super::*;
+
+    #[test]
+    fn task_panics_become_errors() {
+        let error = catch_panic(
+            || -> anyhow::Result<()> { panic!("selector failed") },
+            "task",
+        )
+        .expect_err("the panic should be converted to an error");
+        assert_eq!(error.to_string(), "task panicked: selector failed");
+    }
 }
 
 // translate the raw anyhow chain into something a non-engineer can act on.
@@ -2888,7 +2905,8 @@ pub fn trigger_task(app: &AppHandle, task_id: &str) {
     let app_handle = app.clone();
     let task_label = task.name.clone();
     std::thread::spawn(move || {
-        if let Err(e) = run_task(&task, &app_handle) {
+        let outcome = catch_panic(|| run_task(&task, &app_handle), "task");
+        if let Err(e) = outcome {
             tracing::warn!("task '{}' failed: {e}", task.id);
             emit_error(&app_handle, "task", &format!("{}: {}", task_label, e));
             let state = app_handle.state::<AppState>();
