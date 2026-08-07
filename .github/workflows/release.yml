@@ -19,7 +19,7 @@ env:
 jobs:
   build-windows:
     if: github.actor == 'zeo'
-    runs-on: [self-hosted, windows-vm]
+    runs-on: windows-latest
     outputs:
       windows_manifest_sha256: ${{ steps.windows_pack.outputs.manifest_sha256 }}
     permissions:
