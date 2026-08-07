@@ -2,7 +2,9 @@
 
 HDR-aware screen capture for Windows and Linux. Tray-first, signed updates, no telemetry.
 
-![the capscr hub, tasks view](shot.png)
+![the capscr hub, history view](shot-history.png)
+
+![the capscr hub, tasks view](shot-tasks.png)
 
 - homepage: [rot.lt/work/capscr](https://rot.lt/work/capscr)
 - plugins: [rot.lt/work/capscr/plugins](https://rot.lt/work/capscr/plugins), registry at [`zeo/capscr-plugins`](https://github.com/zeo/capscr-plugins)
