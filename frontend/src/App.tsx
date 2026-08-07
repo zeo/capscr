@@ -632,9 +632,6 @@ function Hub() {
             )}
           </For>
         </nav>
-        <div class="sidebar-foot">
-          <span class="build">v{__APP_VERSION__}</span>
-        </div>
       </aside>
 
       <Show when={showShortcuts()}>

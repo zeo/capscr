@@ -436,21 +436,6 @@ textarea,
   color: var(--paper);
 }
 
-.sidebar-foot {
-  padding: 12px 16px 14px;
-  font-size: 10px;
-  color: var(--rule-2);
-  border-top: 1px solid var(--rule);
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  letter-spacing: var(--tracked);
-}
-
-.sidebar-foot .build {
-  color: var(--mute);
-}
-
 .content {
   grid-area: content;
   background:
@@ -731,10 +716,19 @@ textarea,
 
 .field {
   display: grid;
-  grid-template-columns: 220px 1fr;
+  grid-template-columns: 200px minmax(0, 1fr);
   align-items: baseline;
   gap: 16px;
   padding: 9px 0;
+}
+
+/* narrow hub: the fixed label column starves the controls, so stack */
+@media (max-width: 900px) {
+  .field {
+    grid-template-columns: 1fr;
+    gap: 6px;
+    padding: 10px 0;
+  }
 }
 
 .field + .field {
@@ -1901,8 +1895,7 @@ kbd {
     border-bottom: 1px solid var(--rule);
   }
 
-  .sidebar-label,
-  .sidebar-foot {
+  .sidebar-label {
     display: none;
   }
 
