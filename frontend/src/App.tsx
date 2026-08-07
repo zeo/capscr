@@ -5,7 +5,7 @@ import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { Copy, ExternalLink, Trash2, X, Download } from "lucide-solid";
 import { Titlebar } from "./components/Titlebar";
-import { api, type AppConfig, HotkeyDiagnostics, UpdateInfo } from "./api";
+import { api, type AppConfig, type CaptureMode, HotkeyDiagnostics, UpdateInfo } from "./api";
 import { configDirty, setConfigDirty } from "./dirty";
 import { Settings } from "./views/Settings";
 import { History } from "./views/History";
@@ -474,6 +474,32 @@ function Hub() {
     }
   };
 
+  // titlebar quick captures: same pipeline as a task, using the global
+  // post-capture action so the result lands where the user expects
+  const quickShot = (mode: CaptureMode) => {
+    const post = config()?.post_capture.action ?? "save-and-clipboard";
+    void api
+      .takeScreenshot(mode, post)
+      .catch((e) => pushToast("capture", String(e)));
+  };
+
+  const recordTask = () =>
+    config()?.capture_tasks.find(
+      (t) => t.capture_mode === "region-gif" || t.capture_mode === "region-mp4",
+    );
+
+  const quickRecord = () => {
+    const task = recordTask();
+    if (!task || recording()) return;
+    void api.fireTask(task.id).catch((e) => pushToast("recording", String(e)));
+  };
+
+  // the output dir can be long; the bar shows the last two path segments
+  const shortDir = (dir: string) => {
+    const parts = dir.replace(/[\\/]+$/, "").split(/[\\/]/).filter(Boolean);
+    return parts.slice(-2).join("/");
+  };
+
   const runUpdate = async () => {
     if (updating() || recording() || exitActionPending) return;
     exitActionPending = true;
@@ -496,8 +522,52 @@ function Hub() {
   return (
     <div class="app">
       <Titlebar
-        context={tab().context}
         onClose={() => void closeHub(false)}
+        quick={
+          <div class="titlebar-quick">
+            <button
+              type="button"
+              class="qc"
+              onClick={() => quickShot("region")}
+              title="capture a region now"
+            >
+              region
+            </button>
+            <button
+              type="button"
+              class="qc"
+              onClick={() => quickShot("window")}
+              title="capture a window now"
+            >
+              window
+            </button>
+            <button
+              type="button"
+              class="qc"
+              onClick={() => quickShot("fullscreen")}
+              title="capture the primary screen now"
+            >
+              full
+            </button>
+            <button
+              type="button"
+              class="qc"
+              classList={{ "is-recording": recording() }}
+              onClick={quickRecord}
+              disabled={recording() || !recordTask()}
+              title={
+                recording()
+                  ? "recording: stop with the task hotkey or the recording bar"
+                  : recordTask()
+                    ? `start a ${recordTask()!.capture_mode === "region-mp4" ? "video" : "gif"} recording`
+                    : "add a gif or mp4 task to record from here"
+              }
+            >
+              <span class="qc-dot" aria-hidden="true">●</span>
+              {recording() ? recordingElapsed() : "record"}
+            </button>
+          </div>
+        }
       />
 
       <Show when={needsOnboarding()}>
@@ -563,8 +633,7 @@ function Hub() {
           </For>
         </nav>
         <div class="sidebar-foot">
-          <span class="path">~/.capscr</span>
-          <span class="build">v{__APP_VERSION__}·rel</span>
+          <span class="build">v{__APP_VERSION__}</span>
         </div>
       </aside>
 
@@ -784,22 +853,44 @@ function Hub() {
       </main>
 
       <footer class="statusbar">
-        <span class="seg" classList={{ "is-ok": !recording(), "is-rec": recording() }}>
-          <span class="seg-k">stat</span>
-          <span class="seg-v">
-            {recording() ? `rec ${recordingElapsed()}` : "rdy"}
+        <Show when={recording()}>
+          <span class="seg is-rec">
+            <span class="seg-k">rec</span>
+            <span class="seg-v">{recordingElapsed()}</span>
           </span>
-        </span>
-        <span class="seg-sep">│</span>
-        <span class="seg">
-          <span class="seg-k">cap</span>
-          <span class="seg-v">{captures.loading ? "·" : (captures()?.length ?? 0).toString().padStart(3, "0")}</span>
-        </span>
-        <span class="seg-sep">│</span>
-        <span class="seg">
-          <span class="seg-k">tab</span>
-          <span class="seg-v">{tab().id}</span>
-        </span>
+          <span class="seg-sep">│</span>
+        </Show>
+        <Show when={config()?.output.directory}>
+          <button
+            type="button"
+            class="seg seg-btn"
+            onClick={() =>
+              void api
+                .openInExplorer(config()!.output.directory)
+                .catch((e) => pushToast("err", String(e)))
+            }
+            title="open the output folder"
+          >
+            <span class="seg-k">out</span>
+            <span class="seg-v">{shortDir(config()!.output.directory)}</span>
+          </button>
+        </Show>
+        <Show when={captures()?.[0]}>
+          <span class="seg-sep">│</span>
+          <button
+            type="button"
+            class="seg seg-btn"
+            onClick={() =>
+              void api
+                .openInExplorer(captures()![0].path)
+                .catch((e) => pushToast("err", String(e)))
+            }
+            title="reveal the last capture in the file manager"
+          >
+            <span class="seg-k">last</span>
+            <span class="seg-v">{captures()![0].filename}</span>
+          </button>
+        </Show>
         <Show when={configDirty()}>
           <span class="seg-sep">│</span>
           <span class="seg is-dirty">
@@ -827,6 +918,18 @@ function Hub() {
           </button>
         </Show>
         <span class="grow" />
+        <Show when={updateInfo() && updateDismissed()}>
+          <button
+            type="button"
+            class="seg seg-btn is-update"
+            onClick={() => setUpdateDismissed(false)}
+            title="update available: reopen the banner"
+          >
+            <span class="seg-k">update</span>
+            <span class="seg-v">v{updateInfo()!.version}</span>
+          </button>
+          <span class="seg-sep">│</span>
+        </Show>
         <button
           type="button"
           class="seg seg-btn"
@@ -838,7 +941,6 @@ function Hub() {
         </button>
         <span class="seg-sep">│</span>
         <span class="seg tail">
-          <span class="seg-k">capscr</span>
           <span class="seg-v">v{__APP_VERSION__}</span>
         </span>
       </footer>

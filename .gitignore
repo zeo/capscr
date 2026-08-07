@@ -21,3 +21,5 @@ build-*.log
 
 # the native installer wrapper builds independently of the app crate
 /setup/target
+
+redesigns/

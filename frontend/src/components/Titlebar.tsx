@@ -1,9 +1,11 @@
-import { onCleanup, onMount, createSignal } from "solid-js";
+import { onCleanup, onMount, createSignal, Show, type JSX } from "solid-js";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Minus, Square, Copy as Restore, X } from "lucide-solid";
 
 interface Props {
   context?: string;
+  // working controls rendered after the mark (hub quick-capture keys)
+  quick?: JSX.Element;
   onClose?: () => void;
 }
 
@@ -56,7 +58,10 @@ export function Titlebar(props: Props) {
           onDblClick={onDoubleClick}
         >
           <span class="titlebar-mark">capscr</span>
-          <span class="titlebar-context">{props.context ?? "hub"}</span>
+          <Show when={props.context}>
+            <span class="titlebar-context">{props.context}</span>
+          </Show>
+          {props.quick}
         </div>
         <div class="titlebar-buttons">
           <button
