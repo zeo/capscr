@@ -2300,6 +2300,18 @@ const HUB_MIN_WIDTH: f64 = 720.0;
 const HUB_MIN_HEIGHT: f64 = 480.0;
 const WINDOW_MARGIN: u32 = 16;
 
+// webview2 routes http://tauri.localhost through the system proxy stack, so a
+// vpn or global proxy that doesn't exempt loopback renders every window as
+// "localhost refused to connect". all webview content here is local, so force
+// a direct connection; uploads and update checks run through reqwest on the
+// rust side and still honor the system proxy. wry's --disable-features
+// defaults are re-passed because additional_browser_args replaces them, and
+// every window must get the identical string: webviews share one browser
+// process and mismatched args fail creation (tauri-apps/tauri#11144)
+#[cfg(windows)]
+const WEBVIEW_BROWSER_ARGS: &str =
+    "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --proxy-server=direct://";
+
 // the canonical app url for healing webviews stuck on about:blank: a live
 // hub wins, then the last observed good url, then the fixed release origin
 // (or the dev server in dev builds)
@@ -2364,6 +2376,11 @@ pub fn prewarm_hub_window(app: &tauri::App) -> tauri::Result<()> {
         .resizable(true)
         .decorations(false)
         .visible(false);
+
+    #[cfg(windows)]
+    {
+        builder = builder.additional_browser_args(WEBVIEW_BROWSER_ARGS);
+    }
 
     if let Some(icon) = app.default_window_icon().cloned() {
         builder = builder.icon(icon)?;
@@ -2596,6 +2613,11 @@ pub fn open_hub_window(app: &AppHandle) -> tauri::Result<()> {
         .decorations(false)
         .visible(true);
 
+    #[cfg(windows)]
+    {
+        builder = builder.additional_browser_args(WEBVIEW_BROWSER_ARGS);
+    }
+
     if let Some(icon) = app.default_window_icon().cloned() {
         builder = builder.icon(icon)?;
     }
@@ -2632,6 +2654,11 @@ pub fn open_editor_window(app: &AppHandle, image_path: &str) -> tauri::Result<()
         .resizable(true)
         .decorations(false)
         .visible(true);
+
+    #[cfg(windows)]
+    {
+        builder = builder.additional_browser_args(WEBVIEW_BROWSER_ARGS);
+    }
 
     if let Some(icon) = app.default_window_icon().cloned() {
         builder = builder.icon(icon)?;
@@ -5426,6 +5453,11 @@ pub async fn pin_image(
         .always_on_top(true)
         .transparent(true)
         .visible(false);
+
+    #[cfg(windows)]
+    {
+        builder = builder.additional_browser_args(WEBVIEW_BROWSER_ARGS);
+    }
 
     if let Some(icon) = app.default_window_icon().cloned() {
         builder = builder.icon(icon).map_err(|e| e.to_string())?;
