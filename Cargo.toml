@@ -2,7 +2,7 @@
 name = "capscr"
 version = "0.5.54"
 edition = "2021"
-rust-version = "1.91"
+rust-version = "1.94"
 description = "Fast HDR-aware screen capture for Windows and Linux — tray-first, signed updates, no telemetry."
 authors = ["rot <96458554+rotlove@users.noreply.github.com>"]
 license = "MIT"
@@ -99,7 +99,7 @@ uuid = { version = "1.0", features = ["v4"] }
 # build stays small while we iterate on the host API.
 zip = "2.2"
 semver = "1.0"
-wasmtime = { version = "43", default-features = false, features = ["cranelift", "runtime", "std"], optional = true }
+wasmtime = { version = "47", default-features = false, features = ["cranelift", "runtime", "std"], optional = true }
 
 # Marketplace integrity — sha256 of plugin payload + hex en/decode for the
 # manifest entry. Both already transitive; pinning them as direct deps so the

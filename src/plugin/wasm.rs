@@ -486,6 +486,10 @@ impl WasmHost {
             )
             .map_err(|e| anyhow!("link capscr.config_get: {e}"))?;
 
+        // since wasmtime 47 instantiation itself (data/element segment init,
+        // start function) is metered, so the store needs its first fuel budget
+        // before instantiate rather than only before hook calls
+        let _ = store.set_fuel(DEFAULT_HOOK_FUEL);
         let instance = linker
             .instantiate(&mut store, &module)
             .map_err(|e| anyhow!("instantiating: {e}"))?;

@@ -91,7 +91,7 @@ SFTP takes Ed25519 and ECDSA keys via `private_key_path`. RSA is off until RUSTS
 
 ## build from source
 
-Rust 1.91+, Node 22.12+, MSVC build tools on Windows or the webkit2gtk stack on Linux.
+Rust 1.94+, Node 22.12+, MSVC build tools on Windows or the webkit2gtk stack on Linux.
 
 ```sh
 git clone https://github.com/zeo/capscr.git
