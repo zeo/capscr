@@ -4,6 +4,22 @@ format follows [keep-a-changelog](https://keepachangelog.com/en/1.1.0/) loosely.
 
 ## [Unreleased]
 
+## [0.5.55] - 2026-08-08
+
+### changed
+- the hub is restyled: bundled fonts, rounded chrome, reworked title and status bars, and settings fields that stack at narrow widths
+
+### fixed
+- binding a mouse side button no longer freezes hotkey capture or swallows the button release
+- a task hotkey that fails mid-capture no longer leaves the selection overlay stuck
+- the hub webview always connects directly, so a system proxy can't black-hole tauri.localhost
+- replacing a stored upload password updates the existing vault entry instead of orphaning it, and destination connection tests probe the saved credentials correctly
+- unsaved settings and task edits are guarded across tab switches, window close, and tray-driven config reloads
+
+### security
+- wasmtime updated to 47.0.3, fixing RUSTSEC-2026-0222 (stores could mix up type indices between engines); building from source now needs Rust 1.94+
+- a hardening pass over runtime state, trust boundaries, marketplace fetching, and the release pipeline
+
 ## [0.5.54] - 2026-07-27
 
 ### fixed
