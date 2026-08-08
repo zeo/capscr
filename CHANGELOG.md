@@ -18,6 +18,8 @@ format follows [keep-a-changelog](https://keepachangelog.com/en/1.1.0/) loosely.
 
 ### security
 - wasmtime updated to 47.0.3, fixing RUSTSEC-2026-0222 (stores could mix up type indices between engines); building from source now needs Rust 1.94+
+- event-listener updated to 5.4.2, fixing RUSTSEC-2026-0221 (`StackSlot` let `!Send` tags cross thread boundaries), reached through the linux notification path
+- nanoid updated to 3.3.18, fixing GHSA-2v37-7h3g-55p8 (a zero size hung `customAlphabet` and `customRandom`); it is a build-time postcss dependency and never ships in the bundle
 - a hardening pass over runtime state, trust boundaries, marketplace fetching, and the release pipeline
 
 ## [0.5.54] - 2026-07-27
