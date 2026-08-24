@@ -183,6 +183,8 @@ jobs:
         env:
           CERTIFICATE_THUMBPRINT: ${{ vars.WINDOWS_CERTIFICATE_THUMBPRINT }}
           TIMESTAMP_URL: ${{ vars.WINDOWS_TIMESTAMP_URL }}
+          SIGNING_PFX: ${{ secrets.WINDOWS_SIGNING_PFX }}
+          SIGNING_PFX_PASSWORD: ${{ secrets.WINDOWS_SIGNING_PFX_PASSWORD }}
         run: |
           & frontend\node_modules\.bin\tauri.cmd build --no-bundle --ci
           if ($LASTEXITCODE -ne 0) { throw "application build failed" }
@@ -194,8 +196,18 @@ jobs:
           $expectedThumbprint = $env:CERTIFICATE_THUMBPRINT.Replace(' ', '').ToUpperInvariant()
           if ($expectedThumbprint -notmatch '^[0-9A-F]{40}$') { throw "certificate thumbprint is invalid" }
           $timestamp = if ($env:TIMESTAMP_URL) { $env:TIMESTAMP_URL } else { "http://timestamp.digicert.com" }
-          & $signtool.FullName sign /sha1 $expectedThumbprint /fd sha256 /tr $timestamp /td sha256 $app
+          if ([string]::IsNullOrWhiteSpace($env:SIGNING_PFX)) { throw "signing pfx secret is unavailable" }
+          $pfxPath = Join-Path $env:RUNNER_TEMP 'capscr-signing.pfx'
+          try {
+            $pfxBytes = [Convert]::FromBase64String($env:SIGNING_PFX)
+          } catch {
+            throw "signing pfx secret is not valid base64"
+          }
+          if ($pfxBytes.Count -eq 0) { throw "signing pfx secret is empty" }
+          [System.IO.File]::WriteAllBytes($pfxPath, $pfxBytes)
+          & $signtool.FullName sign /f $pfxPath /p $env:SIGNING_PFX_PASSWORD /fd sha256 /tr $timestamp /td sha256 $app
           if ($LASTEXITCODE -ne 0) { throw "application signing failed" }
+          Remove-Item -LiteralPath $pfxPath
           & $signtool.FullName verify /pa /tw $app
           if ($LASTEXITCODE -ne 0) { throw "application signature verification failed" }
           $signature = Get-AuthenticodeSignature -LiteralPath $app
@@ -216,6 +228,8 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           CERTIFICATE_THUMBPRINT: ${{ vars.WINDOWS_CERTIFICATE_THUMBPRINT }}
           TIMESTAMP_URL: ${{ vars.WINDOWS_TIMESTAMP_URL }}
+          SIGNING_PFX: ${{ secrets.WINDOWS_SIGNING_PFX }}
+          SIGNING_PFX_PASSWORD: ${{ secrets.WINDOWS_SIGNING_PFX_PASSWORD }}
           RELEASE_NOTES: ${{ steps.changelog.outputs.notes }}
         run: |
           $ver = $env:GITHUB_REF_NAME -replace '^v',''
@@ -249,8 +263,17 @@ jobs:
           $expectedThumbprint = $env:CERTIFICATE_THUMBPRINT.Replace(' ', '').ToUpperInvariant()
           if ($expectedThumbprint -notmatch '^[0-9A-F]{40}$') { throw "certificate thumbprint is invalid" }
           $timestamp = if ($env:TIMESTAMP_URL) { $env:TIMESTAMP_URL } else { "http://timestamp.digicert.com" }
+          if ([string]::IsNullOrWhiteSpace($env:SIGNING_PFX)) { throw "signing pfx secret is unavailable" }
+          $pfxPath = Join-Path $env:RUNNER_TEMP 'capscr-signing.pfx'
+          try {
+            $pfxBytes = [Convert]::FromBase64String($env:SIGNING_PFX)
+          } catch {
+            throw "signing pfx secret is not valid base64"
+          }
+          if ($pfxBytes.Count -eq 0) { throw "signing pfx secret is empty" }
+          [System.IO.File]::WriteAllBytes($pfxPath, $pfxBytes)
           foreach ($file in @("dist\capscr-$ver-online-setup.exe", "dist\capscr-$ver-offline-setup.exe")) {
-            & $signtool.FullName sign /sha1 $expectedThumbprint /fd sha256 /tr $timestamp /td sha256 $file
+            & $signtool.FullName sign /f $pfxPath /p $env:SIGNING_PFX_PASSWORD /fd sha256 /tr $timestamp /td sha256 $file
             if ($LASTEXITCODE -ne 0) { throw "signing failed for $file" }
             & $signtool.FullName verify /pa /tw $file
             if ($LASTEXITCODE -ne 0) { throw "signature verification failed for $file" }
@@ -264,6 +287,7 @@ jobs:
               throw "signer thumbprint for $file does not match WINDOWS_CERTIFICATE_THUMBPRINT"
             }
           }
+          Remove-Item -LiteralPath $pfxPath
           $manifestHash = (Get-FileHash -LiteralPath 'dist\installer.json' -Algorithm SHA256).Hash.ToLowerInvariant()
           $utf8 = New-Object System.Text.UTF8Encoding $false
           [System.IO.File]::AppendAllText($env:GITHUB_OUTPUT, "manifest_sha256=$manifestHash`n", $utf8)
