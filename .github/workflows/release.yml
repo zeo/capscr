@@ -208,6 +208,14 @@ jobs:
           & $signtool.FullName sign /f $pfxPath /p $env:SIGNING_PFX_PASSWORD /fd sha256 /tr $timestamp /td sha256 $app
           if ($LASTEXITCODE -ne 0) { throw "application signing failed" }
           Remove-Item -LiteralPath $pfxPath
+          # a fresh runner image can trail the current Windows trust list;
+          # sync Root/AuthRoot from Windows Update before chain verification
+          $rootsSst = Join-Path $env:RUNNER_TEMP 'roots.sst'
+          certutil -generateSSTFromWU $rootsSst | Out-Null
+          if ($LASTEXITCODE -eq 0) {
+            certutil -addstore -f Root $rootsSst | Out-Null
+            certutil -addstore -f AuthRoot $rootsSst | Out-Null
+          }
           & $signtool.FullName verify /pa /tw $app
           if ($LASTEXITCODE -ne 0) { throw "application signature verification failed" }
           $signature = Get-AuthenticodeSignature -LiteralPath $app
