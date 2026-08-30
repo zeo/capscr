@@ -983,7 +983,7 @@ fn glyph(c: char) -> Option<[u8; 7]> {
 // white text on an opaque black chip, same look as the windows selector label
 fn draw_label(file: &mut File, text: &str) -> std::io::Result<()> {
     let mut pixels = vec![0u8; (LABEL_WIDTH * LABEL_HEIGHT * 4) as usize];
-    for pixel in pixels.chunks_exact_mut(4) {
+    for pixel in pixels.as_chunks_mut::<4>().0 {
         pixel[3] = 255;
     }
     let advance = 5 * GLYPH_SCALE + GLYPH_SCALE;

@@ -347,7 +347,7 @@ pub fn hdr10_to_sdr_bt2390(
     unsafe {
         scrgb.set_len(pixel_count * 4);
     }
-    for (src, dest) in pq_data.chunks_exact(4).zip(scrgb.chunks_exact_mut(4)) {
+    for (src, dest) in pq_data.as_chunks::<4>().0.iter().zip(scrgb.as_chunks_mut::<4>().0) {
         let r_pq = src[0] as f32 / 65535.0;
         let g_pq = src[1] as f32 / 65535.0;
         let b_pq = src[2] as f32 / 65535.0;
@@ -386,7 +386,7 @@ pub fn hlg_to_sdr_bt2390(
     unsafe {
         scrgb.set_len(pixel_count * 4);
     }
-    for (src, dest) in hlg_data.chunks_exact(4).zip(scrgb.chunks_exact_mut(4)) {
+    for (src, dest) in hlg_data.as_chunks::<4>().0.iter().zip(scrgb.as_chunks_mut::<4>().0) {
         let r_hlg = src[0] as f32 / 255.0;
         let g_hlg = src[1] as f32 / 255.0;
         let b_hlg = src[2] as f32 / 255.0;

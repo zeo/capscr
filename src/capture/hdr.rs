@@ -348,7 +348,9 @@ impl HdrCapture {
                     return RgbaImage::new(width, height);
                 }
                 let float_data: Vec<f32> = raw_data[..expected_bytes]
-                    .chunks_exact(2)
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
                     .map(|chunk| {
                         let bits = u16::from_le_bytes([chunk[0], chunk[1]]);
                         let v = f16_to_f32(bits);
@@ -375,7 +377,7 @@ impl HdrCapture {
                     return RgbaImage::new(width, height);
                 }
                 let mut u16_data: Vec<u16> = Vec::with_capacity(pixel_count * 4);
-                for chunk in raw_data[..expected_bytes].chunks_exact(4) {
+                for chunk in raw_data[..expected_bytes].as_chunks::<4>().0 {
                     let packed = u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
                     let r = (packed & 0x3FF) as u16; // 10 bits
                     let g = ((packed >> 10) & 0x3FF) as u16;
@@ -403,7 +405,7 @@ impl HdrCapture {
                     return RgbaImage::new(width, height);
                 }
                 let mut result = RgbaImage::new(width, height);
-                for (i, pixel) in raw_data.chunks_exact(4).enumerate() {
+                for (i, pixel) in raw_data.as_chunks::<4>().0.iter().enumerate() {
                     if i >= pixel_count {
                         break;
                     }

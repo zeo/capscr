@@ -901,7 +901,7 @@ where
     // nesting another thread pool here would just oversubscribe the cores.
     const PAR_THRESHOLD: usize = 1 << 20;
     if n < PAR_THRESHOLD || SERIAL_CONVERT.with(|c| c.get()) {
-        for (d, s) in dst.chunks_exact_mut(4).zip(src.chunks_exact(4)) {
+        for (d, s) in dst.as_chunks_mut::<4>().0.iter_mut().zip(src.as_chunks::<4>().0) {
             d.copy_from_slice(&per_pixel(s));
         }
         return;
@@ -916,7 +916,7 @@ where
     std::thread::scope(|scope| {
         for (d_chunk, s_chunk) in dst.chunks_mut(chunk_bytes).zip(src.chunks(chunk_bytes)) {
             scope.spawn(move || {
-                for (d, s) in d_chunk.chunks_exact_mut(4).zip(s_chunk.chunks_exact(4)) {
+                for (d, s) in d_chunk.as_chunks_mut::<4>().0.iter_mut().zip(s_chunk.as_chunks::<4>().0) {
                     d.copy_from_slice(&per_pixel(s));
                 }
             });
@@ -1231,7 +1231,7 @@ mod tests {
         par_convert(&src, &mut got, |s| [s[2], s[1], s[0], s[3]]);
 
         let mut want = vec![0u8; px * 4];
-        for (d, s) in want.chunks_exact_mut(4).zip(src.chunks_exact(4)) {
+        for (d, s) in want.as_chunks_mut::<4>().0.iter_mut().zip(src.as_chunks::<4>().0) {
             d[0] = s[2];
             d[1] = s[1];
             d[2] = s[0];

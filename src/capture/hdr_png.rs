@@ -103,7 +103,9 @@ fn packed_hdr10_words(bitmap: &HdrBitmap) -> Result<impl Iterator<Item = u32> + 
         ));
     }
     Ok(bitmap.data[..expected_bytes as usize]
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]])))
 }
 
@@ -358,7 +360,9 @@ mod tests {
         };
 
         let pq_u16: Vec<u16> = data
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .flat_map(|c| unpack_rgb10a2(u32::from_le_bytes([c[0], c[1], c[2], c[3]])))
             .collect();
         let sdr = hdr10_to_sdr_bt2390(&pq_u16, 4, 1, 240.0, TonemapParams::default());

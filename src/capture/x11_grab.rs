@@ -64,7 +64,7 @@ impl X11RegionGrabber {
         }
         // ZPixmap at depth 24/32 on little-endian servers is BGRX
         let mut rgba = Vec::with_capacity(expected);
-        for px in reply.data[..expected].chunks_exact(4) {
+        for px in reply.data[..expected].as_chunks::<4>().0 {
             rgba.extend_from_slice(&[px[2], px[1], px[0], 255]);
         }
         RgbaImage::from_raw(w as u32, h as u32, rgba)

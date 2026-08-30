@@ -281,7 +281,7 @@ fn run_hdr_stream(
                         .copy_from_slice(&raw[row_index * stride..row_index * stride + row_bytes]);
                     if opaque {
                         // x-formats carry undefined alpha bits; force opaque
-                        for px in dst_row.chunks_exact_mut(4) {
+                        for px in dst_row.as_chunks_mut::<4>().0 {
                             px[3] |= 0xC0;
                         }
                     }
@@ -451,8 +451,11 @@ fn run_stream(
                             dst_row.copy_from_slice(src_row);
                         }
                         VideoFormat::BGRA | VideoFormat::BGRx => {
-                            for (dst, src) in
-                                dst_row.chunks_exact_mut(4).zip(src_row.chunks_exact(4))
+                            for (dst, src) in dst_row
+                                .as_chunks_mut::<4>()
+                                .0
+                                .iter_mut()
+                                .zip(src_row.as_chunks::<4>().0)
                             {
                                 dst[0] = src[2];
                                 dst[1] = src[1];
@@ -468,7 +471,7 @@ fn run_stream(
                 }
                 // x-formats carry undefined alpha; force opaque
                 if matches!(format, VideoFormat::RGBx | VideoFormat::BGRx) {
-                    for px in rgba.chunks_exact_mut(4) {
+                    for px in rgba.as_chunks_mut::<4>().0 {
                         px[3] = 255;
                     }
                 }

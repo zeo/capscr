@@ -578,7 +578,7 @@ impl GifRecorder {
             let total_pixels = resized.width() * resized.height();
             let pixel_step = (total_pixels / 10000).max(1) as usize;
 
-            for chunk in rgba.chunks_exact(4).step_by(pixel_step) {
+            for chunk in rgba.as_chunks::<4>().0.iter().step_by(pixel_step) {
                 sample_pixels.extend_from_slice(chunk);
             }
         }
@@ -590,7 +590,7 @@ impl GifRecorder {
         let nq = color_quant::NeuQuant::new(10, 256, &sample_pixels);
         let colormap_rgba = nq.color_map_rgba();
         let mut global_palette = Vec::with_capacity(256 * 3);
-        for chunk in colormap_rgba.chunks_exact(4) {
+        for chunk in colormap_rgba.as_chunks::<4>().0 {
             global_palette.push(chunk[0]);
             global_palette.push(chunk[1]);
             global_palette.push(chunk[2]);
@@ -630,7 +630,7 @@ impl GifRecorder {
                 let mut last_index = 0u8;
                 let mut cache_valid = false;
 
-                for (idx, chunk) in rgba_data.chunks_exact(4).enumerate() {
+                for (idx, chunk) in rgba_data.as_chunks::<4>().0.iter().enumerate() {
                     if cache_valid
                         && chunk[0] == last_pixel[0]
                         && chunk[1] == last_pixel[1]

@@ -286,7 +286,7 @@ mod windows_impl {
             let total = stride * (height as usize);
             let src_slice = std::slice::from_raw_parts(pixels_ptr as *const u8, total);
             let mut rgba = Vec::with_capacity(total);
-            for chunk in src_slice.chunks_exact(4) {
+            for chunk in src_slice.as_chunks::<4>().0 {
                 rgba.push(chunk[2]); // R
                 rgba.push(chunk[1]); // G
                 rgba.push(chunk[0]); // B
@@ -298,7 +298,7 @@ mod windows_impl {
             // having drawn opaque pixels. Detect that and force alpha=255 on
             // any non-black pixel as a heuristic recovery — better than an
             // invisible cursor.
-            let any_alpha = rgba.chunks_exact(4).any(|p| p[3] != 0);
+            let any_alpha = rgba.as_chunks::<4>().0.iter().any(|p| p[3] != 0);
             if !any_alpha {
                 let old_bmp = SelectObject(mem_dc, icon_info.hbmMask);
                 let mut fallback = true;
@@ -318,7 +318,7 @@ mod windows_impl {
                     fallback = false;
                 }
                 if fallback {
-                    for p in rgba.chunks_exact_mut(4) {
+                    for p in rgba.as_chunks_mut::<4>().0 {
                         if p[0] != 0 || p[1] != 0 || p[2] != 0 {
                             p[3] = 255;
                         }
