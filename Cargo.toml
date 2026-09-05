@@ -97,7 +97,7 @@ uuid = { version = "1.0", features = ["v4"] }
 # Plugin system: zip extraction (marketplace) + wasmtime (0.4 plugin runtime
 # host). wasmtime is opt-in via the `plugin-runtime` feature so the default
 # build stays small while we iterate on the host API.
-zip = "2.2"
+zip = "8.6"
 semver = "1.0"
 wasmtime = { version = "47", default-features = false, features = ["cranelift", "runtime", "std"], optional = true }
 
