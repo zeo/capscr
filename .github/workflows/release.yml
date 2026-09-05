@@ -498,8 +498,7 @@ jobs:
           # the by-tag endpoint only sees published releases; the release is
           # still a draft at this point, so find it through the list endpoint
           release_id="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
-            --arg tag "$GITHUB_REF_NAME" \
-            --jq '.[] | select(.tag_name == $tag) | .id' | head -n1)"
+            --jq ".[] | select(.tag_name == \"${GITHUB_REF_NAME}\") | .id" | head -n1)"
           if [ -z "$release_id" ]; then
             echo "no draft release found for $GITHUB_REF_NAME" >&2
             exit 1
