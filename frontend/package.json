@@ -18,13 +18,13 @@
     "@tauri-apps/plugin-notification": "^2",
     "@tauri-apps/plugin-opener": "^2",
     "lucide-solid": "^1.39.0",
-    "solid-js": "^1.8.0"
+    "solid-js": "^1.9.15"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "^2.11.2",
-    "esbuild": "^0.28.1",
+    "@tauri-apps/cli": "^2.11.4",
+    "esbuild": "^0.28.2",
     "typescript": "^7.0.2",
-    "vite": "^8.1.5",
-    "vite-plugin-solid": "^2.11.13"
+    "vite": "^8.2.2",
+    "vite-plugin-solid": "^2.11.14"
   }
 }
