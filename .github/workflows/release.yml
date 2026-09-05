@@ -205,17 +205,21 @@ jobs:
           }
           if ($pfxBytes.Count -eq 0) { throw "signing pfx secret is empty" }
           [System.IO.File]::WriteAllBytes($pfxPath, $pfxBytes)
+          # the signing certificate is self-signed, so it is its own trust
+          # anchor: install its public cert into the local root store before
+          # chain verification, or signtool verify rejects the whole chain
+          $signer = @(Import-PfxCertificate -FilePath $pfxPath -CertStoreLocation Cert:\CurrentUser\My `
+            -Password (ConvertTo-SecureString $env:SIGNING_PFX_PASSWORD -AsPlainText -Force)) |
+            Where-Object { ($_.Thumbprint -replace '\s', '').ToUpperInvariant() -eq $expectedThumbprint } |
+            Select-Object -First 1
+          if (-not $signer) { throw "signing pfx does not match WINDOWS_CERTIFICATE_THUMBPRINT" }
+          $signerCer = Join-Path $env:RUNNER_TEMP 'capscr-signer.cer'
+          Export-Certificate -Cert $signer -FilePath $signerCer | Out-Null
+          Import-Certificate -FilePath $signerCer -CertStoreLocation Cert:\LocalMachine\Root | Out-Null
+          Remove-Item -LiteralPath $signerCer
           & $signtool.FullName sign /f $pfxPath /p $env:SIGNING_PFX_PASSWORD /fd sha256 /tr $timestamp /td sha256 $app
           if ($LASTEXITCODE -ne 0) { throw "application signing failed" }
           Remove-Item -LiteralPath $pfxPath
-          # a fresh runner image can trail the current Windows trust list;
-          # sync Root/AuthRoot from Windows Update before chain verification
-          $rootsSst = Join-Path $env:RUNNER_TEMP 'roots.sst'
-          certutil -generateSSTFromWU $rootsSst | Out-Null
-          if ($LASTEXITCODE -eq 0) {
-            certutil -addstore -f Root $rootsSst | Out-Null
-            certutil -addstore -f AuthRoot $rootsSst | Out-Null
-          }
           & $signtool.FullName verify /pa /tw $app
           if ($LASTEXITCODE -ne 0) { throw "application signature verification failed" }
           $signature = Get-AuthenticodeSignature -LiteralPath $app
@@ -280,6 +284,17 @@ jobs:
           }
           if ($pfxBytes.Count -eq 0) { throw "signing pfx secret is empty" }
           [System.IO.File]::WriteAllBytes($pfxPath, $pfxBytes)
+          # self-signed signer: anchor its public cert in the local root store
+          # so the per-file verify resolves the chain
+          $signer = @(Import-PfxCertificate -FilePath $pfxPath -CertStoreLocation Cert:\CurrentUser\My `
+            -Password (ConvertTo-SecureString $env:SIGNING_PFX_PASSWORD -AsPlainText -Force)) |
+            Where-Object { ($_.Thumbprint -replace '\s', '').ToUpperInvariant() -eq $expectedThumbprint } |
+            Select-Object -First 1
+          if (-not $signer) { throw "signing pfx does not match WINDOWS_CERTIFICATE_THUMBPRINT" }
+          $signerCer = Join-Path $env:RUNNER_TEMP 'capscr-signer.cer'
+          Export-Certificate -Cert $signer -FilePath $signerCer | Out-Null
+          Import-Certificate -FilePath $signerCer -CertStoreLocation Cert:\LocalMachine\Root | Out-Null
+          Remove-Item -LiteralPath $signerCer
           foreach ($file in @("dist\capscr-$ver-online-setup.exe", "dist\capscr-$ver-offline-setup.exe")) {
             & $signtool.FullName sign /f $pfxPath /p $env:SIGNING_PFX_PASSWORD /fd sha256 /tr $timestamp /td sha256 $file
             if ($LASTEXITCODE -ne 0) { throw "signing failed for $file" }
