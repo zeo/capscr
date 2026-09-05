@@ -28,12 +28,12 @@ jobs:
           persist-credentials: false
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
+        uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0
         with:
           toolchain: stable
 
       - name: Install cargo-audit
-        uses: taiki-e/install-action@41049aa56687c35e0afa74eed4f09cec4f9afabf
+        uses: taiki-e/install-action@e67fa11c4b9316fa714ddf0abed07a0c3143b95b
         with:
           tool: cargo-audit
 
@@ -61,13 +61,13 @@ jobs:
             libwayland-dev libegl-dev libgbm-dev libdrm-dev xvfb
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
+        uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0
         with:
           toolchain: stable
           components: clippy
 
       - name: Cache cargo
-        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+        uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16
 
       - name: Install Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
@@ -131,12 +131,12 @@ jobs:
           fi
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
+        uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0
         with:
           toolchain: stable
 
       - name: Cache cargo
-        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+        uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16
 
       - name: Install Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
@@ -166,7 +166,7 @@ jobs:
           persist-credentials: false
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
+        uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0
         with:
           toolchain: stable
 
@@ -235,13 +235,13 @@ jobs:
           persist-credentials: false
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
+        uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0
         with:
           toolchain: stable
           components: clippy
 
       - name: Cache cargo
-        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+        uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16
 
       - name: Install Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
