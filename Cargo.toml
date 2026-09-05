@@ -33,7 +33,7 @@ tauri-plugin-window-state = "2"
 tauri-plugin-single-instance = "2"
 
 # Global hotkeys (native, OS-event-driven via crossbeam channel)
-global-hotkey = "0.6"
+global-hotkey = "0.8"
 
 # Used to select between the hotkey-event channel and the reload-command
 # channel in the hotkey thread — replaces a 100ms busy-poll loop that drained
@@ -69,7 +69,7 @@ toml = "0.8"
 directories = "5.0"
 
 # HTTP client for uploads
-reqwest = { version = "0.12", features = ["blocking", "multipart"] }
+reqwest = { version = "0.13", features = ["blocking", "multipart"] }
 
 # URL parsing for security validation
 url = "2.5"
@@ -97,7 +97,7 @@ uuid = { version = "1.0", features = ["v4"] }
 # Plugin system: zip extraction (marketplace) + wasmtime (0.4 plugin runtime
 # host). wasmtime is opt-in via the `plugin-runtime` feature so the default
 # build stays small while we iterate on the host API.
-zip = "2.2"
+zip = "8"
 semver = "1.0"
 wasmtime = { version = "47", default-features = false, features = ["cranelift", "runtime", "std"], optional = true }
 
