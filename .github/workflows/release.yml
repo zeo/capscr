@@ -421,7 +421,7 @@ jobs:
         run: cargo build --release --locked --manifest-path .rot-installer/Cargo.toml --bin rot-installer --bin rot-pack
 
       - name: Restore Windows manifest
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
           name: windows-installer-manifest
           path: dist
