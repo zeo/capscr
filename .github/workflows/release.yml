@@ -495,7 +495,15 @@ jobs:
             "installer.json" \
             "installer.json.minisig" |
             LC_ALL=C sort > "$expected"
-          release_id="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$GITHUB_REF_NAME" --jq '.id')"
+          # the by-tag endpoint only sees published releases; the release is
+          # still a draft at this point, so find it through the list endpoint
+          release_id="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            --arg tag "$GITHUB_REF_NAME" \
+            --jq '.[] | select(.tag_name == $tag) | .id' | head -n1)"
+          if [ -z "$release_id" ]; then
+            echo "no draft release found for $GITHUB_REF_NAME" >&2
+            exit 1
+          fi
           gh api --paginate \
             "repos/$GITHUB_REPOSITORY/releases/$release_id/assets?per_page=100" \
             --jq '.[].name' |
