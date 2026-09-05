@@ -20,7 +20,7 @@ env:
 
 jobs:
   audit:
-    if: github.actor == 'zeo' || github.event_name == 'schedule'
+    if: github.event_name == 'schedule' || github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -43,7 +43,7 @@ jobs:
         run: cargo audit
 
   lint-and-test-linux:
-    if: github.actor == 'zeo' || github.event_name == 'schedule'
+    if: github.event_name == 'schedule' || github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -98,7 +98,7 @@ jobs:
   # runs `capscr --wayland-diag` inside a real session and asserts the source
   # chain classifies the desktop correctly. scripts live in ci/compositors/.
   compositor-wayland:
-    if: github.actor == 'zeo' || github.event_name == 'schedule'
+    if: github.event_name == 'schedule' || github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-24.04
     continue-on-error: true
     strategy:
@@ -157,7 +157,7 @@ jobs:
   # KDE needs Plasma 6 (ubuntu-24.04 ships 5.27), so it runs on the self-hosted
   # runner where a Plasma 6 container is available. advisory like the others.
   compositor-kde:
-    if: github.actor == 'zeo' || github.event_name == 'schedule'
+    if: github.event_name == 'schedule' || github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     continue-on-error: true
     steps:
