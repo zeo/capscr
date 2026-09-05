@@ -69,7 +69,7 @@ toml = "0.8"
 directories = "5.0"
 
 # HTTP client for uploads
-reqwest = { version = "0.12", features = ["blocking", "multipart"] }
+reqwest = { version = "0.13", features = ["blocking", "multipart"] }
 
 # URL parsing for security validation
 url = "2.5"
