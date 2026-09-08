@@ -398,11 +398,18 @@ fn build_tray_menu<R: tauri::Runtime, M: tauri::Manager<R>>(app: &M) -> tauri::R
         true,
         None::<&str>,
     )?;
+    let cap_region_editor = MenuItem::with_id(
+        app,
+        "cap_region_editor",
+        "Region into editor",
+        true,
+        None::<&str>,
+    )?;
     let capture_submenu = Submenu::with_items(
         app,
         "Capture",
         true,
-        &[&cap_region, &cap_window, &cap_fullscreen, &cap_active],
+        &[&cap_region, &cap_region_editor, &cap_window, &cap_fullscreen, &cap_active],
     )?;
 
     // record submenu
@@ -628,6 +635,7 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
             // prefix below so the static-arm part stays compact.
             match id {
                 "cap_region" => spawn_capture(CaptureModeArg::Region, PostActionArg::Clipboard),
+                "cap_region_editor" => spawn_capture(CaptureModeArg::Region, PostActionArg::OpenEditor),
                 "cap_window" => spawn_capture(CaptureModeArg::Window, PostActionArg::Clipboard),
                 "cap_fullscreen" => {
                     spawn_capture(CaptureModeArg::Fullscreen, PostActionArg::Clipboard)
