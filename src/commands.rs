@@ -2801,6 +2801,51 @@ pub async fn open_editor(
     open_editor_window(&app, &canonical.to_string_lossy()).map_err(|e| e.to_string())
 }
 
+/// true when `canonical` lives inside the annotate staging dir. `Path::starts_with`
+/// compares whole components, so a sibling like `annotate-stage-evil` never matches.
+fn is_annotate_staged_path(stage_dir: &std::path::Path, canonical: &std::path::Path) -> bool {
+    canonical.starts_with(stage_dir)
+}
+
+/// true for files the annotate flow stages (`annotate-<uuid>.png`). everything
+/// else in the cache is left alone by the orphan cleanup.
+fn is_annotate_staged_filename(name: &str) -> bool {
+    name.starts_with("annotate-") && name.ends_with(".png")
+}
+
+#[cfg(test)]
+mod annotate_stage_tests {
+    use super::*;
+
+    #[test]
+    fn staged_paths_match_only_inside_the_stage_dir() {
+        use std::path::Path;
+        let stage = Path::new("/cache/annotate-stage");
+        assert!(is_annotate_staged_path(
+            stage,
+            &Path::new("/cache/annotate-stage/annotate-abc.png")
+        ));
+        assert!(is_annotate_staged_path(
+            stage,
+            &Path::new("/cache/annotate-stage/sub/annotate-abc.png")
+        ));
+        assert!(!is_annotate_staged_path(stage, &Path::new("/cache/other.png")));
+        // component-wise matching: a sibling dir sharing the prefix is not inside
+        assert!(!is_annotate_staged_path(
+            stage,
+            &Path::new("/cache/annotate-stage-evil/annotate-abc.png")
+        ));
+    }
+
+    #[test]
+    fn staged_filenames_match_only_staged_captures() {
+        assert!(is_annotate_staged_filename("annotate-abc123.png"));
+        assert!(!is_annotate_staged_filename("annotate-abc123.jpg"));
+        assert!(!is_annotate_staged_filename("capture.png"));
+        assert!(!is_annotate_staged_filename("annotate-abc.png.bak"));
+    }
+}
+
 /// finish an annotate-before-save session: write the edited pixels as a real
 /// capture, surface it to History, and drop the staging file.
 fn save_staged_annotation(
@@ -2877,7 +2922,7 @@ pub fn cleanup_annotate_stage(app: &AppHandle) {
         let staged = path
             .file_name()
             .and_then(|name| name.to_str())
-            .map(|name| name.starts_with("annotate-") && name.ends_with(".png"))
+            .map(is_annotate_staged_filename)
             .unwrap_or(false);
         if staged {
             let _ = std::fs::remove_file(&path);
@@ -2902,7 +2947,7 @@ pub fn save_edited_image(
         let stage_dir = std::fs::canonicalize(cache_dir.join("annotate-stage"))
             .unwrap_or_else(|_| cache_dir.join("annotate-stage"));
         if let Ok(canonical) = std::fs::canonicalize(&buf) {
-            if canonical.starts_with(&stage_dir) {
+            if is_annotate_staged_path(&stage_dir, &canonical) {
                 return save_staged_annotation(&app, &state, bytes, &canonical);
             }
         }
