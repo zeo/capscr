@@ -1364,6 +1364,9 @@ export function Editor() {
   }
 
   async function onSave() {
+    // flush pending text into the canvas first — exportBytes reads pixels,
+    // so an uncommitted input box would otherwise be silently dropped.
+    if (textInputAt()) commitText();
     const path = imagePath();
     if (!path) return;
     const mime = targetMime();
@@ -1397,6 +1400,7 @@ export function Editor() {
   }
 
   async function onCopy() {
+    if (textInputAt()) commitText();
     setBusy("copy");
     setStatus({ tone: "", msg: "copying..." });
     try {
@@ -1415,6 +1419,7 @@ export function Editor() {
   }
 
   async function onUpload() {
+    if (textInputAt()) commitText();
     setBusy("upload");
     setStatus({ tone: "", msg: "uploading..." });
     try {
