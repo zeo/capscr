@@ -177,6 +177,9 @@ fn main() {
             // AppHandle; register it before any capture can fire
             #[cfg(target_os = "linux")]
             overlay::linux::init(&app.handle().clone());
+            // drop annotate-stage files orphaned by editor sessions that
+            // closed without saving, so the cache does not fill with them
+            commands::cleanup_annotate_stage(&app.handle().clone());
             // load plugins on a background thread so the cranelift JIT compile
             // of each enabled WASM plugin doesn't delay the tray or first
             // capture. dispatch sees zero plugins until the load swaps them in.

@@ -26,6 +26,7 @@ const POST_ACTIONS: { id: CaptureTask["post_action"]; label: string }[] = [
   { id: "save-and-clipboard", label: "save + clipboard" },
   { id: "upload", label: "upload" },
   { id: "open-editor", label: "open in editor" },
+  { id: "annotate", label: "annotate" },
   { id: "copy-text", label: "copy detected text (ocr)" },
   { id: "prompt", label: "prompt" },
   { id: "do-nothing", label: "do nothing" },
@@ -39,7 +40,7 @@ const isRecordingMode = (mode: CaptureTask["capture_mode"]) =>
 // offered for still-image modes
 const postActionsFor = (mode: CaptureTask["capture_mode"]) =>
   isRecordingMode(mode)
-    ? POST_ACTIONS.filter((p) => p.id !== "open-editor" && p.id !== "copy-text")
+    ? POST_ACTIONS.filter((p) => p.id !== "open-editor" && p.id !== "annotate" && p.id !== "copy-text")
     : POST_ACTIONS;
 
 const UPLOAD_TARGETS: NonNullable<CaptureTask["target_destination"]>[] = [
@@ -308,13 +309,14 @@ export function Tasks() {
                                   const update: Partial<CaptureTask> = {
                                     capture_mode: mode,
                                   };
-                                  // editor and ocr post-actions don't apply to
+                                  // editor, annotate and ocr post-actions don't apply to
                                   // recordings — fall back to save so the task
                                   // isn't left on a filtered-out action that
                                   // silently no-ops when it fires
                                   if (
                                     isRecordingMode(mode) &&
                                     (task.post_action === "open-editor" ||
+                                      task.post_action === "annotate" ||
                                       task.post_action === "copy-text")
                                   ) {
                                     update.post_action = "save-file";

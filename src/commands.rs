@@ -46,6 +46,7 @@ pub enum PostActionArg {
     Upload,
     SaveAndClipboard,
     OpenEditor,
+    Annotate,
     Prompt,
     DoNothing,
     CopyText,
@@ -878,6 +879,36 @@ fn run_capture_pipeline_inner(
         return Ok(());
     }
 
+    if matches!(post, PostActionArg::Annotate) {
+        // annotate-before-save: stage the fresh capture in the app cache
+        // (asset-scope reachable, invisible to History) and open it in the
+        // editor. saving there mints the real capture through the staging
+        // redirect in save_edited_image; closing without saving discards it.
+        let config = state.config.lock().unwrap().clone();
+        let stage_dir = app
+            .path()
+            .app_cache_dir()
+            .map_err(|e| anyhow::anyhow!(e))?
+            .join("annotate-stage");
+        std::fs::create_dir_all(&stage_dir).map_err(|e| anyhow::anyhow!(e))?;
+        let path = stage_dir.join(format!(
+            "annotate-{}.png",
+            uuid::Uuid::new_v4().as_simple()
+        ));
+        crate::clipboard::save_image(
+            &image,
+            &path,
+            crate::config::ImageFormat::Png,
+            config.output.quality,
+        )?;
+        open_editor_window(app, &path.to_string_lossy()).map_err(|e| anyhow::anyhow!(e))?;
+        Sound::Screenshot.play_if_enabled(config.post_capture.play_sound);
+        if config.ui.show_notifications {
+            let _ = show_notification("Annotating capture", "save to keep it, close to discard");
+        }
+        return Ok(());
+    }
+
     if matches!(post, PostActionArg::CopyText) {
         // run OCR on the fresh capture and put the detected text on the clipboard,
         // without saving a file
@@ -905,7 +936,7 @@ fn run_capture_pipeline_inner(
         PostActionArg::SaveFile => PostCaptureAction::SaveToFile,
         PostActionArg::Upload => PostCaptureAction::Upload,
         PostActionArg::SaveAndClipboard => PostCaptureAction::SaveAndCopy,
-        PostActionArg::OpenEditor | PostActionArg::CopyText => unreachable!(),
+        PostActionArg::OpenEditor | PostActionArg::Annotate | PostActionArg::CopyText => unreachable!(),
         PostActionArg::Prompt => PostCaptureAction::PromptUser,
         PostActionArg::DoNothing => PostCaptureAction::DoNothing,
     };
@@ -2751,6 +2782,63 @@ pub async fn open_editor(
     open_editor_window(&app, &canonical.to_string_lossy()).map_err(|e| e.to_string())
 }
 
+/// finish an annotate-before-save session: write the edited pixels as a real
+/// capture, surface it to History, and drop the staging file.
+fn save_staged_annotation(
+    app: &AppHandle,
+    state: &State<AppState>,
+    bytes: Vec<u8>,
+    staged: &std::path::Path,
+) -> Result<(), String> {
+    if bytes.is_empty() {
+        return Err("Image data is empty".into());
+    }
+    if bytes.len() > 100 * 1024 * 1024 {
+        return Err("Image too large to save".into());
+    }
+    let config = state.config.lock().unwrap().clone();
+    let base = config.output_path();
+    let dest = get_unique_filepath(&base);
+    if let Err(e) = std::fs::create_dir_all(&config.output.directory) {
+        tracing::warn!("failed to create output dir: {e}");
+    }
+    let _pending_mutation =
+        PendingFileMutation::begin(app).map_err(|error| error.to_string())?;
+    std::fs::write(&dest, &bytes).map_err(|e| format!("write failed: {e}"))?;
+    let _ = std::fs::remove_file(staged);
+    *state.last_save.lock().unwrap() = Some(dest.clone());
+    notify_capture_saved(app, &dest);
+    Sound::Screenshot.play_if_enabled(config.post_capture.play_sound);
+    if config.ui.show_notifications {
+        let _ = show_notification("Capture saved", &dest.to_string_lossy());
+    }
+    Ok(())
+}
+
+/// drop annotate-stage files orphaned by editor sessions that closed without
+/// saving. runs at launch; the save path removes its own file on success.
+pub fn cleanup_annotate_stage(app: &AppHandle) {
+    let Ok(cache_dir) = app.path().app_cache_dir() else {
+        return;
+    };
+    let stage = cache_dir.join("annotate-stage");
+    let Ok(entries) = std::fs::read_dir(&stage) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let staged = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(|name| name.starts_with("annotate-") && name.ends_with(".png"))
+            .unwrap_or(false);
+        if staged {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+    let _ = std::fs::remove_dir(&stage);
+}
+
 #[tauri::command]
 pub fn save_edited_image(
     bytes: Vec<u8>,
@@ -2759,6 +2847,15 @@ pub fn save_edited_image(
     state: State<AppState>,
 ) -> Result<(), String> {
     let buf = PathBuf::from(&target_path);
+    // staged pre-save annotations live under the app cache; saving one mints
+    // the real capture in the output dir instead of overwriting the stage.
+    if let Ok(cache_dir) = app.path().app_cache_dir() {
+        if let Ok(canonical) = std::fs::canonicalize(&buf) {
+            if canonical.starts_with(cache_dir.join("annotate-stage")) {
+                return save_staged_annotation(&app, &state, bytes, &canonical);
+            }
+        }
+    }
     let parent = buf
         .parent()
         .ok_or_else(|| "target_path has no parent".to_string())?;
@@ -3718,7 +3815,7 @@ fn apply_gif_post_action(
                 }
             }
         }
-        TaskPostAction::OpenEditor => {
+        TaskPostAction::OpenEditor | TaskPostAction::Annotate => {
             // recordings can't be annotated without flattening their frames —
             // reveal the saved file in the file manager instead of opening the editor
             reveal_in_file_manager(app, path);
@@ -3813,6 +3910,7 @@ impl PostActionArg {
             TaskPostAction::Upload => PostActionArg::Upload,
             TaskPostAction::SaveAndClipboard => PostActionArg::SaveAndClipboard,
             TaskPostAction::OpenEditor => PostActionArg::OpenEditor,
+            TaskPostAction::Annotate => PostActionArg::Annotate,
             TaskPostAction::Prompt => PostActionArg::Prompt,
             TaskPostAction::DoNothing => PostActionArg::DoNothing,
             TaskPostAction::CopyText => PostActionArg::CopyText,

@@ -113,6 +113,7 @@ pub enum TaskPostAction {
     Upload,
     SaveAndClipboard,
     OpenEditor,
+    Annotate,
     Prompt,
     DoNothing,
     /// run OCR on the fresh capture and copy the detected text to the clipboard
@@ -127,6 +128,7 @@ impl TaskPostAction {
             TaskPostAction::Upload => "Upload",
             TaskPostAction::SaveAndClipboard => "Save and copy",
             TaskPostAction::OpenEditor => "Open editor",
+            TaskPostAction::Annotate => "Annotate",
             TaskPostAction::Prompt => "Ask each time",
             TaskPostAction::DoNothing => "Do nothing",
             TaskPostAction::CopyText => "Copy detected text (OCR)",

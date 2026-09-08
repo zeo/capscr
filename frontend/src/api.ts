@@ -7,6 +7,7 @@ export type PostAction =
   | "upload"
   | "save-and-clipboard"
   | "open-editor"
+  | "annotate"
   | "prompt"
   | "do-nothing";
 
@@ -116,6 +117,7 @@ export interface CaptureTask {
     | "upload"
     | "save-and-clipboard"
     | "open-editor"
+    | "annotate"
     | "prompt"
     | "do-nothing"
     | "copy-text";
