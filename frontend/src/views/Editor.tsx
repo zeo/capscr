@@ -352,18 +352,18 @@ export function Editor() {
       } else {
         void win.close();
       }
-    } else if (e.key === "v" || e.key === "V" || e.key === "0") setTool("select");
-    else if (e.key === "1") setTool("arrow");
-    else if (e.key === "2") setTool("rect");
+    } else if (e.key === "v" || e.key === "V" || e.key === "0") pickTool("select");
+    else if (e.key === "1") pickTool("arrow");
+    else if (e.key === "2") pickTool("rect");
     else if (e.key === "3") {
-      setTool("text");
-    } else if (e.key === "4") setTool("blur");
-    else if (e.key === "5") setTool("step");
-    else if (e.key === "6") setTool("line");
-    else if (e.key === "7") setTool("ellipse");
-    else if (e.key === "8") setTool("highlight");
-    else if (e.key === "9") setTool("pen");
-    else if (e.key === "c" || e.key === "C") setTool("crop");
+      pickTool("text");
+    } else if (e.key === "4") pickTool("blur");
+    else if (e.key === "5") pickTool("step");
+    else if (e.key === "6") pickTool("line");
+    else if (e.key === "7") pickTool("ellipse");
+    else if (e.key === "8") pickTool("highlight");
+    else if (e.key === "9") pickTool("pen");
+    else if (e.key === "c" || e.key === "C") pickTool("crop");
   };
 
   const onWheelZoom = (e: WheelEvent) => {
@@ -1259,6 +1259,13 @@ export function Editor() {
     redraw();
   }
 
+  // switching tools commits pending text instead of stranding the input
+  // box at a stale position while canvas input stays blocked behind it.
+  function pickTool(t: Tool) {
+    if (textInputAt()) commitText();
+    setTool(t);
+  }
+
   function commitText() {
     const at = textInputAt();
     const t = textBuffer().trim();
@@ -1421,7 +1428,7 @@ export function Editor() {
             type="button"
             class="tool"
             classList={{ "is-active": tool() === "select" }}
-            onClick={() => setTool("select")}
+            onClick={() => pickTool("select")}
             title="select / move (v)"
           >
             <MousePointer2 size={14} stroke-width={1.5} />
@@ -1430,7 +1437,7 @@ export function Editor() {
             type="button"
             class="tool"
             classList={{ "is-active": tool() === "arrow" }}
-            onClick={() => setTool("arrow")}
+            onClick={() => pickTool("arrow")}
             title="arrow (1)"
           >
             <ArrowRight size={14} stroke-width={1.5} />
@@ -1439,7 +1446,7 @@ export function Editor() {
             type="button"
             class="tool"
             classList={{ "is-active": tool() === "rect" }}
-            onClick={() => setTool("rect")}
+            onClick={() => pickTool("rect")}
             title="rectangle (2)"
           >
             <Square size={14} stroke-width={1.5} />
@@ -1448,7 +1455,7 @@ export function Editor() {
             type="button"
             class="tool"
             classList={{ "is-active": tool() === "text" }}
-            onClick={() => setTool("text")}
+            onClick={() => pickTool("text")}
             title="text (3)"
           >
             <Type size={14} stroke-width={1.5} />
@@ -1457,7 +1464,7 @@ export function Editor() {
             type="button"
             class="tool"
             classList={{ "is-active": tool() === "blur" }}
-            onClick={() => setTool("blur")}
+            onClick={() => pickTool("blur")}
             title="pixelate (4)"
           >
             <Droplet size={14} stroke-width={1.5} />
@@ -1466,7 +1473,7 @@ export function Editor() {
             type="button"
             class="tool"
             classList={{ "is-active": tool() === "step" }}
-            onClick={() => setTool("step")}
+            onClick={() => pickTool("step")}
             title="numbered step (5)"
           >
             <Circle size={14} stroke-width={1.5} />
@@ -1475,7 +1482,7 @@ export function Editor() {
             type="button"
             class="tool"
             classList={{ "is-active": tool() === "line" }}
-            onClick={() => setTool("line")}
+            onClick={() => pickTool("line")}
             title="line (6)"
           >
             <Minus size={14} stroke-width={1.5} />
@@ -1484,7 +1491,7 @@ export function Editor() {
             type="button"
             class="tool"
             classList={{ "is-active": tool() === "ellipse" }}
-            onClick={() => setTool("ellipse")}
+            onClick={() => pickTool("ellipse")}
             title="ellipse (7)"
           >
             <CircleDashed size={14} stroke-width={1.5} />
@@ -1493,7 +1500,7 @@ export function Editor() {
             type="button"
             class="tool"
             classList={{ "is-active": tool() === "highlight" }}
-            onClick={() => setTool("highlight")}
+            onClick={() => pickTool("highlight")}
             title="highlighter (8)"
           >
             <Highlighter size={14} stroke-width={1.5} />
@@ -1502,7 +1509,7 @@ export function Editor() {
             type="button"
             class="tool"
             classList={{ "is-active": tool() === "pen" }}
-            onClick={() => setTool("pen")}
+            onClick={() => pickTool("pen")}
             title="freehand pen (9)"
           >
             <PenLine size={14} stroke-width={1.5} />
@@ -1511,7 +1518,7 @@ export function Editor() {
             type="button"
             class="tool"
             classList={{ "is-active": tool() === "crop" }}
-            onClick={() => setTool("crop")}
+            onClick={() => pickTool("crop")}
             title="crop (c)"
           >
             <Crop size={14} stroke-width={1.5} />

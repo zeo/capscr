@@ -674,6 +674,7 @@ function Hub() {
                 <div class="shortcuts-row"><kbd>5</kbd>–<kbd>9</kbd><span>step / line / ellipse / highlighter / pen</span></div>
                 <div class="shortcuts-row"><kbd>C</kbd><span>crop tool</span></div>
                 <div class="shortcuts-row"><kbd>Del</kbd><span>remove selected shape</span></div>
+                <div class="shortcuts-row"><kbd>←</kbd><kbd>↑</kbd><kbd>↓</kbd><kbd>→</kbd><span>nudge selected shape (shift is 10px)</span></div>
                 <div class="shortcuts-row"><kbd>Ctrl</kbd>+<kbd>Z</kbd><span>undo</span></div>
                 <div class="shortcuts-row"><kbd>Ctrl</kbd>+<kbd>Y</kbd><span>redo</span></div>
                 <div class="shortcuts-row"><kbd>Ctrl</kbd>+<kbd>V</kbd><span>paste image from clipboard</span></div>
