@@ -2823,7 +2823,33 @@ fn save_staged_annotation(
     }
     let _pending_mutation =
         PendingFileMutation::begin(app).map_err(|error| error.to_string())?;
-    std::fs::write(&dest, &bytes).map_err(|e| format!("write failed: {e}"))?;
+    // atomic write like save_edited_image: stage to a sibling temp file,
+    // then rename, so a crash mid-write cannot leave a partial capture
+    // under its final name.
+    let stem = dest
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("capture");
+    let tmp = dest.with_file_name(format!(
+        ".{stem}.{}.capture.tmp",
+        uuid::Uuid::new_v4().as_simple()
+    ));
+    let write_result = (|| -> std::io::Result<()> {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)?;
+        std::io::Write::write_all(&mut file, &bytes)?;
+        file.sync_all()
+    })();
+    if let Err(e) = write_result {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(format!("write failed: {e}"));
+    }
+    if let Err(e) = std::fs::rename(&tmp, &dest) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(format!("rename failed: {e}"));
+    }
     let _ = std::fs::remove_file(staged);
     *state.last_save.lock().unwrap() = Some(dest.clone());
     notify_capture_saved(app, &dest);
@@ -2869,8 +2895,12 @@ pub fn save_edited_image(
     // staged pre-save annotations live under the app cache; saving one mints
     // the real capture in the output dir instead of overwriting the stage.
     if let Ok(cache_dir) = app.path().app_cache_dir() {
+        // canonicalize both sides: AppData can sit behind a symlink or
+        // junction, and a raw prefix check would then miss the stage
+        let stage_dir = std::fs::canonicalize(cache_dir.join("annotate-stage"))
+            .unwrap_or_else(|_| cache_dir.join("annotate-stage"));
         if let Ok(canonical) = std::fs::canonicalize(&buf) {
-            if canonical.starts_with(cache_dir.join("annotate-stage")) {
+            if canonical.starts_with(&stage_dir) {
                 return save_staged_annotation(&app, &state, bytes, &canonical);
             }
         }
