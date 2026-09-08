@@ -491,9 +491,11 @@ pub enum PostCaptureAction {
     Clipboard,
     #[serde(alias = "SaveAndCopy", alias = "save-and-copy")]
     SaveAndClipboard,
+    #[serde(alias = "Upload")]
     Upload,
     #[serde(alias = "PromptUser", alias = "prompt-user")]
     Prompt,
+    #[serde(alias = "DoNothing")]
     DoNothing,
 }
 
@@ -1645,12 +1647,26 @@ mod tests {
     }
 
     #[test]
-    fn post_capture_action_reads_legacy_pascal_case() {
-        // configs written while the enum lacked rename_all store PascalCase;
-        // keep reading those instead of resetting the field to default
-        let action: PostCaptureAction = serde_json::from_str("\"SaveAndCopy\"").unwrap();
-        assert_eq!(action, PostCaptureAction::SaveAndClipboard);
-        let legacy: PostCaptureAction = serde_json::from_str("\"save-and-copy\"").unwrap();
-        assert_eq!(legacy, PostCaptureAction::SaveAndClipboard);
+    fn post_capture_action_reads_every_historical_spelling() {
+        // the wire names changed twice (PascalCase, then a different
+        // kebab-case); configs from either era must keep loading
+        // instead of resetting the field to default
+        let cases = [
+            ("\"SaveToFile\"", PostCaptureAction::SaveFile),
+            ("\"save-to-file\"", PostCaptureAction::SaveFile),
+            ("\"CopyToClipboard\"", PostCaptureAction::Clipboard),
+            ("\"copy-to-clipboard\"", PostCaptureAction::Clipboard),
+            ("\"SaveAndCopy\"", PostCaptureAction::SaveAndClipboard),
+            ("\"save-and-copy\"", PostCaptureAction::SaveAndClipboard),
+            ("\"Upload\"", PostCaptureAction::Upload),
+            ("\"PromptUser\"", PostCaptureAction::Prompt),
+            ("\"prompt-user\"", PostCaptureAction::Prompt),
+            ("\"DoNothing\"", PostCaptureAction::DoNothing),
+        ];
+        for (wire, expected) in cases {
+            let action: PostCaptureAction = serde_json::from_str(wire)
+                .unwrap_or_else(|_| panic!("lost historical spelling {wire}"));
+            assert_eq!(action, expected);
+        }
     }
 }
