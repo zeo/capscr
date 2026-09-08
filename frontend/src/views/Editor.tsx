@@ -1384,10 +1384,13 @@ export function Editor() {
       // .jpg path (which would silently corrupt the file for downstream
       // consumers that trust the extension).
       const bytes = await exportBytes(mime);
-      await invoke<void>("save_edited_image", {
+      const savedPath = await invoke<string>("save_edited_image", {
         bytes: Array.from(bytes),
         targetPath: path,
       });
+      // staged sessions mint their real file here — point at it so a
+      // second save overwrites the capture instead of the dead stage.
+      setImagePath(savedPath);
       resetEditState();
       setHasPastedContent(false);
       setStatus({ tone: "ok", msg: "saved." });

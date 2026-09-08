@@ -2808,7 +2808,7 @@ fn save_staged_annotation(
     state: &State<AppState>,
     bytes: Vec<u8>,
     staged: &std::path::Path,
-) -> Result<(), String> {
+) -> Result<String, String> {
     if bytes.is_empty() {
         return Err("Image data is empty".into());
     }
@@ -2859,7 +2859,7 @@ fn save_staged_annotation(
     if config.ui.show_notifications {
         let _ = show_notification("Capture saved", &dest.to_string_lossy());
     }
-    Ok(())
+    Ok(dest.to_string_lossy().to_string())
 }
 
 /// drop annotate-stage files orphaned by editor sessions that closed without
@@ -2892,7 +2892,7 @@ pub fn save_edited_image(
     target_path: String,
     app: AppHandle,
     state: State<AppState>,
-) -> Result<(), String> {
+) -> Result<String, String> {
     let buf = PathBuf::from(&target_path);
     // staged pre-save annotations live under the app cache; saving one mints
     // the real capture in the output dir instead of overwriting the stage.
@@ -2951,7 +2951,7 @@ pub fn save_edited_image(
     }
     // surface the edit to the History tab so its tile picks up the new mtime
     notify_capture_saved(&app, &buf);
-    Ok(())
+    Ok(target_path)
 }
 
 #[tauri::command]
