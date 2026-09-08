@@ -479,13 +479,20 @@ impl Default for UiConfig {
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "kebab-case")]
 pub enum PostCaptureAction {
     #[default]
+    #[serde(alias = "SaveToFile")]
     SaveToFile,
+    #[serde(alias = "CopyToClipboard")]
     CopyToClipboard,
+    #[serde(alias = "SaveAndCopy")]
     SaveAndCopy,
+    #[serde(alias = "Upload")]
     Upload,
+    #[serde(alias = "PromptUser")]
     PromptUser,
+    #[serde(alias = "DoNothing")]
     DoNothing,
 }
 
@@ -1626,5 +1633,21 @@ mod tests {
         empty.output.directory = PathBuf::new();
         empty.sanitize();
         assert!(!empty.output.directory.as_os_str().is_empty());
+    }
+
+    #[test]
+    fn post_capture_action_serializes_kebab_case() {
+        // the hub titlebar passes this value straight to take_screenshot,
+        // which only understands kebab-case post actions
+        let wire = serde_json::to_string(&PostCaptureAction::SaveAndCopy).unwrap();
+        assert_eq!(wire, "\"save-and-copy\"");
+    }
+
+    #[test]
+    fn post_capture_action_reads_legacy_pascal_case() {
+        // configs written while the enum lacked rename_all store PascalCase;
+        // keep reading those instead of resetting the field to default
+        let action: PostCaptureAction = serde_json::from_str("\"SaveAndCopy\"").unwrap();
+        assert_eq!(action, PostCaptureAction::SaveAndCopy);
     }
 }

@@ -8,6 +8,7 @@ format follows [keep-a-changelog](https://keepachangelog.com/en/1.1.0/) loosely.
 - the editor gains select/move/delete for committed shapes, a freehand pen, crop, rotate and flip (all undoable), shape fill, and adjustable pixelate strength — saving .bmp/.avif/.jxl is refused instead of writing mislabelled bytes, with copy/upload still exporting PNG
 - the tray capture menu gains a region-into-editor entry, so a shot can go straight to annotating without a dedicated task
 - tasks gain an annotate post-action: the shot opens in the editor without saving first, and saving there mints the capture (closing without saving discards it)
+- restored kebab-case serialization for the global post-capture action (titlebar quick captures were rejected by the backend) while still reading the PascalCase values written in between
 
 ## [0.5.55] - 2026-08-08
 
