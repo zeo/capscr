@@ -2823,9 +2823,9 @@ fn save_staged_annotation(
     }
     let _pending_mutation =
         PendingFileMutation::begin(app).map_err(|error| error.to_string())?;
-    // atomic write like save_edited_image: stage to a sibling temp file,
-    // then rename, so a crash mid-write cannot leave a partial capture
-    // under its final name.
+    // re-encode into the configured output format (the editor always exports
+    // PNG, so writing its bytes verbatim would mislabel non-PNG captures),
+    // via a sibling temp that is renamed over the claimed slot for atomicity.
     let stem = dest
         .file_name()
         .and_then(|s| s.to_str())
@@ -2834,17 +2834,19 @@ fn save_staged_annotation(
         ".{stem}.{}.capture.tmp",
         uuid::Uuid::new_v4().as_simple()
     ));
-    let write_result = (|| -> std::io::Result<()> {
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&tmp)?;
-        std::io::Write::write_all(&mut file, &bytes)?;
-        file.sync_all()
+    let encode_result: Result<(), String> = (|| {
+        let img = image::load_from_memory(&bytes).map_err(|e| e.to_string())?;
+        crate::clipboard::save_image(
+            &img.into_rgba8(),
+            &tmp,
+            config.output.format,
+            config.output.quality,
+        )
+        .map_err(|e| format!("{e:#}"))
     })();
-    if let Err(e) = write_result {
+    if let Err(e) = encode_result {
         let _ = std::fs::remove_file(&tmp);
-        return Err(format!("write failed: {e}"));
+        return Err(format!("encode failed: {e}"));
     }
     if let Err(e) = std::fs::rename(&tmp, &dest) {
         let _ = std::fs::remove_file(&tmp);

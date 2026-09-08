@@ -13,7 +13,7 @@ HDR-aware screen capture for Windows and Linux. Tray-first, signed updates, no t
 
 ## features
 
-Every hotkey is a task: a capture mode (region, region-last, window, fullscreen, active monitor, region GIF, region MP4) plus a post-action (save, clipboard, editor, upload, OCR). Bind as many as you want in the hub.
+Every hotkey is a task: a capture mode (region, region-last, window, fullscreen, active monitor, region GIF, region MP4) plus a post-action (save, clipboard, editor, annotate, upload, OCR). Bind as many as you want in the hub.
 
 The selection overlay does region drag, window click, Enter for fullscreen, and `Alt+click` to copy a pixel's `#RRGGBB`. Live size readout, 8x loupe, window-snap highlight.
 
