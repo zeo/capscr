@@ -38,7 +38,7 @@ pub enum CaptureModeArg {
     ActiveMonitor,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum PostActionArg {
     Clipboard,
@@ -316,6 +316,25 @@ mod task_failure_tests {
         )
         .expect_err("the panic should be converted to an error");
         assert_eq!(error.to_string(), "task panicked: selector failed");
+    }
+}
+
+#[cfg(test)]
+mod post_action_wire_tests {
+    use super::*;
+
+    #[test]
+    fn annotate_uses_kebab_case_on_the_wire() {
+        // the tasks UI sends these strings verbatim over invoke; a rename
+        // without the frontend following breaks the action silently
+        let task = serde_json::to_string(&crate::config::TaskPostAction::Annotate).unwrap();
+        assert_eq!(task, "\"annotate\"");
+        let arg = serde_json::to_string(&PostActionArg::Annotate).unwrap();
+        assert_eq!(arg, "\"annotate\"");
+        assert_eq!(
+            PostActionArg::from_task_action(crate::config::TaskPostAction::Annotate),
+            PostActionArg::Annotate
+        );
     }
 }
 
