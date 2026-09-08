@@ -41,12 +41,19 @@ pub enum CaptureModeArg {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum PostActionArg {
+    // aliases accept the PostCaptureAction vocabulary: the hub titlebar
+    // passes the global post-capture action straight to take_screenshot,
+    // and that enum historically serialized under these names.
+    #[serde(alias = "copy-to-clipboard")]
     Clipboard,
+    #[serde(alias = "save-to-file")]
     SaveFile,
     Upload,
+    #[serde(alias = "save-and-copy")]
     SaveAndClipboard,
     OpenEditor,
     Annotate,
+    #[serde(alias = "prompt-user")]
     Prompt,
     DoNothing,
     CopyText,
@@ -322,6 +329,26 @@ mod task_failure_tests {
 #[cfg(test)]
 mod post_action_wire_tests {
     use super::*;
+
+    #[test]
+    fn every_global_action_parses_as_take_screenshot_post() {
+        // the hub titlebar passes post_capture.action straight to
+        // take_screenshot, so each PostCaptureAction must deserialize
+        // as the PostActionArg take_screenshot expects
+        for action in [
+            crate::config::PostCaptureAction::SaveToFile,
+            crate::config::PostCaptureAction::CopyToClipboard,
+            crate::config::PostCaptureAction::SaveAndCopy,
+            crate::config::PostCaptureAction::Upload,
+            crate::config::PostCaptureAction::PromptUser,
+            crate::config::PostCaptureAction::DoNothing,
+        ] {
+            let wire = serde_json::to_string(&action).unwrap();
+            let parsed: PostActionArg = serde_json::from_str(&wire)
+                .unwrap_or_else(|_| panic!("take_screenshot rejects global action {wire}"));
+            let _ = parsed;
+        }
+    }
 
     #[test]
     fn annotate_uses_kebab_case_on_the_wire() {
