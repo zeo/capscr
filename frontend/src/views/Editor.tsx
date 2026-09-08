@@ -806,27 +806,44 @@ export function Editor() {
     if (w <= 0 || h <= 0) return;
 
     // use a pixelate-style mosaic — it is faster and more privacy-safe than a true blur.
+    // single read-modify-write: per-cell getImageData calls stall for
+    // tens of thousands of round trips on fullscreen regions.
     const cell = Math.max(4, op.radius);
-    const cols = Math.ceil(w / cell);
-    const rows = Math.ceil(h / cell);
-    for (let row = 0; row < rows; row++) {
-      for (let col = 0; col < cols; col++) {
-        const sx = x + col * cell;
-        const sy = y + row * cell;
-        const sw = Math.min(cell, w - col * cell);
-        const sh = Math.min(cell, h - row * cell);
-        const data = ctx.getImageData(sx, sy, sw, sh).data;
-        let r = 0, g = 0, b = 0, n = 0;
-        for (let i = 0; i < data.length; i += 4) {
-          r += data[i];
-          g += data[i + 1];
-          b += data[i + 2];
-          n++;
+    const src = ctx.getImageData(x, y, w, h);
+    const data = src.data;
+    const out = ctx.createImageData(w, h);
+    const dst = out.data;
+    for (let cy = 0; cy < h; cy += cell) {
+      const y1 = Math.min(cy + cell, h);
+      for (let cx = 0; cx < w; cx += cell) {
+        const x1 = Math.min(cx + cell, w);
+        let r = 0, g = 0, b = 0, a = 0, n = 0;
+        for (let py = cy; py < y1; py++) {
+          for (let px = cx; px < x1; px++) {
+            const i = (py * w + px) * 4;
+            r += data[i];
+            g += data[i + 1];
+            b += data[i + 2];
+            a += data[i + 3];
+            n++;
+          }
         }
-        ctx.fillStyle = `rgb(${(r / n) | 0}, ${(g / n) | 0}, ${(b / n) | 0})`;
-        ctx.fillRect(sx, sy, sw, sh);
+        r = (r / n) | 0;
+        g = (g / n) | 0;
+        b = (b / n) | 0;
+        a = (a / n) | 0;
+        for (let py = cy; py < y1; py++) {
+          for (let px = cx; px < x1; px++) {
+            const i = (py * w + px) * 4;
+            dst[i] = r;
+            dst[i + 1] = g;
+            dst[i + 2] = b;
+            dst[i + 3] = a;
+          }
+        }
       }
     }
+    ctx.putImageData(out, x, y);
   }
 
   // ---------- object selection: hit-testing, bounding boxes, moving ----------
