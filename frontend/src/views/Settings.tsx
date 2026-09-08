@@ -398,6 +398,31 @@ function CapturePane(props: { c: AppConfig; patch: Patch }) {
         </div>
       </Section>
 
+      <Section title="after capture">
+        <div class="field">
+          <label class="field-label">titlebar quick captures</label>
+          <div class="field-control">
+            <select
+              value={c().post_capture.action}
+              onChange={(e) =>
+                props.patch("post_capture", {
+                  ...c().post_capture,
+                  action: e.currentTarget.value as never,
+                })
+              }
+            >
+              <option value="save-file">save to output dir</option>
+              <option value="clipboard">clipboard only</option>
+              <option value="save-and-clipboard">save + clipboard</option>
+              <option value="upload">upload</option>
+              <option value="prompt">prompt</option>
+              <option value="do-nothing">do nothing</option>
+            </select>
+            <span class="field-hint">what the titlebar region / window / full buttons do</span>
+          </div>
+        </div>
+      </Section>
+
       <Section title="recording (gif + mp4)">
         <div class="field">
           <label class="field-label">gif frame rate</label>

@@ -336,11 +336,11 @@ mod post_action_wire_tests {
         // take_screenshot, so each PostCaptureAction must deserialize
         // as the PostActionArg take_screenshot expects
         for action in [
-            crate::config::PostCaptureAction::SaveToFile,
-            crate::config::PostCaptureAction::CopyToClipboard,
-            crate::config::PostCaptureAction::SaveAndCopy,
+            crate::config::PostCaptureAction::SaveFile,
+            crate::config::PostCaptureAction::Clipboard,
+            crate::config::PostCaptureAction::SaveAndClipboard,
             crate::config::PostCaptureAction::Upload,
-            crate::config::PostCaptureAction::PromptUser,
+            crate::config::PostCaptureAction::Prompt,
             crate::config::PostCaptureAction::DoNothing,
         ] {
             let wire = serde_json::to_string(&action).unwrap();
@@ -978,12 +978,12 @@ fn run_capture_pipeline_inner(
     }
 
     let post_action = match post {
-        PostActionArg::Clipboard => PostCaptureAction::CopyToClipboard,
-        PostActionArg::SaveFile => PostCaptureAction::SaveToFile,
+        PostActionArg::Clipboard => PostCaptureAction::Clipboard,
+        PostActionArg::SaveFile => PostCaptureAction::SaveFile,
         PostActionArg::Upload => PostCaptureAction::Upload,
-        PostActionArg::SaveAndClipboard => PostCaptureAction::SaveAndCopy,
+        PostActionArg::SaveAndClipboard => PostCaptureAction::SaveAndClipboard,
         PostActionArg::OpenEditor | PostActionArg::Annotate | PostActionArg::CopyText => unreachable!(),
-        PostActionArg::Prompt => PostCaptureAction::PromptUser,
+        PostActionArg::Prompt => PostCaptureAction::Prompt,
         PostActionArg::DoNothing => PostCaptureAction::DoNothing,
     };
 
@@ -1400,7 +1400,7 @@ fn run_post_action(
     };
 
     match action {
-        PostCaptureAction::SaveToFile => {
+        PostCaptureAction::SaveFile => {
             let play = config.post_capture.play_sound;
             let show = config.ui.show_notifications;
             let path = do_save_async(
@@ -1416,7 +1416,7 @@ fn run_post_action(
             )?;
             Ok(Some(path))
         }
-        PostCaptureAction::CopyToClipboard => {
+        PostCaptureAction::Clipboard => {
             let history_path =
                 do_save_to_history_async(image.clone(), hdr_bitmap.clone(), app.clone());
             let clipboard_ok = do_clipboard().is_ok();
@@ -1436,7 +1436,7 @@ fn run_post_action(
             }
             Ok(history_path)
         }
-        PostCaptureAction::SaveAndCopy => {
+        PostCaptureAction::SaveAndClipboard => {
             let clipboard_ok = do_clipboard().is_ok();
             let play = config.post_capture.play_sound;
             let show = config.ui.show_notifications;
@@ -1469,7 +1469,7 @@ fn run_post_action(
             emit_upload_success(app, &result);
             Ok(history_path)
         }
-        PostCaptureAction::PromptUser => {
+        PostCaptureAction::Prompt => {
             let clipboard_ok = do_clipboard().is_ok();
             let play = config.post_capture.play_sound;
             let show = config.ui.show_notifications;

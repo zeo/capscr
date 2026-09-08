@@ -481,40 +481,41 @@ impl Default for UiConfig {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum PostCaptureAction {
+    // one vocabulary with the take_screenshot post actions: the hub titlebar
+    // passes this value straight through, so the wire names must agree.
+    // aliases keep reading every historical spelling instead of resetting.
     #[default]
-    #[serde(alias = "SaveToFile")]
-    SaveToFile,
-    #[serde(alias = "CopyToClipboard")]
-    CopyToClipboard,
-    #[serde(alias = "SaveAndCopy")]
-    SaveAndCopy,
-    #[serde(alias = "Upload")]
+    #[serde(alias = "SaveToFile", alias = "save-to-file")]
+    SaveFile,
+    #[serde(alias = "CopyToClipboard", alias = "copy-to-clipboard")]
+    Clipboard,
+    #[serde(alias = "SaveAndCopy", alias = "save-and-copy")]
+    SaveAndClipboard,
     Upload,
-    #[serde(alias = "PromptUser")]
-    PromptUser,
-    #[serde(alias = "DoNothing")]
+    #[serde(alias = "PromptUser", alias = "prompt-user")]
+    Prompt,
     DoNothing,
 }
 
 impl PostCaptureAction {
     pub fn all() -> &'static [PostCaptureAction] {
         &[
-            PostCaptureAction::SaveToFile,
-            PostCaptureAction::CopyToClipboard,
-            PostCaptureAction::SaveAndCopy,
+            PostCaptureAction::SaveFile,
+            PostCaptureAction::Clipboard,
+            PostCaptureAction::SaveAndClipboard,
             PostCaptureAction::Upload,
-            PostCaptureAction::PromptUser,
+            PostCaptureAction::Prompt,
             PostCaptureAction::DoNothing,
         ]
     }
 
     pub fn display_name(&self) -> &'static str {
         match self {
-            PostCaptureAction::SaveToFile => "Save to file",
-            PostCaptureAction::CopyToClipboard => "Copy to clipboard",
-            PostCaptureAction::SaveAndCopy => "Save and copy",
+            PostCaptureAction::SaveFile => "Save to file",
+            PostCaptureAction::Clipboard => "Copy to clipboard",
+            PostCaptureAction::SaveAndClipboard => "Save and copy",
             PostCaptureAction::Upload => "Upload to web",
-            PostCaptureAction::PromptUser => "Ask me each time",
+            PostCaptureAction::Prompt => "Ask me each time",
             PostCaptureAction::DoNothing => "Do nothing",
         }
     }
@@ -537,7 +538,7 @@ pub struct PostCaptureConfig {
 impl Default for PostCaptureConfig {
     fn default() -> Self {
         Self {
-            action: PostCaptureAction::SaveAndCopy,
+            action: PostCaptureAction::SaveAndClipboard,
             open_file_after_save: false,
             play_sound: true,
         }
@@ -1639,8 +1640,8 @@ mod tests {
     fn post_capture_action_serializes_kebab_case() {
         // the hub titlebar passes this value straight to take_screenshot,
         // which only understands kebab-case post actions
-        let wire = serde_json::to_string(&PostCaptureAction::SaveAndCopy).unwrap();
-        assert_eq!(wire, "\"save-and-copy\"");
+        let wire = serde_json::to_string(&PostCaptureAction::SaveAndClipboard).unwrap();
+        assert_eq!(wire, "\"save-and-clipboard\"");
     }
 
     #[test]
@@ -1648,6 +1649,8 @@ mod tests {
         // configs written while the enum lacked rename_all store PascalCase;
         // keep reading those instead of resetting the field to default
         let action: PostCaptureAction = serde_json::from_str("\"SaveAndCopy\"").unwrap();
-        assert_eq!(action, PostCaptureAction::SaveAndCopy);
+        assert_eq!(action, PostCaptureAction::SaveAndClipboard);
+        let legacy: PostCaptureAction = serde_json::from_str("\"save-and-copy\"").unwrap();
+        assert_eq!(legacy, PostCaptureAction::SaveAndClipboard);
     }
 }
