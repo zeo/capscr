@@ -339,6 +339,12 @@ export function Editor() {
     } else if ((e.key === "Delete" || e.key === "Backspace") && selected() !== null) {
       e.preventDefault();
       deleteSelected();
+    } else if (e.key.startsWith("Arrow") && selected() !== null) {
+      e.preventDefault();
+      const step = e.shiftKey ? 10 : 1;
+      const dx = e.key === "ArrowLeft" ? -step : e.key === "ArrowRight" ? step : 0;
+      const dy = e.key === "ArrowUp" ? -step : e.key === "ArrowDown" ? step : 0;
+      nudgeSelected(dx, dy);
     } else if (e.key === "Escape") {
       if (selected() !== null) {
         setSelected(null);
@@ -737,11 +743,17 @@ export function Editor() {
       ctx.fill();
       return;
     }
+    // midpoint quadratic smoothing so fast strokes don't come out jagged.
+    // hit-testing still uses the raw segments, which hug this curve closely.
     ctx.beginPath();
     ctx.moveTo(points[0].x, points[0].y);
-    for (let i = 1; i < points.length; i++) {
-      ctx.lineTo(points[i].x, points[i].y);
+    for (let i = 1; i < points.length - 1; i++) {
+      const mx = (points[i].x + points[i + 1].x) / 2;
+      const my = (points[i].y + points[i + 1].y) / 2;
+      ctx.quadraticCurveTo(points[i].x, points[i].y, mx, my);
     }
+    const last = points[points.length - 1];
+    ctx.lineTo(last.x, last.y);
     ctx.stroke();
   }
 
@@ -943,6 +955,17 @@ export function Editor() {
     }
   }
 
+  function nudgeSelected(dx: number, dy: number) {
+    const i = selected();
+    if (i === null) return;
+    const cur = ops();
+    if (i < 0 || i >= cur.length) return;
+    const next = [...cur];
+    next[i] = moveOp(cur[i], dx, dy);
+    setOps(next);
+    redraw();
+  }
+
   function deleteSelected() {
     const i = selected();
     if (i === null) return;
@@ -1017,7 +1040,7 @@ export function Editor() {
     });
   }
 
-  function rotateBase() {
+  function rotateBase(dir: 1 | -1) {
     if (!baseImage || !loaded() || busy() !== null) return;
     if (textInputAt()) commitText();
     const prev = bakedDataURL();
@@ -1026,7 +1049,7 @@ export function Editor() {
     off.height = canvasRef.width;
     const ctx = off.getContext("2d")!;
     ctx.translate(off.width / 2, off.height / 2);
-    ctx.rotate(Math.PI / 2);
+    ctx.rotate(dir * Math.PI / 2);
     ctx.drawImage(canvasRef, -canvasRef.width / 2, -canvasRef.height / 2);
     pushBaseUndo(prev);
     setRedoStack([]);
@@ -1653,8 +1676,8 @@ export function Editor() {
               class="btn"
               data-variant="ghost"
               data-size="xs"
-              onClick={rotateBase}
-              title="rotate 90° clockwise"
+              onClick={(ev) => rotateBase(ev.shiftKey ? -1 : 1)}
+              title="rotate 90° clockwise (shift-click for counter-clockwise)"
               disabled={busy() !== null || !loaded()}
             >
               <RotateCw size={11} stroke-width={1.5} />
@@ -1772,9 +1795,11 @@ export function Editor() {
                   onKeyDown={(e) => {
                     if (e.key === "Enter") {
                       e.preventDefault();
+                      e.stopPropagation();
                       commitText();
                     } else if (e.key === "Escape") {
                       e.preventDefault();
+                      e.stopPropagation();
                       cancelText();
                     }
                   }}
@@ -1801,7 +1826,7 @@ export function Editor() {
         </Show>
         <span class="grow" />
         <Show when={selected() !== null}>
-          <span class="muted">shape {selected()! + 1} of {ops().length} — drag to move, del to remove, esc to deselect</span>
+          <span class="muted">shape {selected()! + 1} of {ops().length} — drag or arrow keys to move, del to remove, esc to deselect</span>
         </Show>
         <Show when={tool() === "crop"}>
           <span class="muted">drag a region — releasing applies the crop</span>
