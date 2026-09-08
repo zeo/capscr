@@ -262,6 +262,10 @@ export function Editor() {
     canvasRef.width = img.naturalWidth;
     canvasRef.height = img.naturalHeight;
     setLoaded(true);
+    setLoaded(true);
+    if (isStagedSession()) {
+      setStatus({ tone: "", msg: "annotate, then save to keep the capture." });
+    }
     redraw();
   };
   onMount(async () => {
@@ -419,6 +423,11 @@ export function Editor() {
   // truthy when there's at least one committed edit, a base transform
   // (crop / rotate / flip), or a draft mid-drag. used by the dirty-state
   // guard so Escape / the close button warn before throwing away work.
+  // annotate-before-save sessions stage under annotate-stage (see
+  // cleanup_annotate_stage in commands.rs); nothing exists outside the
+  // editor until Save mints the capture.
+  const isStagedSession = () => (imagePath() ?? "").includes("annotate-stage");
+
   const isDirty = () =>
     ops().length > 0 ||
     draft() !== null ||
@@ -428,6 +437,11 @@ export function Editor() {
 
   const confirmDiscardEdits = () => {
     if (!isDirty()) return true;
+    if (isStagedSession()) {
+      return window.confirm(
+        "Discard this annotation? Nothing has been saved yet — closing throws the capture away.",
+      );
+    }
     const msg = hasPastedContent() || hasBaseEdit()
       ? "Discard pasted image, transforms and unsaved annotations? Changes aren't written to disk until you press Save."
       : "Discard unsaved annotations? They aren't written back to disk until you press Save.";
@@ -1837,6 +1851,9 @@ export function Editor() {
         </Show>
         <Show when={tool() === "crop"}>
           <span class="muted">drag a region — releasing applies the crop</span>
+        </Show>
+        <Show when={isStagedSession()}>
+          <span class="muted">unsaved capture — save to keep it</span>
         </Show>
         <Show when={loaded() && baseImage}>
           <span class="muted">
