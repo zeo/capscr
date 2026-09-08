@@ -4,6 +4,9 @@ format follows [keep-a-changelog](https://keepachangelog.com/en/1.1.0/) loosely.
 
 ## [Unreleased]
 
+### added
+- the editor gains select/move/delete for committed shapes, a freehand pen, crop, rotate and flip (all undoable), shape fill, and adjustable pixelate strength — saving .bmp/.avif/.jxl is refused instead of writing mislabelled bytes, with copy/upload still exporting PNG
+
 ## [0.5.55] - 2026-08-08
 
 ### changed

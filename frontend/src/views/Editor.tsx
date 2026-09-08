@@ -21,10 +21,17 @@ import {
   Minus,
   CircleDashed,
   Highlighter,
+  MousePointer2,
+  PenLine,
+  Crop,
+  FlipHorizontal2,
+  FlipVertical2,
+  Trash2,
 } from "lucide-solid";
 import { Titlebar } from "../components/Titlebar";
 
 type Tool =
+  | "select"
   | "arrow"
   | "rect"
   | "text"
@@ -32,7 +39,9 @@ type Tool =
   | "step"
   | "line"
   | "ellipse"
-  | "highlight";
+  | "highlight"
+  | "pen"
+  | "crop";
 
 interface Point {
   x: number;
@@ -53,6 +62,7 @@ interface RectOp {
   size: { w: number; h: number };
   color: string;
   width: number;
+  fill: boolean;
 }
 
 interface TextOp {
@@ -92,12 +102,20 @@ interface EllipseOp {
   size: { w: number; h: number };
   color: string;
   width: number;
+  fill: boolean;
 }
 
 interface HighlightOp {
   kind: "highlight";
   from: Point;
   to: Point;
+  color: string;
+  width: number;
+}
+
+interface PenOp {
+  kind: "pen";
+  points: Point[];
   color: string;
   width: number;
 }
@@ -114,9 +132,21 @@ type Op =
   | StepOp
   | LineOp
   | EllipseOp
-  | HighlightOp;
+  | HighlightOp
+  | PenOp;
+
+interface CropDraft {
+  kind: "crop";
+  origin: Point;
+  size: { w: number; h: number };
+}
+
+type Draft = Op | CropDraft;
 
 const COLORS = ["#ef4444", "#f59e0b", "#10b981", "#3b82f6", "#a855f7", "#ffffff", "#000000"];
+
+const TEXT_FONT = (size: number, bold = false) =>
+  `${bold ? "bold " : ""}${size}px "Fira Code", "Hack", ui-monospace, monospace`;
 
 export function Editor() {
   let canvasRef!: HTMLCanvasElement;
@@ -129,12 +159,19 @@ export function Editor() {
   const [strokeWidth, setStrokeWidth] = createSignal(3);
   const [textSize, setTextSize] = createSignal(24);
   const [stepRadius, setStepRadius] = createSignal(16);
+  const [fillShapes, setFillShapes] = createSignal(false);
+  const [blurRadius, setBlurRadius] = createSignal(12);
   const [ops, setOps] = createSignal<Op[]>([]);
   const [redoStack, setRedoStack] = createSignal<Op[]>([]);
+  const [selected, setSelected] = createSignal<number | null>(null);
+  // snapshots of the baked canvas before each destructive base edit
+  // (crop / rotate / flip), so ctrl+z can walk them back. capped at 5.
+  const [baseUndo, setBaseUndo] = createSignal<string[]>([]);
+  const [hasBaseEdit, setHasBaseEdit] = createSignal(false);
   // 1.0 = fit-to-wrap (handled by CSS max-width); >1.0 = explicit pixel scale.
   const [zoom, setZoom] = createSignal(1.0);
   const ZOOM_LEVELS = [0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 4.0];
-  const [draft, setDraft] = createSignal<Op | null>(null);
+  const [draft, setDraft] = createSignal<Draft | null>(null);
   const [textInputAt, setTextInputAt] = createSignal<Point | null>(null);
   const [textBuffer, setTextBuffer] = createSignal("");
   const [busy, setBusy] = createSignal<"save" | "copy" | "upload" | null>(null);
@@ -146,20 +183,32 @@ export function Editor() {
   const [hdrSidecarPath, setHdrSidecarPath] = createSignal<string | null>(null);
 
   let dragStart: Point | null = null;
+  // active object move: the pointer grab point plus the op as it was,
+  // so each mousemove re-derives position instead of accumulating drift
+  let moveDrag: { start: Point; orig: Op } | null = null;
   let loadGeneration = 0;
 
   const win = getCurrentWindow();
+
+  const resetEditState = () => {
+    setOps([]);
+    setRedoStack([]);
+    setSelected(null);
+    setBaseUndo([]);
+    setHasBaseEdit(false);
+    setDraft(null);
+    setTextInputAt(null);
+    setTextBuffer("");
+    moveDrag = null;
+    dragStart = null;
+  };
 
   const loadImage = async (path: string) => {
     const generation = ++loadGeneration;
     const isCurrent = () => generation === loadGeneration;
     setLoaded(false);
     setStatus(null);
-    setOps([]);
-    setRedoStack([]);
-    setDraft(null);
-    setTextInputAt(null);
-    setTextBuffer("");
+    resetEditState();
     setHasPastedContent(false);
     baseImage = null;
     setIsHdrSource(false);
@@ -215,7 +264,6 @@ export function Editor() {
     setLoaded(true);
     redraw();
   };
-
   onMount(async () => {
     const generation = loadGeneration;
     const path = await invoke<string | null>("get_editor_image_path");
@@ -288,9 +336,18 @@ export function Editor() {
     } else if (mod && e.key === "0") {
       e.preventDefault();
       setZoom(1.0);
+    } else if ((e.key === "Delete" || e.key === "Backspace") && selected() !== null) {
+      e.preventDefault();
+      deleteSelected();
     } else if (e.key === "Escape") {
-      void win.close();
-    } else if (e.key === "1") setTool("arrow");
+      if (selected() !== null) {
+        setSelected(null);
+        redraw();
+      } else {
+        void win.close();
+      }
+    } else if (e.key === "v" || e.key === "V" || e.key === "0") setTool("select");
+    else if (e.key === "1") setTool("arrow");
     else if (e.key === "2") setTool("rect");
     else if (e.key === "3") {
       setTool("text");
@@ -299,6 +356,8 @@ export function Editor() {
     else if (e.key === "6") setTool("line");
     else if (e.key === "7") setTool("ellipse");
     else if (e.key === "8") setTool("highlight");
+    else if (e.key === "9") setTool("pen");
+    else if (e.key === "c" || e.key === "C") setTool("crop");
   };
 
   const onWheelZoom = (e: WheelEvent) => {
@@ -329,11 +388,7 @@ export function Editor() {
         baseImage = img;
         canvasRef.width = img.naturalWidth;
         canvasRef.height = img.naturalHeight;
-        setOps([]);
-        setRedoStack([]);
-        setDraft(null);
-        setTextInputAt(null);
-        setTextBuffer("");
+        resetEditState();
         setHasPastedContent(true);
         setIsHdrSource(false);
         setHdrSidecarPath(null);
@@ -355,19 +410,20 @@ export function Editor() {
     setStatus({ tone: "", msg: "paste: only images are accepted here — use the text tool to add text" });
   };
 
-  // truthy when there's at least one committed edit (or a draft mid-drag).
-  // used by the dirty-state guard so Escape / the close button warn before
-  // throwing away the user's work.
+  // truthy when there's at least one committed edit, a base transform
+  // (crop / rotate / flip), or a draft mid-drag. used by the dirty-state
+  // guard so Escape / the close button warn before throwing away work.
   const isDirty = () =>
     ops().length > 0 ||
     draft() !== null ||
     hasPastedContent() ||
+    hasBaseEdit() ||
     (textInputAt() !== null && textBuffer().trim().length > 0);
 
   const confirmDiscardEdits = () => {
     if (!isDirty()) return true;
-    const msg = hasPastedContent()
-      ? "Discard pasted image and unsaved annotations? Changes aren't written to disk until you press Save."
+    const msg = hasPastedContent() || hasBaseEdit()
+      ? "Discard pasted image, transforms and unsaved annotations? Changes aren't written to disk until you press Save."
       : "Discard unsaved annotations? They aren't written back to disk until you press Save.";
     return window.confirm(msg);
   };
@@ -515,7 +571,15 @@ export function Editor() {
       renderOp(ctx, op);
     }
     const d = draft();
-    if (d) renderOp(ctx, d);
+    if (d) {
+      if (d.kind === "crop") drawCropDraft(ctx, d);
+      else renderOp(ctx, d);
+    }
+    const sel = selected();
+    if (sel !== null) {
+      const op = ops()[sel];
+      if (op) drawSelection(ctx, op);
+    }
   }
 
   function renderOp(ctx: CanvasRenderingContext2D, op: Op) {
@@ -523,15 +587,23 @@ export function Editor() {
       case "arrow":
         drawArrow(ctx, op.from, op.to, op.color, op.width);
         break;
-      case "rect":
+      case "rect": {
+        if (op.fill) {
+          ctx.save();
+          ctx.globalAlpha = 0.28;
+          ctx.fillStyle = op.color;
+          ctx.fillRect(op.origin.x, op.origin.y, op.size.w, op.size.h);
+          ctx.restore();
+        }
         ctx.strokeStyle = op.color;
         ctx.lineWidth = op.width;
         ctx.lineJoin = "miter";
         ctx.strokeRect(op.origin.x, op.origin.y, op.size.w, op.size.h);
         break;
+      }
       case "text":
         ctx.fillStyle = op.color;
-        ctx.font = `${op.fontSize}px "Fira Code", "Hack", ui-monospace, monospace`;
+        ctx.font = TEXT_FONT(op.fontSize);
         ctx.textBaseline = "top";
         // black shadow for legibility
         ctx.shadowColor = "rgba(0,0,0,0.85)";
@@ -560,10 +632,17 @@ export function Editor() {
         const cy = op.origin.y + op.size.h / 2;
         const rx = Math.abs(op.size.w) / 2;
         const ry = Math.abs(op.size.h) / 2;
-        ctx.strokeStyle = op.color;
-        ctx.lineWidth = op.width;
         ctx.beginPath();
         ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
+        if (op.fill) {
+          ctx.save();
+          ctx.globalAlpha = 0.28;
+          ctx.fillStyle = op.color;
+          ctx.fill();
+          ctx.restore();
+        }
+        ctx.strokeStyle = op.color;
+        ctx.lineWidth = op.width;
         ctx.stroke();
         break;
       }
@@ -581,9 +660,11 @@ export function Editor() {
         ctx.stroke();
         ctx.restore();
         break;
+      case "pen":
+        drawPen(ctx, op.points, op.color, op.width);
+        break;
     }
   }
-
   function drawStep(ctx: CanvasRenderingContext2D, op: StepOp) {
     const r = op.radius;
     ctx.beginPath();
@@ -597,7 +678,7 @@ export function Editor() {
     const label = String(op.number);
     // white text on the colored disk
     ctx.fillStyle = "#ffffff";
-    ctx.font = `bold ${Math.round(r * 1.1)}px "Fira Code", "Hack", ui-monospace, monospace`;
+    ctx.font = TEXT_FONT(Math.round(r * 1.1), true);
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
     ctx.shadowColor = "rgba(0,0,0,0.65)";
@@ -643,6 +724,50 @@ export function Editor() {
     ctx.fill();
   }
 
+  function drawPen(ctx: CanvasRenderingContext2D, points: Point[], col: string, w: number) {
+    if (points.length === 0) return;
+    ctx.strokeStyle = col;
+    ctx.fillStyle = col;
+    ctx.lineWidth = w;
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    if (points.length === 1) {
+      ctx.beginPath();
+      ctx.arc(points[0].x, points[0].y, Math.max(1, w / 2), 0, Math.PI * 2);
+      ctx.fill();
+      return;
+    }
+    ctx.beginPath();
+    ctx.moveTo(points[0].x, points[0].y);
+    for (let i = 1; i < points.length; i++) {
+      ctx.lineTo(points[i].x, points[i].y);
+    }
+    ctx.stroke();
+  }
+
+  function drawCropDraft(ctx: CanvasRenderingContext2D, d: CropDraft) {
+    // dim everything outside the crop, dashed outline on the kept region
+    ctx.save();
+    ctx.fillStyle = "rgba(0,0,0,0.55)";
+    const { x, y } = d.origin;
+    const { w, h } = d.size;
+    const cw = ctx.canvas.width;
+    const ch = ctx.canvas.height;
+    ctx.fillRect(0, 0, cw, y);
+    ctx.fillRect(0, y + h, cw, ch - y - h);
+    ctx.fillRect(0, y, x, h);
+    ctx.fillRect(x + w, y, cw - x - w, h);
+    ctx.restore();
+    ctx.save();
+    ctx.strokeStyle = "#ffffff";
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([8, 5]);
+    ctx.shadowColor = "rgba(0,0,0,0.8)";
+    ctx.shadowBlur = 4;
+    ctx.strokeRect(x, y, w, h);
+    ctx.restore();
+  }
+
   function applyBlur(ctx: CanvasRenderingContext2D, op: BlurOp) {
     const canvasW = ctx.canvas.width;
     const canvasH = ctx.canvas.height;
@@ -654,7 +779,7 @@ export function Editor() {
     const h = Math.max(1, Math.min(Math.floor(op.size.h), canvasH - y));
     if (w <= 0 || h <= 0) return;
 
-    // use a pixelate-style mosaic — it's faster and more privacy-safe than a true blur.
+    // use a pixelate-style mosaic — it is faster and more privacy-safe than a true blur.
     const cell = Math.max(4, op.radius);
     const cols = Math.ceil(w / cell);
     const rows = Math.ceil(h / cell);
@@ -678,18 +803,296 @@ export function Editor() {
     }
   }
 
+  // ---------- object selection: hit-testing, bounding boxes, moving ----------
+
+  function distToSegment(p: Point, a: Point, b: Point): number {
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const lenSq = dx * dx + dy * dy;
+    let t = 0;
+    if (lenSq > 0) {
+      t = Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / lenSq));
+    }
+    return Math.hypot(p.x - (a.x + t * dx), p.y - (a.y + t * dy));
+  }
+
+  function bboxOf(ctx: CanvasRenderingContext2D, op: Op): { x: number; y: number; w: number; h: number } {
+    switch (op.kind) {
+      case "arrow":
+      case "line":
+      case "highlight": {
+        const pad = op.width / 2 + 4;
+        return {
+          x: Math.min(op.from.x, op.to.x) - pad,
+          y: Math.min(op.from.y, op.to.y) - pad,
+          w: Math.abs(op.to.x - op.from.x) + pad * 2,
+          h: Math.abs(op.to.y - op.from.y) + pad * 2,
+        };
+      }
+      case "rect":
+      case "blur":
+      case "ellipse": {
+        const x = Math.min(op.origin.x, op.origin.x + op.size.w);
+        const y = Math.min(op.origin.y, op.origin.y + op.size.h);
+        return { x: x - 4, y: y - 4, w: Math.abs(op.size.w) + 8, h: Math.abs(op.size.h) + 8 };
+      }
+      case "pen": {
+        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+        for (const p of op.points) {
+          minX = Math.min(minX, p.x);
+          minY = Math.min(minY, p.y);
+          maxX = Math.max(maxX, p.x);
+          maxY = Math.max(maxY, p.y);
+        }
+        const pad = op.width / 2 + 4;
+        return { x: minX - pad, y: minY - pad, w: maxX - minX + pad * 2, h: maxY - minY + pad * 2 };
+      }
+      case "text": {
+        ctx.save();
+        ctx.font = TEXT_FONT(op.fontSize);
+        const w = ctx.measureText(op.text).width;
+        ctx.restore();
+        return { x: op.origin.x - 4, y: op.origin.y - 4, w: w + 8, h: op.fontSize * 1.25 + 8 };
+      }
+      case "step": {
+        const pad = op.radius + 4;
+        return { x: op.center.x - pad, y: op.center.y - pad, w: pad * 2, h: pad * 2 };
+      }
+    }
+  }
+
+  function hitTest(ctx: CanvasRenderingContext2D, op: Op, p: Point): boolean {
+    switch (op.kind) {
+      case "arrow":
+      case "line":
+      case "highlight":
+        return distToSegment(p, op.from, op.to) <= Math.max(6, op.width / 2 + 3);
+      case "pen": {
+        const tol = Math.max(8, op.width / 2 + 2);
+        const pts = op.points;
+        if (pts.length === 1) return Math.hypot(p.x - pts[0].x, p.y - pts[0].y) <= tol;
+        for (let i = 1; i < pts.length; i++) {
+          if (distToSegment(p, pts[i - 1], pts[i]) <= tol) return true;
+        }
+        return false;
+      }
+      case "rect":
+      case "blur": {
+        const b = bboxOf(ctx, op);
+        return p.x >= b.x && p.x <= b.x + b.w && p.y >= b.y && p.y <= b.y + b.h;
+      }
+      case "ellipse": {
+        const cx = op.origin.x + op.size.w / 2;
+        const cy = op.origin.y + op.size.h / 2;
+        const rx = Math.abs(op.size.w) / 2 + 4;
+        const ry = Math.abs(op.size.h) / 2 + 4;
+        if (rx <= 0 || ry <= 0) return false;
+        return ((p.x - cx) / rx) ** 2 + ((p.y - cy) / ry) ** 2 <= 1;
+      }
+      case "text": {
+        const b = bboxOf(ctx, op);
+        return p.x >= b.x && p.x <= b.x + b.w && p.y >= b.y && p.y <= b.y + b.h;
+      }
+      case "step":
+        return Math.hypot(p.x - op.center.x, p.y - op.center.y) <= op.radius + 4;
+    }
+  }
+
+  function hitTestTop(p: Point): number | null {
+    const ctx = canvasRef.getContext("2d");
+    if (!ctx) return null;
+    const list = ops();
+    for (let i = list.length - 1; i >= 0; i--) {
+      if (hitTest(ctx, list[i], p)) return i;
+    }
+    return null;
+  }
+
+  function drawSelection(ctx: CanvasRenderingContext2D, op: Op) {
+    const b = bboxOf(ctx, op);
+    ctx.save();
+    ctx.strokeStyle = "#ffffff";
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([7, 5]);
+    ctx.shadowColor = "rgba(0,0,0,0.9)";
+    ctx.shadowBlur = 4;
+    ctx.strokeRect(b.x, b.y, b.w, b.h);
+    ctx.restore();
+  }
+
+  function moveOp(op: Op, dx: number, dy: number): Op {
+    switch (op.kind) {
+      case "arrow":
+      case "line":
+      case "highlight":
+        return {
+          ...op,
+          from: { x: op.from.x + dx, y: op.from.y + dy },
+          to: { x: op.to.x + dx, y: op.to.y + dy },
+        };
+      case "rect":
+      case "blur":
+      case "ellipse":
+        return { ...op, origin: { x: op.origin.x + dx, y: op.origin.y + dy } };
+      case "text":
+        return { ...op, origin: { x: op.origin.x + dx, y: op.origin.y + dy } };
+      case "step":
+        return { ...op, center: { x: op.center.x + dx, y: op.center.y + dy } };
+      case "pen":
+        return { ...op, points: op.points.map((p) => ({ x: p.x + dx, y: p.y + dy })) };
+    }
+  }
+
+  function deleteSelected() {
+    const i = selected();
+    if (i === null) return;
+    const cur = ops();
+    if (i < 0 || i >= cur.length) {
+      setSelected(null);
+      redraw();
+      return;
+    }
+    setRedoStack([...redoStack(), cur[i]]);
+    setOps(cur.filter((_, j) => j !== i));
+    setSelected(null);
+    redraw();
+  }
+
+  // ---------- destructive base edits: crop / rotate / flip ----------
+
+  // the canvas already shows base + committed ops, so its bitmap is the
+  // baked pre-edit state — snapshot it for undo before transforming.
+  function bakedDataURL(): string {
+    redraw();
+    return canvasRef.toDataURL("image/png");
+  }
+
+  function pushBaseUndo(url: string) {
+    setBaseUndo([...baseUndo(), url].slice(-5));
+  }
+
+  function replaceBaseWith(url: string, w: number, h: number): Promise<void> {
+    const img = new Image();
+    img.src = url;
+    return img.decode().then(() => {
+      baseImage = img;
+      canvasRef.width = w;
+      canvasRef.height = h;
+      setOps([]);
+      setRedoStack([]);
+      setDraft(null);
+      setSelected(null);
+      moveDrag = null;
+      dragStart = null;
+      setHasBaseEdit(true);
+      redraw();
+    }).catch((e) => {
+      setStatus({ tone: "err", msg: `transform failed: ${e}` });
+    });
+  }
+
+  function applyCrop(origin: Point, size: { w: number; h: number }) {
+    const cw = canvasRef.width;
+    const ch = canvasRef.height;
+    const x = Math.max(0, Math.min(Math.round(origin.x), cw - 1));
+    const y = Math.max(0, Math.min(Math.round(origin.y), ch - 1));
+    const w = Math.max(1, Math.min(Math.round(size.w), cw - x));
+    const h = Math.max(1, Math.min(Math.round(size.h), ch - y));
+    if (w < 10 || h < 10) {
+      setStatus({ tone: "", msg: "crop region too small — drag a larger area." });
+      setDraft(null);
+      redraw();
+      return;
+    }
+    const prev = bakedDataURL();
+    const off = document.createElement("canvas");
+    off.width = w;
+    off.height = h;
+    off.getContext("2d")!.drawImage(canvasRef, x, y, w, h, 0, 0, w, h);
+    pushBaseUndo(prev);
+    setRedoStack([]);
+    setDraft(null);
+    void replaceBaseWith(off.toDataURL("image/png"), w, h).then(() => {
+      setStatus({ tone: "ok", msg: `cropped to ${w} × ${h} — ctrl+z walks it back.` });
+    });
+  }
+
+  function rotateBase() {
+    if (!baseImage || !loaded() || busy() !== null) return;
+    if (textInputAt()) commitText();
+    const prev = bakedDataURL();
+    const off = document.createElement("canvas");
+    off.width = canvasRef.height;
+    off.height = canvasRef.width;
+    const ctx = off.getContext("2d")!;
+    ctx.translate(off.width / 2, off.height / 2);
+    ctx.rotate(Math.PI / 2);
+    ctx.drawImage(canvasRef, -canvasRef.width / 2, -canvasRef.height / 2);
+    pushBaseUndo(prev);
+    setRedoStack([]);
+    void replaceBaseWith(off.toDataURL("image/png"), off.width, off.height);
+  }
+
+  function flipBase(horizontal: boolean) {
+    if (!baseImage || !loaded() || busy() !== null) return;
+    if (textInputAt()) commitText();
+    const prev = bakedDataURL();
+    const off = document.createElement("canvas");
+    off.width = canvasRef.width;
+    off.height = canvasRef.height;
+    const ctx = off.getContext("2d")!;
+    ctx.translate(horizontal ? off.width : 0, horizontal ? 0 : off.height);
+    ctx.scale(horizontal ? -1 : 1, horizontal ? 1 : -1);
+    ctx.drawImage(canvasRef, 0, 0);
+    pushBaseUndo(prev);
+    setRedoStack([]);
+    void replaceBaseWith(off.toDataURL("image/png"), off.width, off.height);
+  }
+
+  function restoreBaseSnapshot(url: string, rest: string[]) {
+    const img = new Image();
+    img.src = url;
+    img.decode().then(() => {
+      baseImage = img;
+      canvasRef.width = img.naturalWidth;
+      canvasRef.height = img.naturalHeight;
+      setOps([]);
+      setRedoStack([]);
+      setDraft(null);
+      setSelected(null);
+      setBaseUndo(rest);
+      setHasBaseEdit(rest.length > 0 || hasPastedContent());
+      redraw();
+    }).catch((e) => {
+      setStatus({ tone: "err", msg: `undo failed: ${e}` });
+    });
+  }
   function onMouseDown(e: MouseEvent) {
-    if (!loaded()) return;
+    if (!loaded() || busy() !== null) return;
     if (textInputAt()) return;
     const p = pointFromEvent(e);
     const t = tool();
+    if (t === "select") {
+      const idx = hitTestTop(p);
+      if (idx === null) {
+        if (selected() !== null) {
+          setSelected(null);
+          redraw();
+        }
+        return;
+      }
+      setSelected(idx);
+      moveDrag = { start: p, orig: ops()[idx] };
+      redraw();
+      return;
+    }
     dragStart = p;
     if (t === "arrow") {
       setDraft({ kind: "arrow", from: p, to: p, color: color(), width: strokeWidth() });
     } else if (t === "rect") {
-      setDraft({ kind: "rect", origin: p, size: { w: 0, h: 0 }, color: color(), width: strokeWidth() });
+      setDraft({ kind: "rect", origin: p, size: { w: 0, h: 0 }, color: color(), width: strokeWidth(), fill: fillShapes() });
     } else if (t === "blur") {
-      setDraft({ kind: "blur", origin: p, size: { w: 0, h: 0 }, radius: 12 });
+      setDraft({ kind: "blur", origin: p, size: { w: 0, h: 0 }, radius: blurRadius() });
     } else if (t === "line") {
       setDraft({ kind: "line", from: p, to: p, color: color(), width: strokeWidth() });
     } else if (t === "ellipse") {
@@ -699,6 +1102,7 @@ export function Editor() {
         size: { w: 0, h: 0 },
         color: color(),
         width: strokeWidth(),
+        fill: fillShapes(),
       });
     } else if (t === "highlight") {
       // 3x default stroke so the marker actually feels like a highlighter
@@ -709,6 +1113,10 @@ export function Editor() {
         color: color(),
         width: Math.max(8, strokeWidth() * 4),
       });
+    } else if (t === "pen") {
+      setDraft({ kind: "pen", points: [p], color: color(), width: strokeWidth() });
+    } else if (t === "crop") {
+      setDraft({ kind: "crop", origin: p, size: { w: 0, h: 0 } });
     } else if (t === "text") {
       setTextInputAt(p);
       setTextBuffer("");
@@ -730,6 +1138,7 @@ export function Editor() {
       };
       setOps([...ops(), op]);
       setRedoStack([]);
+      setSelected(ops().length - 1);
       dragStart = null;
       redraw();
     }
@@ -744,13 +1153,38 @@ export function Editor() {
   }
 
   function onMouseMove(e: MouseEvent) {
+    if (moveDrag) {
+      if (tool() !== "select") {
+        moveDrag = null;
+        return;
+      }
+      const p = pointFromEvent(e);
+      const dx = p.x - moveDrag.start.x;
+      const dy = p.y - moveDrag.start.y;
+      if (dx === 0 && dy === 0) return;
+      const idx = selected();
+      if (idx === null) {
+        moveDrag = null;
+        return;
+      }
+      const next = [...ops()];
+      next[idx] = moveOp(moveDrag.orig, dx, dy);
+      setOps(next);
+      redraw();
+      return;
+    }
     if (!dragStart) return;
     const p = pointFromEvent(e);
     const d = draft();
     if (!d) return;
     if (d.kind === "arrow" || d.kind === "line" || d.kind === "highlight") {
       setDraft({ ...d, to: p });
-    } else if (d.kind === "rect" || d.kind === "blur" || d.kind === "ellipse") {
+    } else if (d.kind === "pen") {
+      const last = d.points[d.points.length - 1];
+      // skip sub-pixel jitter so long strokes stay small in memory
+      if (Math.hypot(p.x - last.x, p.y - last.y) < 2) return;
+      setDraft({ ...d, points: [...d.points, p] });
+    } else if (d.kind === "rect" || d.kind === "blur" || d.kind === "ellipse" || d.kind === "crop") {
       const ox = Math.min(dragStart.x, p.x);
       const oy = Math.min(dragStart.y, p.y);
       const w = Math.abs(p.x - dragStart.x);
@@ -761,9 +1195,18 @@ export function Editor() {
   }
 
   function onMouseUp() {
+    if (moveDrag) {
+      moveDrag = null;
+      return;
+    }
     const d = draft();
     dragStart = null;
     if (!d) return;
+    if (d.kind === "crop") {
+      setDraft(null);
+      applyCrop(d.origin, d.size);
+      return;
+    }
     // discard zero-size drafts
     if (d.kind === "arrow" || d.kind === "line" || d.kind === "highlight") {
       const dx = d.to.x - d.from.x;
@@ -781,8 +1224,14 @@ export function Editor() {
         return;
       }
     }
+    if (d.kind === "pen" && d.points.length === 0) {
+      setDraft(null);
+      redraw();
+      return;
+    }
     setOps([...ops(), d]);
     setRedoStack([]);
+    setSelected(ops().length - 1);
     setDraft(null);
     redraw();
   }
@@ -796,6 +1245,7 @@ export function Editor() {
         { kind: "text", origin: at, text: t, color: color(), fontSize: textSize() },
       ]);
       setRedoStack([]);
+      setSelected(ops().length - 1);
     }
     setTextInputAt(null);
     setTextBuffer("");
@@ -809,11 +1259,19 @@ export function Editor() {
 
   function undo() {
     const cur = ops();
-    if (cur.length === 0) return;
-    const last = cur[cur.length - 1];
-    setOps(cur.slice(0, -1));
-    setRedoStack([...redoStack(), last]);
-    redraw();
+    if (cur.length > 0) {
+      const last = cur[cur.length - 1];
+      setOps(cur.slice(0, -1));
+      setRedoStack([...redoStack(), last]);
+      if (selected() !== null && selected()! >= cur.length - 1) setSelected(null);
+      redraw();
+      return;
+    }
+    // no ops left — walk back the last destructive base edit instead,
+    // so crop / rotate / flip don't feel permanent.
+    const snaps = baseUndo();
+    if (snaps.length === 0) return;
+    restoreBaseSnapshot(snaps[snaps.length - 1], snaps.slice(0, -1));
   }
 
   function redo() {
@@ -822,10 +1280,11 @@ export function Editor() {
     const next = stack[stack.length - 1];
     setRedoStack(stack.slice(0, -1));
     setOps([...ops(), next]);
+    setSelected(ops().length - 1);
     redraw();
   }
 
-  function targetMime(): string {
+  function targetMime(): string | null {
     const path = imagePath() ?? "";
     const ext = path.split(".").pop()?.toLowerCase() ?? "png";
     switch (ext) {
@@ -834,11 +1293,19 @@ export function Editor() {
         return "image/jpeg";
       case "webp":
         return "image/webp";
-      // bmp and gif aren't first-class encoders in browsers; fall through to png
-      // to avoid silently writing wrong bytes to an extension we can't honour.
-      default:
+      case "png":
         return "image/png";
+      // bmp / avif / jxl have no browser encoder — writing PNG bytes under
+      // those extensions would silently corrupt the file, so refuse and let
+      // copy / upload (which always export PNG) carry the image out instead.
+      default:
+        return null;
     }
+  }
+
+  function targetExt(): string {
+    const path = imagePath() ?? "";
+    return path.split(".").pop()?.toLowerCase() ?? "png";
   }
 
   async function exportBytes(mime: string): Promise<Uint8Array> {
@@ -855,18 +1322,26 @@ export function Editor() {
   async function onSave() {
     const path = imagePath();
     if (!path) return;
+    const mime = targetMime();
+    if (!mime) {
+      setStatus({
+        tone: "err",
+        msg: `saving .${targetExt()} isn't supported in the editor — use copy or upload to export as PNG.`,
+      });
+      return;
+    }
     setBusy("save");
     setStatus({ tone: "", msg: "writing..." });
     try {
       // encode in the source file's format so we don't write PNG bytes to a
       // .jpg path (which would silently corrupt the file for downstream
       // consumers that trust the extension).
-      const bytes = await exportBytes(targetMime());
+      const bytes = await exportBytes(mime);
       await invoke<void>("save_edited_image", {
         bytes: Array.from(bytes),
         targetPath: path,
       });
-      setOps([]);
+      resetEditState();
       setHasPastedContent(false);
       setStatus({ tone: "ok", msg: "saved." });
       setTimeout(() => void win.close(), 400);
@@ -881,7 +1356,7 @@ export function Editor() {
     setBusy("copy");
     setStatus({ tone: "", msg: "copying..." });
     try {
-      // clipboard always wants PNG — that's what the Rust ClipboardManager
+      // clipboard always wants PNG — that is what the Rust ClipboardManager
       // expects to decode.
       const bytes = await exportBytes("image/png");
       await invoke<void>("copy_edited_image_to_clipboard", {
@@ -913,13 +1388,21 @@ export function Editor() {
       setBusy(null);
     }
   }
-
   return (
     <div class="editor">
       <Titlebar context="edit" />
 
       <div class="editor-toolbar">
         <div class="editor-tools">
+          <button
+            type="button"
+            class="tool"
+            classList={{ "is-active": tool() === "select" }}
+            onClick={() => setTool("select")}
+            title="select / move (v)"
+          >
+            <MousePointer2 size={14} stroke-width={1.5} />
+          </button>
           <button
             type="button"
             class="tool"
@@ -992,6 +1475,24 @@ export function Editor() {
           >
             <Highlighter size={14} stroke-width={1.5} />
           </button>
+          <button
+            type="button"
+            class="tool"
+            classList={{ "is-active": tool() === "pen" }}
+            onClick={() => setTool("pen")}
+            title="freehand pen (9)"
+          >
+            <PenLine size={14} stroke-width={1.5} />
+          </button>
+          <button
+            type="button"
+            class="tool"
+            classList={{ "is-active": tool() === "crop" }}
+            onClick={() => setTool("crop")}
+            title="crop (c)"
+          >
+            <Crop size={14} stroke-width={1.5} />
+          </button>
         </div>
 
         <div class="editor-colors">
@@ -1016,7 +1517,8 @@ export function Editor() {
               tool() === "rect" ||
               tool() === "line" ||
               tool() === "ellipse" ||
-              tool() === "highlight"
+              tool() === "highlight" ||
+              tool() === "pen"
             }
           >
             <label class="ctrl">
@@ -1031,6 +1533,16 @@ export function Editor() {
               <span class="ctrl-val">{strokeWidth()}</span>
             </label>
           </Show>
+          <Show when={tool() === "rect" || tool() === "ellipse"}>
+            <label class="ctrl">
+              <input
+                type="checkbox"
+                checked={fillShapes()}
+                onChange={(e) => setFillShapes(e.currentTarget.checked)}
+              />
+              <span>fill</span>
+            </label>
+          </Show>
           <Show when={tool() === "text"}>
             <label class="ctrl">
               <span>size</span>
@@ -1042,6 +1554,19 @@ export function Editor() {
                 onInput={(e) => setTextSize(parseInt(e.currentTarget.value))}
               />
               <span class="ctrl-val">{textSize()}</span>
+            </label>
+          </Show>
+          <Show when={tool() === "blur"}>
+            <label class="ctrl">
+              <span>block</span>
+              <input
+                type="range"
+                min={4}
+                max={40}
+                value={blurRadius()}
+                onInput={(e) => setBlurRadius(parseInt(e.currentTarget.value))}
+              />
+              <span class="ctrl-val">{blurRadius()}</span>
             </label>
           </Show>
           <Show when={tool() === "step"}>
@@ -1065,7 +1590,7 @@ export function Editor() {
             data-variant="ghost"
             onClick={undo}
             title="ctrl+z"
-            disabled={ops().length === 0}
+            disabled={ops().length === 0 && baseUndo().length === 0}
           >
             <RotateCcw size={12} stroke-width={1.5} />
             undo
@@ -1080,6 +1605,17 @@ export function Editor() {
             <RotateCw size={12} stroke-width={1.5} />
             redo
           </button>
+          <Show when={selected() !== null}>
+            <button
+              class="btn"
+              data-variant="ghost"
+              onClick={deleteSelected}
+              title="del"
+            >
+              <Trash2 size={12} stroke-width={1.5} />
+              delete
+            </button>
+          </Show>
           <span class="editor-zoom-group">
             <button
               class="btn"
@@ -1110,6 +1646,38 @@ export function Editor() {
               disabled={zoom() >= ZOOM_LEVELS[ZOOM_LEVELS.length - 1]}
             >
               <ZoomIn size={11} stroke-width={1.5} />
+            </button>
+          </span>
+          <span class="editor-transform-group">
+            <button
+              class="btn"
+              data-variant="ghost"
+              data-size="xs"
+              onClick={rotateBase}
+              title="rotate 90° clockwise"
+              disabled={busy() !== null || !loaded()}
+            >
+              <RotateCw size={11} stroke-width={1.5} />
+            </button>
+            <button
+              class="btn"
+              data-variant="ghost"
+              data-size="xs"
+              onClick={() => flipBase(true)}
+              title="flip horizontal"
+              disabled={busy() !== null || !loaded()}
+            >
+              <FlipHorizontal2 size={11} stroke-width={1.5} />
+            </button>
+            <button
+              class="btn"
+              data-variant="ghost"
+              data-size="xs"
+              onClick={() => flipBase(false)}
+              title="flip vertical"
+              disabled={busy() !== null || !loaded()}
+            >
+              <FlipVertical2 size={11} stroke-width={1.5} />
             </button>
           </span>
           <button class="btn" onClick={onSave} disabled={busy() !== null || !loaded()}>
@@ -1232,6 +1800,12 @@ export function Editor() {
           </span>
         </Show>
         <span class="grow" />
+        <Show when={selected() !== null}>
+          <span class="muted">shape {selected()! + 1} of {ops().length} — drag to move, del to remove, esc to deselect</span>
+        </Show>
+        <Show when={tool() === "crop"}>
+          <span class="muted">drag a region — releasing applies the crop</span>
+        </Show>
         <Show when={loaded() && baseImage}>
           <span class="muted">
             {baseImage!.naturalWidth} × {baseImage!.naturalHeight}

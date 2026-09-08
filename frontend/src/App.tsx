@@ -666,10 +666,14 @@ function Hub() {
               </div>
               <div class="shortcuts-group">
                 <span class="shortcuts-group-label">editor</span>
+                <div class="shortcuts-row"><kbd>V</kbd><span>select / move tool</span></div>
                 <div class="shortcuts-row"><kbd>1</kbd><span>arrow tool</span></div>
                 <div class="shortcuts-row"><kbd>2</kbd><span>rect tool</span></div>
                 <div class="shortcuts-row"><kbd>3</kbd><span>text tool</span></div>
                 <div class="shortcuts-row"><kbd>4</kbd><span>blur tool</span></div>
+                <div class="shortcuts-row"><kbd>5</kbd>–<kbd>9</kbd><span>step / line / ellipse / highlighter / pen</span></div>
+                <div class="shortcuts-row"><kbd>C</kbd><span>crop tool</span></div>
+                <div class="shortcuts-row"><kbd>Del</kbd><span>remove selected shape</span></div>
                 <div class="shortcuts-row"><kbd>Ctrl</kbd>+<kbd>Z</kbd><span>undo</span></div>
                 <div class="shortcuts-row"><kbd>Ctrl</kbd>+<kbd>Y</kbd><span>redo</span></div>
                 <div class="shortcuts-row"><kbd>Ctrl</kbd>+<kbd>V</kbd><span>paste image from clipboard</span></div>

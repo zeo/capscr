@@ -2539,3 +2539,24 @@ kbd {
 .recbar-stop:hover {
   background: var(--ink-5);
 }
+
+.editor-canvas[data-tool="select"] {
+  cursor: default;
+}
+
+.editor-canvas[data-tool="crop"] {
+  cursor: nwse-resize;
+}
+
+.editor-transform-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 0 6px;
+  border-left: 1px solid var(--rule-2);
+  margin-left: 2px;
+}
+
+.editor-controls .ctrl input[type="checkbox"] {
+  accent-color: var(--paper);
+}
