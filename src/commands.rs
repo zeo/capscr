@@ -2850,17 +2850,17 @@ mod annotate_stage_tests {
         let stage = Path::new("/cache/annotate-stage");
         assert!(is_annotate_staged_path(
             stage,
-            &Path::new("/cache/annotate-stage/annotate-abc.png")
+            Path::new("/cache/annotate-stage/annotate-abc.png")
         ));
         assert!(is_annotate_staged_path(
             stage,
-            &Path::new("/cache/annotate-stage/sub/annotate-abc.png")
+            Path::new("/cache/annotate-stage/sub/annotate-abc.png")
         ));
-        assert!(!is_annotate_staged_path(stage, &Path::new("/cache/other.png")));
+        assert!(!is_annotate_staged_path(stage, Path::new("/cache/other.png")));
         // component-wise matching: a sibling dir sharing the prefix is not inside
         assert!(!is_annotate_staged_path(
             stage,
-            &Path::new("/cache/annotate-stage-evil/annotate-abc.png")
+            Path::new("/cache/annotate-stage-evil/annotate-abc.png")
         ));
     }
 
