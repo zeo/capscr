@@ -4,12 +4,19 @@ format follows [keep-a-changelog](https://keepachangelog.com/en/1.1.0/) loosely.
 
 ## [Unreleased]
 
+## [0.5.56] - 2026-09-09
+
 ### added
 - the editor gains select/move/delete for committed shapes, a freehand pen, crop, rotate and flip (all undoable), shape fill, and adjustable pixelate strength — saving .bmp/.avif/.jxl is refused instead of writing mislabelled bytes, with copy/upload still exporting PNG
-- the tray capture menu gains a region-into-editor entry, so a shot can go straight to annotating without a dedicated task
-- the global post-capture action speaks the same kebab-case as take_screenshot again (titlebar quick captures work), old configs keep loading, and settings exposes it as an after-capture choice
 - tasks gain an annotate post-action: the shot opens in the editor without saving first, and saving there mints the capture (closing without saving discards it)
-- restored kebab-case serialization for the global post-capture action while still reading the PascalCase values written in between, and taught take_screenshot to accept the global action vocabulary outright (titlebar quick captures were rejected by the backend)
+- the tray capture menu gains a region-into-editor entry, so a shot can go straight to annotating without a dedicated task
+- settings exposes the global post-capture action as an after-capture choice for the titlebar quick captures
+
+### fixed
+- the global post-capture action speaks the same kebab-case as take_screenshot again, with every historical spelling still loading — titlebar quick captures were rejected by the backend
+- save, copy and upload in the editor commit pending text first instead of silently dropping it
+- staged annotation saves re-encode to the configured output format instead of writing mislabelled bytes
+- pixelate renders in one read-modify-write pass instead of stalling on per-cell reads
 
 ## [0.5.55] - 2026-08-08
 
