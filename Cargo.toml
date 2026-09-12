@@ -99,7 +99,7 @@ uuid = { version = "1.0", features = ["v4"] }
 # build stays small while we iterate on the host API.
 zip = "8"
 semver = "1.0"
-wasmtime = { version = "47", default-features = false, features = ["cranelift", "runtime", "std"], optional = true }
+wasmtime = { version = "48", default-features = false, features = ["cranelift", "runtime", "std"], optional = true }
 
 # Marketplace integrity — sha256 of plugin payload + hex en/decode for the
 # manifest entry. Both already transitive; pinning them as direct deps so the
