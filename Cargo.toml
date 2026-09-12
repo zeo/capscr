@@ -104,7 +104,7 @@ wasmtime = { version = "47", default-features = false, features = ["cranelift", 
 # Marketplace integrity — sha256 of plugin payload + hex en/decode for the
 # manifest entry. Both already transitive; pinning them as direct deps so the
 # marketplace path doesn't break on upstream churn.
-sha2 = "0.10"
+sha2 = "0.11"
 hex = "0.4"
 
 # upload destinations: SFTP via russh under the `sftp` feature
