@@ -1110,6 +1110,9 @@ mod tests {
     fn capture_one_monitor_matches_reported_dimensions() {
         // no-ops headless (no display -> list_monitors errs); with a display it
         // proves the per-monitor grab returns pixels at the reported size
+        // the test harness skips main, and an unaware process gets scaled monitor
+        // sizes until windows adds a HIGHDPIAWARE layer after the build's first run
+        crate::set_dpi_awareness();
         let monitors = match list_monitors() {
             Ok(m) => m,
             Err(e) => {
