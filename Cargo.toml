@@ -194,6 +194,7 @@ windows = { version = "0.58", features = [
     "Storage_Streams",
 ] }
 wasapi = "0.17"
+hdrkit = { git = "https://github.com/zeo/hdrkit", rev = "389f9e7dfa7dfd2a05db019cf1b482ffe3527db8" }
 
 
 [build-dependencies]

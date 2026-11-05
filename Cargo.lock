@@ -786,6 +786,7 @@ dependencies = [
  "gif",
  "global-hotkey",
  "gtk",
+ "hdrkit",
  "hex",
  "hmac 0.12.1",
  "image",
@@ -2874,6 +2875,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "hdrkit"
+version = "0.1.0"
+source = "git+https://github.com/zeo/hdrkit?rev=389f9e7dfa7dfd2a05db019cf1b482ffe3527db8#389f9e7dfa7dfd2a05db019cf1b482ffe3527db8"
+dependencies = [
+ "windows 0.62.2",
+]
+
+[[package]]
 name = "heck"
 version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3070,7 +3079,7 @@ dependencies = [
  "js-sys",
  "log",
  "wasm-bindgen",
- "windows-core 0.62.2",
+ "windows-core 0.58.0",
 ]
 
 [[package]]

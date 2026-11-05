@@ -1,4 +1,4 @@
-// GPU HDR-to-SDR capture via Direct2D effects.
+// GPU HDR-to-SDR capture.
 //
 // On Windows HDR displays, the DWM composites the desktop in scRGB FP16.
 // SDR apps' pixels are multiplied by `SdrWhiteLevel / 80` so that SDR-white
@@ -9,93 +9,55 @@
 // out, producing the washed-out "everything overblown in screenshot mode"
 // output the user has been complaining about.
 //
-// Microsoft's documented fix is exactly this pipeline, all GPU:
+// The pipeline, all GPU:
 //   1. DXGI Desktop Duplication into R16G16B16A16_FLOAT (scRGB FP16)
-//   2. D2D WhiteLevelAdjustment: divide by SdrWhite/80 → SDR back at 1.0
-//   3. D2D HdrToneMap: roll off genuine HDR highlights into SDR range
-//   4. Render to 8-bit BGRA output target
+//   2. hdrkit's tonemap shader: divide by SdrWhite/80 so SDR lands back at
+//      1.0, roll highlights above a knee onto white at the panel's peak, and
+//      sRGB-encode into 8-bit BGRA
 //
-// Single-digit ms even for 4K, regardless of debug/release build.
+// the d2d chain this replaced had the white level effect backwards (input
+// must be 80, output sdr white), wrote linear light into a UNORM target
+// without a color management step, and HdrToneMap's sdr mode lifted midtones
 //
 // References:
-//   https://learn.microsoft.com/en-us/windows/win32/direct2d/hdr-tone-map-effect
-//   https://learn.microsoft.com/en-us/windows/win32/direct2d/white-level-adjustment-effect
 //   https://learn.microsoft.com/en-us/windows/win32/direct3darticles/high-dynamic-range
+//   https://learn.microsoft.com/en-us/windows/win32/direct3ddxgi/desktop-dup-api
 
 use anyhow::{anyhow, Result};
+use hdrkit::windows::core::Interface;
+use hdrkit::windows::Win32::Foundation::HMODULE;
+use hdrkit::windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_UNKNOWN;
+use hdrkit::windows::Win32::Graphics::Direct3D11::{
+    D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext, ID3D11Texture2D, D3D11_CPU_ACCESS_READ,
+    D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_MAPPED_SUBRESOURCE, D3D11_MAP_READ, D3D11_SDK_VERSION,
+    D3D11_TEXTURE2D_DESC, D3D11_USAGE_STAGING,
+};
+use hdrkit::windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R16G16B16A16_FLOAT;
+use hdrkit::windows::Win32::Graphics::Dxgi::{
+    CreateDXGIFactory1, IDXGIAdapter1, IDXGIFactory1, IDXGIOutput, IDXGIOutput5, IDXGIOutput6,
+    IDXGIOutputDuplication, IDXGIResource, DXGI_ERROR_ACCESS_LOST, DXGI_ERROR_WAIT_TIMEOUT,
+    DXGI_OUTDUPL_FRAME_INFO,
+};
 use image::RgbaImage;
-use windows::core::Interface;
-use windows::Win32::Graphics::Direct2D::Common::{
-    D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COMPOSITE_MODE_SOURCE_OVER, D2D1_PIXEL_FORMAT,
-};
-use windows::Win32::Graphics::Direct2D::{
-    CLSID_D2D1HdrToneMap, CLSID_D2D1Saturation, CLSID_D2D1WhiteLevelAdjustment, D2D1CreateFactory,
-    ID2D1Bitmap1, ID2D1DeviceContext, ID2D1Effect, ID2D1Factory1, D2D1_BITMAP_OPTIONS_CANNOT_DRAW,
-    D2D1_BITMAP_OPTIONS_TARGET, D2D1_BITMAP_PROPERTIES1, D2D1_DEVICE_CONTEXT_OPTIONS_NONE,
-    D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_HDRTONEMAP_DISPLAY_MODE_SDR,
-    D2D1_HDRTONEMAP_PROP_DISPLAY_MODE, D2D1_HDRTONEMAP_PROP_INPUT_MAX_LUMINANCE,
-    D2D1_HDRTONEMAP_PROP_OUTPUT_MAX_LUMINANCE, D2D1_INTERPOLATION_MODE_LINEAR,
-    D2D1_PROPERTY_TYPE_ENUM, D2D1_PROPERTY_TYPE_FLOAT, D2D1_SATURATION_PROP_SATURATION,
-    D2D1_WHITELEVELADJUSTMENT_PROP_INPUT_WHITE_LEVEL,
-    D2D1_WHITELEVELADJUSTMENT_PROP_OUTPUT_WHITE_LEVEL,
-};
-use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_UNKNOWN;
-use windows::Win32::Graphics::Direct3D11::{
-    D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext, ID3D11Texture2D,
-    D3D11_BIND_RENDER_TARGET, D3D11_CPU_ACCESS_READ, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
-    D3D11_MAPPED_SUBRESOURCE, D3D11_MAP_READ, D3D11_SDK_VERSION, D3D11_TEXTURE2D_DESC,
-    D3D11_USAGE_DEFAULT, D3D11_USAGE_STAGING,
-};
-use windows::Win32::Graphics::Dxgi::Common::{
-    DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_B8G8R8A8_UNORM_SRGB, DXGI_FORMAT_R10G10B10A2_UNORM,
-    DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_SAMPLE_DESC,
-};
-use windows::Win32::Graphics::Dxgi::{
-    CreateDXGIFactory1, IDXGIAdapter1, IDXGIDevice, IDXGIFactory1, IDXGIOutput, IDXGIOutput1,
-    IDXGIOutput5, IDXGIOutputDuplication, IDXGIResource, IDXGISurface, DXGI_ERROR_ACCESS_LOST,
-    DXGI_ERROR_WAIT_TIMEOUT, DXGI_OUTDUPL_FRAME_INFO,
-};
-
-// tunable tonemap knobs. the shipping default is DEFAULT; the sweep
-// harness varies these to find the right HDR->SDR rendition
-#[derive(Clone, Copy)]
-pub struct TmVariant {
-    // render the effect output to a _UNORM_SRGB target so D2D applies the
-    // sRGB transfer on write (vs plain _UNORM)
-    pub out_srgb: bool,
-    // HdrToneMap OUTPUT_MAX_LUMINANCE in nits
-    pub output_max_nits: f32,
-    // HdrToneMap INPUT_MAX_LUMINANCE override in nits. None -> panel max
-    // scaled by the white-level factor (legacy behavior)
-    pub input_max_nits: Option<f32>,
-    // optional Saturation effect (0..1) applied after tonemap to pull
-    // clipped wide-gamut colors back toward gamut
-    pub saturation: Option<f32>,
-}
-
-impl TmVariant {
-    pub const DEFAULT: TmVariant = TmVariant {
-        out_srgb: false,
-        output_max_nits: 80.0,
-        input_max_nits: None,
-        saturation: None,
-    };
-}
 
 pub fn capture_hdr_to_sdr(target: Option<(i32, i32)>) -> Result<RgbaImage> {
-    capture_hdr_to_sdr_variant(target, TmVariant::DEFAULT)
-}
-
-pub fn capture_hdr_to_sdr_variant(
-    target: Option<(i32, i32)>,
-    variant: TmVariant,
-) -> Result<RgbaImage> {
     let t0 = std::time::Instant::now();
     unsafe {
         // 1. pick adapter+output for the target monitor (multi-GPU safe)
         let factory: IDXGIFactory1 = CreateDXGIFactory1()?;
         let (adapter, output) = pick_adapter_output(&factory, target)?;
-        let output1: IDXGIOutput1 = output.cast()?;
+        let output6: IDXGIOutput6 = output
+            .cast()
+            .map_err(|e| anyhow!("cast IDXGIOutput6 failed: {e}"))?;
+        let panel = hdrkit::display(output6.GetDesc1()?.Monitor)?;
+        if !panel.hdr {
+            return Err(anyhow!("HDR tonemap: display is SDR, fall back to GDI"));
+        }
+        tracing::info!(
+            "HDR tonemap: sdr_white={:.0}nits peak={:.0}nits",
+            panel.sdr_white,
+            panel.peak
+        );
 
         // 2. D3D11 device on that adapter
         let mut device: Option<ID3D11Device> = None;
@@ -103,7 +65,7 @@ pub fn capture_hdr_to_sdr_variant(
         D3D11CreateDevice(
             &adapter,
             D3D_DRIVER_TYPE_UNKNOWN,
-            None,
+            HMODULE::default(),
             D3D11_CREATE_DEVICE_BGRA_SUPPORT,
             None,
             D3D11_SDK_VERSION,
@@ -114,20 +76,17 @@ pub fn capture_hdr_to_sdr_variant(
         let device = device.ok_or_else(|| anyhow!("D3D11CreateDevice null device"))?;
         let context = context.ok_or_else(|| anyhow!("D3D11CreateDevice null context"))?;
 
-        // 3. duplication with HDR-first format list
-        let supported_formats = [
-            DXGI_FORMAT_R16G16B16A16_FLOAT,
-            DXGI_FORMAT_R10G10B10A2_UNORM,
-        ];
-        let mut duplication: IDXGIOutputDuplication = if let Ok(o5) = output1.cast::<IDXGIOutput5>()
-        {
-            o5.DuplicateOutput1(&device, 0, &supported_formats)
-                .map_err(|e| anyhow!("DuplicateOutput1 failed: {e}"))?
-        } else {
-            output1
-                .DuplicateOutput(&device)
-                .map_err(|e| anyhow!("DuplicateOutput failed: {e}"))?
+        // 3. duplication as scRGB FP16, the only format the tonemap reads
+        let output5: IDXGIOutput5 = output
+            .cast()
+            .map_err(|e| anyhow!("cast IDXGIOutput5 failed: {e}"))?;
+        let supported_formats = [DXGI_FORMAT_R16G16B16A16_FLOAT];
+        let duplicate = || {
+            output5
+                .DuplicateOutput1(&device, 0, &supported_formats)
+                .map_err(|e| anyhow!("DuplicateOutput1 failed: {e}"))
         };
+        let mut duplication: IDXGIOutputDuplication = duplicate()?;
 
         // Sleep briefly to let the DWM compositor populate the initial duplication texture
         std::thread::sleep(std::time::Duration::from_millis(10));
@@ -150,87 +109,13 @@ pub fn capture_hdr_to_sdr_variant(
                         }
                     };
 
-                    let mut is_black = false;
-                    // check if the frame is completely black (all-zeros)
-                    // only check if lastpresenttime == 0 and accumulatedframes == 0
+                    // only a frame nothing was presented into yet can be all-zeros
                     let check_black =
                         frame_info.LastPresentTime == 0 && frame_info.AccumulatedFrames == 0;
-                    if check_black {
-                        if let Ok(desktop_texture) = desktop_res.cast::<ID3D11Texture2D>() {
-                            let mut tex_desc = D3D11_TEXTURE2D_DESC::default();
-                            desktop_texture.GetDesc(&mut tex_desc);
-                            let w = tex_desc.Width;
-                            let h = tex_desc.Height;
-                            if w > 0 && h > 0 {
-                                let staging_desc = D3D11_TEXTURE2D_DESC {
-                                    Width: w,
-                                    Height: h,
-                                    MipLevels: 1,
-                                    ArraySize: 1,
-                                    Format: tex_desc.Format,
-                                    SampleDesc: tex_desc.SampleDesc,
-                                    Usage: D3D11_USAGE_STAGING,
-                                    BindFlags: Default::default(),
-                                    CPUAccessFlags: D3D11_CPU_ACCESS_READ.0 as u32,
-                                    MiscFlags: Default::default(),
-                                };
-                                let mut staging_texture: Option<ID3D11Texture2D> = None;
-                                if device
-                                    .CreateTexture2D(
-                                        &staging_desc,
-                                        None,
-                                        Some(&mut staging_texture),
-                                    )
-                                    .is_ok()
-                                {
-                                    if let Some(staging) = staging_texture {
-                                        context.CopyResource(&staging, &desktop_texture);
-                                        let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
-                                        if context
-                                            .Map(&staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped))
-                                            .is_ok()
-                                        {
-                                            let src_ptr = mapped.pData as *const u8;
-                                            if !src_ptr.is_null() {
-                                                let bytes_per_pixel = match tex_desc.Format {
-                                                    DXGI_FORMAT_R16G16B16A16_FLOAT => 8,
-                                                    DXGI_FORMAT_R10G10B10A2_UNORM => 4,
-                                                    _ => 4,
-                                                };
-                                                let row_bytes = w as usize * bytes_per_pixel;
-                                                let row_pitch = mapped.RowPitch as usize;
-                                                if row_pitch >= row_bytes {
-                                                    let first_row = std::slice::from_raw_parts(
-                                                        src_ptr, row_bytes,
-                                                    );
-                                                    is_black = first_row.iter().all(|&b| b == 0)
-                                                        && {
-                                                            let mid_row = src_ptr
-                                                                .add(row_pitch * (h as usize / 2));
-                                                            let mid_slice =
-                                                                std::slice::from_raw_parts(
-                                                                    mid_row, row_bytes,
-                                                                );
-                                                            mid_slice.iter().all(|&b| b == 0)
-                                                        }
-                                                        && {
-                                                            let last_row = src_ptr
-                                                                .add(row_pitch * (h as usize - 1));
-                                                            let last_slice =
-                                                                std::slice::from_raw_parts(
-                                                                    last_row, row_bytes,
-                                                                );
-                                                            last_slice.iter().all(|&b| b == 0)
-                                                        };
-                                                }
-                                            }
-                                            context.Unmap(&staging, 0);
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
+                    let is_black = check_black
+                        && desktop_res
+                            .cast::<ID3D11Texture2D>()
+                            .is_ok_and(|t| is_black_frame(&device, &context, &t));
 
                     if !is_black {
                         desktop_resource = Some(desktop_res);
@@ -241,7 +126,7 @@ pub fn capture_hdr_to_sdr_variant(
                     std::thread::sleep(std::time::Duration::from_millis(10));
                 }
                 Err(e) if e.code() == DXGI_ERROR_ACCESS_LOST && attempt < 29 => {
-                    if let Ok(fresh) = output1.DuplicateOutput(&device) {
+                    if let Ok(fresh) = duplicate() {
                         duplication = fresh;
                     }
                     std::thread::sleep(std::time::Duration::from_millis(10));
@@ -253,7 +138,7 @@ pub fn capture_hdr_to_sdr_variant(
             }
         }
         if !acquired {
-            return Err(anyhow!("D2D: no frame acquired after 30 attempts"));
+            return Err(anyhow!("HDR tonemap: no frame acquired after 30 attempts"));
         }
 
         struct FrameGuard<'a> {
@@ -278,199 +163,19 @@ pub fn capture_hdr_to_sdr_variant(
         if width == 0 || height == 0 {
             return Err(anyhow!("desktop texture has zero dimensions"));
         }
-
-        let src_format = tex_desc.Format;
-        let is_hdr_format = src_format == DXGI_FORMAT_R16G16B16A16_FLOAT
-            || src_format == DXGI_FORMAT_R10G10B10A2_UNORM;
-
-        tracing::info!(
-            "D2D tonemap: capture {}x{} dxgi_format={:?} is_hdr={}",
-            width,
-            height,
-            src_format,
-            is_hdr_format
-        );
-
-        // 5. read display metadata for the effect parameters
-        let (sdr_white_nits, max_lum_nits) = read_display_metadata(&output)?;
-        tracing::info!(
-            "D2D tonemap: sdr_white={:.0}nits max_lum={:.0}nits",
-            sdr_white_nits,
-            max_lum_nits
-        );
-
-        // 6. D2D factory + device + context bound to our D3D11 device
-        let d2d_factory: ID2D1Factory1 =
-            D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, None)?;
-        let dxgi_device: IDXGIDevice = device.cast()?;
-        let d2d_device = d2d_factory.CreateDevice(&dxgi_device)?;
-        let d2d_ctx: ID2D1DeviceContext =
-            d2d_device.CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_NONE)?;
-
-        // 7. wrap the captured texture as a D2D bitmap (input)
-        let input_surface: IDXGISurface = desktop_tex.cast()?;
-        let input_props = D2D1_BITMAP_PROPERTIES1 {
-            pixelFormat: D2D1_PIXEL_FORMAT {
-                format: src_format,
-                alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
-            },
-            dpiX: 96.0,
-            dpiY: 96.0,
-            bitmapOptions: Default::default(),
-            colorContext: std::mem::ManuallyDrop::new(None),
-        };
-        let input_bitmap: ID2D1Bitmap1 =
-            d2d_ctx.CreateBitmapFromDxgiSurface(&input_surface, Some(&input_props))?;
-
-        // 8. build the effect chain
-        let effect_in: ID2D1Effect = if is_hdr_format {
-            // WhiteLevelAdjustment: divide everything by SdrWhite/80, so
-            // SDR-promoted content lands back at scRGB 1.0
-            let wl: ID2D1Effect = d2d_ctx.CreateEffect(&CLSID_D2D1WhiteLevelAdjustment)?;
-            wl.SetInput(0, &input_bitmap, true);
-            let in_white_bytes = sdr_white_nits.to_le_bytes();
-            let out_white_bytes: [u8; 4] = 80.0_f32.to_le_bytes();
-            wl.SetValue(
-                D2D1_WHITELEVELADJUSTMENT_PROP_INPUT_WHITE_LEVEL.0 as u32,
-                D2D1_PROPERTY_TYPE_FLOAT,
-                &in_white_bytes,
-            )?;
-            wl.SetValue(
-                D2D1_WHITELEVELADJUSTMENT_PROP_OUTPUT_WHITE_LEVEL.0 as u32,
-                D2D1_PROPERTY_TYPE_FLOAT,
-                &out_white_bytes,
-            )?;
-
-            // HdrToneMap: roll off remaining HDR highlights into SDR.
-            // chain via wl.GetOutput() (ID2D1Image) -> tm.SetInput.
-            let tm: ID2D1Effect = d2d_ctx.CreateEffect(&CLSID_D2D1HdrToneMap)?;
-            let wl_out = wl.GetOutput()?;
-            tm.SetInput(0, &wl_out, true);
-            // scale the input maximum luminance passed to HdrToneMap by the same factor
-            // that WhiteLevelAdjustment scaled the entire texture (80.0 / sdr_white_nits)
-            let scaled_in_max = match variant.input_max_nits {
-                Some(v) => v.max(80.0),
-                None => (max_lum_nits * (80.0 / sdr_white_nits)).max(80.0),
-            };
-            let in_max = scaled_in_max.to_le_bytes();
-            let out_max: [u8; 4] = variant.output_max_nits.to_le_bytes();
-            tm.SetValue(
-                D2D1_HDRTONEMAP_PROP_INPUT_MAX_LUMINANCE.0 as u32,
-                D2D1_PROPERTY_TYPE_FLOAT,
-                &in_max,
-            )?;
-            tm.SetValue(
-                D2D1_HDRTONEMAP_PROP_OUTPUT_MAX_LUMINANCE.0 as u32,
-                D2D1_PROPERTY_TYPE_FLOAT,
-                &out_max,
-            )?;
-            let display_mode_bytes = (D2D1_HDRTONEMAP_DISPLAY_MODE_SDR.0 as u32).to_le_bytes();
-            tm.SetValue(
-                D2D1_HDRTONEMAP_PROP_DISPLAY_MODE.0 as u32,
-                D2D1_PROPERTY_TYPE_ENUM,
-                &display_mode_bytes,
-            )?;
-
-            if let Some(sat) = variant.saturation {
-                let se: ID2D1Effect = d2d_ctx.CreateEffect(&CLSID_D2D1Saturation)?;
-                let tm_out = tm.GetOutput()?;
-                se.SetInput(0, &tm_out, true);
-                let sat_bytes = sat.to_le_bytes();
-                se.SetValue(
-                    D2D1_SATURATION_PROP_SATURATION.0 as u32,
-                    D2D1_PROPERTY_TYPE_FLOAT,
-                    &sat_bytes,
-                )?;
-                se
-            } else {
-                tm
-            }
-        } else {
-            // SDR-format capture — no tonemap needed, but we still need an
-            // effect to draw from. wrap input_bitmap via an identity-ish
-            // effect (we can just DrawBitmap directly instead).
-            // for now: return an error to fall back to GDI for SDR captures.
+        if tex_desc.Format != DXGI_FORMAT_R16G16B16A16_FLOAT {
             return Err(anyhow!(
-                "D2D tonemap: source is SDR ({:?}), fall back to GDI",
-                src_format
+                "HDR tonemap: duplication gave {:?}, fall back to GDI",
+                tex_desc.Format
             ));
-        };
+        }
+        tracing::info!("HDR tonemap: capture {}x{}", width, height);
 
-        // 9. output texture: B8G8R8A8 render target on the same device
-        let out_format = if variant.out_srgb {
-            DXGI_FORMAT_B8G8R8A8_UNORM_SRGB
-        } else {
-            DXGI_FORMAT_B8G8R8A8_UNORM
-        };
-        let out_desc = D3D11_TEXTURE2D_DESC {
-            Width: width,
-            Height: height,
-            MipLevels: 1,
-            ArraySize: 1,
-            Format: out_format,
-            SampleDesc: DXGI_SAMPLE_DESC {
-                Count: 1,
-                Quality: 0,
-            },
-            Usage: D3D11_USAGE_DEFAULT,
-            BindFlags: D3D11_BIND_RENDER_TARGET.0 as u32,
-            CPUAccessFlags: 0,
-            MiscFlags: 0,
-        };
-        let mut out_tex: Option<ID3D11Texture2D> = None;
-        device.CreateTexture2D(&out_desc, None, Some(&mut out_tex))?;
-        let out_tex = out_tex.ok_or_else(|| anyhow!("CreateTexture2D output null"))?;
+        // 5. tonemap into an 8-bit sRGB BGRA texture of the same size
+        let out_tex = hdrkit::Tonemap::new(&device, panel)?.apply(&desktop_tex)?;
 
-        let out_surface: IDXGISurface = out_tex.cast()?;
-        let out_props = D2D1_BITMAP_PROPERTIES1 {
-            pixelFormat: D2D1_PIXEL_FORMAT {
-                format: out_format,
-                alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
-            },
-            dpiX: 96.0,
-            dpiY: 96.0,
-            bitmapOptions: D2D1_BITMAP_OPTIONS_TARGET | D2D1_BITMAP_OPTIONS_CANNOT_DRAW,
-            colorContext: std::mem::ManuallyDrop::new(None),
-        };
-        let out_bitmap: ID2D1Bitmap1 =
-            d2d_ctx.CreateBitmapFromDxgiSurface(&out_surface, Some(&out_props))?;
-
-        // 10. render the effect chain into the output bitmap.
-        //     DrawImage takes an ID2D1Image (the effect's output).
-        let final_output = effect_in.GetOutput()?;
-        d2d_ctx.SetTarget(&out_bitmap);
-        d2d_ctx.BeginDraw();
-        d2d_ctx.DrawImage(
-            &final_output,
-            None,
-            None,
-            D2D1_INTERPOLATION_MODE_LINEAR,
-            D2D1_COMPOSITE_MODE_SOURCE_OVER,
-        );
-        d2d_ctx.EndDraw(None, None)?;
-        d2d_ctx.SetTarget(None);
-
-        // 11. CPU readback: staging texture → Map → BGRA→RGBA → RgbaImage
-        let staging_desc = D3D11_TEXTURE2D_DESC {
-            Width: width,
-            Height: height,
-            MipLevels: 1,
-            ArraySize: 1,
-            Format: out_format,
-            SampleDesc: DXGI_SAMPLE_DESC {
-                Count: 1,
-                Quality: 0,
-            },
-            Usage: D3D11_USAGE_STAGING,
-            BindFlags: 0,
-            CPUAccessFlags: D3D11_CPU_ACCESS_READ.0 as u32,
-            MiscFlags: 0,
-        };
-        let mut staging: Option<ID3D11Texture2D> = None;
-        device.CreateTexture2D(&staging_desc, None, Some(&mut staging))?;
-        let staging = staging.ok_or_else(|| anyhow!("CreateTexture2D staging null"))?;
-        context.CopyResource(&staging, &out_tex);
-
+        // 6. CPU readback: staging texture → Map → BGRA→RGBA → RgbaImage
+        let staging = staging_copy(&device, &context, &out_tex)?;
         let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
         context.Map(&staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped))?;
         struct UnmapGuard<'a> {
@@ -526,96 +231,74 @@ pub fn capture_hdr_to_sdr_variant(
             }
         });
 
-        tracing::info!("D2D tonemap: total {}ms", t0.elapsed().as_millis());
+        tracing::info!("HDR tonemap: total {}ms", t0.elapsed().as_millis());
 
         RgbaImage::from_raw(width, height, rgba)
             .ok_or_else(|| anyhow!("RgbaImage::from_raw failed"))
     }
 }
 
-// diagnostic: capture the HDR monitor at `target` repeatedly, each time
-// through a different tonemap variant, and write a center crop of each to
-// `outdir`. lets us eyeball which knobs fix the overbaked wide-gamut look
-pub fn capture_hdr_to_sdr_sweep(target: Option<(i32, i32)>, outdir: &str) -> Result<()> {
-    let d = TmVariant::DEFAULT;
-    let variants: &[(&str, TmVariant)] = &[
-        ("00_baseline", d),
-        (
-            "01_srgb",
-            TmVariant {
-                out_srgb: true,
-                ..d
-            },
-        ),
-        (
-            "02_outmax200",
-            TmVariant {
-                output_max_nits: 200.0,
-                ..d
-            },
-        ),
-        (
-            "03_outmax300_srgb",
-            TmVariant {
-                out_srgb: true,
-                output_max_nits: 300.0,
-                ..d
-            },
-        ),
-        (
-            "04_inmax1000",
-            TmVariant {
-                input_max_nits: Some(1000.0),
-                ..d
-            },
-        ),
-        (
-            "05_sat80",
-            TmVariant {
-                saturation: Some(0.8),
-                ..d
-            },
-        ),
-        (
-            "06_sat70_outmax200",
-            TmVariant {
-                saturation: Some(0.7),
-                output_max_nits: 200.0,
-                ..d
-            },
-        ),
-        (
-            "07_srgb_sat80_outmax160",
-            TmVariant {
-                out_srgb: true,
-                saturation: Some(0.8),
-                output_max_nits: 160.0,
-                ..d
-            },
-        ),
-    ];
-    std::fs::create_dir_all(outdir).ok();
-    for (label, v) in variants {
-        match capture_hdr_to_sdr_variant(target, *v) {
-            Ok(img) => {
-                let img = if img.width() > 1600 {
-                    let cw = img.width() / 2;
-                    let ch = img.height() / 2;
-                    image::imageops::crop_imm(&img, img.width() / 4, img.height() / 4, cw, ch)
-                        .to_image()
-                } else {
-                    img
-                };
-                let path = format!("{outdir}/{label}.png");
-                match img.save(&path) {
-                    Ok(()) => eprintln!("sweep: wrote {path}"),
-                    Err(e) => eprintln!("sweep: save {path} failed: {e}"),
-                }
-            }
-            Err(e) => eprintln!("sweep: variant {label} failed: {e:#}"),
-        }
-        std::thread::sleep(std::time::Duration::from_millis(120));
+unsafe fn staging_copy(
+    device: &ID3D11Device,
+    context: &ID3D11DeviceContext,
+    texture: &ID3D11Texture2D,
+) -> Result<ID3D11Texture2D> {
+    let mut desc = D3D11_TEXTURE2D_DESC::default();
+    texture.GetDesc(&mut desc);
+    desc.Usage = D3D11_USAGE_STAGING;
+    desc.BindFlags = 0;
+    desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ.0 as u32;
+    desc.MiscFlags = 0;
+    let mut staging: Option<ID3D11Texture2D> = None;
+    device.CreateTexture2D(&desc, None, Some(&mut staging))?;
+    let staging = staging.ok_or_else(|| anyhow!("CreateTexture2D staging null"))?;
+    context.CopyResource(&staging, texture);
+    Ok(staging)
+}
+
+// first, middle and last rows all zero
+unsafe fn is_black_frame(
+    device: &ID3D11Device,
+    context: &ID3D11DeviceContext,
+    texture: &ID3D11Texture2D,
+) -> bool {
+    let mut desc = D3D11_TEXTURE2D_DESC::default();
+    texture.GetDesc(&mut desc);
+    let (w, h) = (desc.Width as usize, desc.Height as usize);
+    if w == 0 || h == 0 {
+        return false;
     }
+    let Ok(staging) = staging_copy(device, context, texture) else {
+        return false;
+    };
+    let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
+    if context
+        .Map(&staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped))
+        .is_err()
+    {
+        return false;
+    }
+    let src = mapped.pData as *const u8;
+    let row_pitch = mapped.RowPitch as usize;
+    let row_bytes = w * 8;
+    let black = !src.is_null()
+        && row_pitch >= row_bytes
+        && [0, h / 2, h - 1].iter().all(|&y| {
+            std::slice::from_raw_parts(src.add(row_pitch * y), row_bytes)
+                .iter()
+                .all(|&b| b == 0)
+        });
+    context.Unmap(&staging, 0);
+    black
+}
+
+// diagnostic: capture the HDR monitor at `target` through the GPU tonemap
+// and write it to `outdir`, to compare against the GDI and WGC shots
+pub fn capture_hdr_to_sdr_sweep(target: Option<(i32, i32)>, outdir: &str) -> Result<()> {
+    std::fs::create_dir_all(outdir)?;
+    let path = format!("{outdir}/tonemap.png");
+    capture_hdr_to_sdr(target)?.save(&path)?;
+    eprintln!("sweep: wrote {path}");
     Ok(())
 }
 
@@ -646,116 +329,4 @@ unsafe fn pick_adapter_output(
         .EnumOutputs(0)
         .map_err(|e| anyhow!("EnumOutputs failed: {e}"))?;
     Ok((adapter, output))
-}
-
-unsafe fn read_display_metadata(output: &IDXGIOutput) -> Result<(f32, f32)> {
-    use windows::Win32::Graphics::Dxgi::IDXGIOutput6;
-    let output6: IDXGIOutput6 = output
-        .cast()
-        .map_err(|e| anyhow!("cast IDXGIOutput6 failed: {e}"))?;
-    let desc1 = output6.GetDesc1()?;
-
-    let sdr_white_nits = query_displayconfig_sdr_white(&desc1.DeviceName)
-        .unwrap_or(200.0)
-        .max(80.0);
-    let max_lum_nits = if desc1.MaxLuminance > 0.0 {
-        desc1.MaxLuminance.max(80.0)
-    } else {
-        1000.0
-    };
-    Ok((sdr_white_nits, max_lum_nits))
-}
-
-fn query_displayconfig_sdr_white(device_name: &[u16; 32]) -> Option<f32> {
-    use windows::Win32::Devices::Display::{
-        DisplayConfigGetDeviceInfo, GetDisplayConfigBufferSizes, QueryDisplayConfig,
-        DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME, DISPLAYCONFIG_DEVICE_INFO_HEADER,
-        DISPLAYCONFIG_MODE_INFO, DISPLAYCONFIG_PATH_INFO, DISPLAYCONFIG_SDR_WHITE_LEVEL,
-        DISPLAYCONFIG_SOURCE_DEVICE_NAME, QDC_ONLY_ACTIVE_PATHS,
-    };
-    use windows::Win32::Foundation::{ERROR_SUCCESS, WIN32_ERROR};
-
-    const DISPLAYCONFIG_DEVICE_INFO_GET_SDR_WHITE_LEVEL: i32 = 11;
-
-    unsafe {
-        let mut path_count: u32 = 0;
-        let mut mode_count: u32 = 0;
-        let rc =
-            GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &mut path_count, &mut mode_count);
-        if rc != ERROR_SUCCESS {
-            return None;
-        }
-        let mut paths: Vec<DISPLAYCONFIG_PATH_INFO> =
-            vec![DISPLAYCONFIG_PATH_INFO::default(); path_count as usize];
-        let mut modes: Vec<DISPLAYCONFIG_MODE_INFO> =
-            vec![DISPLAYCONFIG_MODE_INFO::default(); mode_count as usize];
-        let rc = QueryDisplayConfig(
-            QDC_ONLY_ACTIVE_PATHS,
-            &mut path_count,
-            paths.as_mut_ptr(),
-            &mut mode_count,
-            modes.as_mut_ptr(),
-            None,
-        );
-        if rc != ERROR_SUCCESS {
-            return None;
-        }
-        paths.truncate(path_count as usize);
-
-        for path in &paths {
-            let mut source_name = DISPLAYCONFIG_SOURCE_DEVICE_NAME {
-                header: DISPLAYCONFIG_DEVICE_INFO_HEADER {
-                    r#type: DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME,
-                    size: std::mem::size_of::<DISPLAYCONFIG_SOURCE_DEVICE_NAME>() as u32,
-                    adapterId: path.sourceInfo.adapterId,
-                    id: path.sourceInfo.id,
-                },
-                ..Default::default()
-            };
-            let rc = WIN32_ERROR(DisplayConfigGetDeviceInfo(&mut source_name.header) as u32);
-            if rc != ERROR_SUCCESS {
-                continue;
-            }
-            if !device_names_match(&source_name.viewGdiDeviceName, device_name) {
-                continue;
-            }
-
-            let mut sdr_white = DISPLAYCONFIG_SDR_WHITE_LEVEL {
-                header: DISPLAYCONFIG_DEVICE_INFO_HEADER {
-                    r#type: windows::Win32::Devices::Display::DISPLAYCONFIG_DEVICE_INFO_TYPE(
-                        DISPLAYCONFIG_DEVICE_INFO_GET_SDR_WHITE_LEVEL,
-                    ),
-                    size: std::mem::size_of::<DISPLAYCONFIG_SDR_WHITE_LEVEL>() as u32,
-                    adapterId: path.targetInfo.adapterId,
-                    id: path.targetInfo.id,
-                },
-                ..Default::default()
-            };
-            let rc = WIN32_ERROR(DisplayConfigGetDeviceInfo(&mut sdr_white.header) as u32);
-            if rc != ERROR_SUCCESS {
-                continue;
-            }
-            if sdr_white.SDRWhiteLevel == 0 {
-                continue;
-            }
-            let nits = (sdr_white.SDRWhiteLevel as f32) * 80.0 / 1000.0;
-            if (80.0..=10000.0).contains(&nits) {
-                return Some(nits);
-            }
-        }
-        None
-    }
-}
-
-fn device_names_match(a: &[u16], b: &[u16; 32]) -> bool {
-    let len = a.len().min(b.len());
-    for i in 0..len {
-        if a[i] != b[i] {
-            return false;
-        }
-        if a[i] == 0 {
-            return true;
-        }
-    }
-    true
 }
