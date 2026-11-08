@@ -6,7 +6,7 @@ mod spool;
 
 pub(crate) use gif_encoder::PauseClock;
 pub use gif_encoder::{is_ffmpeg_available, GifRecorder};
-pub use mp4_stream::ffmpeg_command;
+pub use mp4_stream::{ffmpeg_command, hardware_encoders};
 
 use std::time::Duration;
 
@@ -50,6 +50,7 @@ pub struct RecordingSettings {
     // encode, mp4 streams into a live ffmpeg child
     pub format: RecordingFormat,
     pub gif: crate::config::GifOptions,
+    pub video_encoder: crate::config::VideoEncoder,
 }
 
 impl Default for RecordingSettings {
@@ -63,6 +64,7 @@ impl Default for RecordingSettings {
             record_audio: false,
             format: RecordingFormat::Gif,
             gif: Default::default(),
+            video_encoder: Default::default(),
         }
     }
 }
@@ -82,6 +84,7 @@ mod tests {
             record_audio: false,
             format: RecordingFormat::Mp4,
             gif: Default::default(),
+            video_encoder: Default::default(),
         };
         assert_eq!(settings.quality, 90);
         assert_eq!(settings.fps, 30);

@@ -279,6 +279,22 @@ fn main() {
             if let Err(e) = recbar::prewarm(app) {
                 tracing::warn!("recording bar pre-warm failed: {e}");
             }
+            // the hardware encoder trial runs off the startup path so the
+            // first mp4 recording doesn't wait on it
+            let records_mp4 = app
+                .state::<state::AppState>()
+                .config
+                .lock()
+                .unwrap()
+                .capture_tasks
+                .iter()
+                .any(|task| task.capture_mode == config::TaskCaptureMode::RegionMp4);
+            if records_mp4 {
+                std::thread::spawn(|| {
+                    std::thread::sleep(Duration::from_secs(10));
+                    recording::hardware_encoders();
+                });
+            }
             // first-launch jump-list dispatch: if capscr.exe was launched with
             // --jump=<kind>, run that action now. We delay slightly so the tray
             // and webview are fully ready before any capture pipeline fires.
@@ -341,6 +357,7 @@ fn main() {
             commands::test_upload_connection,
             commands::fire_task,
             commands::stop_recording,
+            commands::video_encoder_support,
             recbar::recbar_status,
             recbar::recbar_record,
             recbar::recbar_pause,

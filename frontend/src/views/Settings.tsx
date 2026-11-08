@@ -1,8 +1,17 @@
 import { createResource, createSignal, For, Match, onCleanup, Show, Switch } from "solid-js";
 import { listen } from "@tauri-apps/api/event";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { HotkeyInput } from "../components/HotkeyInput";
 import { Section } from "../components/Section";
-import { api, AppConfig, HotkeyDiagnostics, SftpKnownHost, UiConfig } from "../api";
+import {
+  api,
+  AppConfig,
+  GifOptions,
+  HotkeyDiagnostics,
+  SftpKnownHost,
+  UiConfig,
+  VideoEncoder,
+} from "../api";
 import { configDirty, setConfigDirty } from "../dirty";
 import { FolderOpen, RotateCcw, Save } from "lucide-solid";
 import { config, mutateConfig } from "../store";
@@ -166,6 +175,28 @@ export function Settings() {
 }
 
 type Patch = <K extends keyof AppConfig>(key: K, value: AppConfig[K]) => void;
+
+type GifPreset = Omit<GifOptions, "engine">;
+const GIF_PRESETS: Record<string, GifPreset> = {
+  small: { scale_percent: 100, max_width: 640, colors: 64, dither: false, palette: "Global", diff_frames: true },
+  balanced: { scale_percent: 100, max_width: 0, colors: 256, dither: true, palette: "Global", diff_frames: true },
+  quality: { scale_percent: 100, max_width: 0, colors: 256, dither: true, palette: "PerFrame", diff_frames: true },
+};
+
+const gifPresetOf = (gif: GifOptions) =>
+  Object.keys(GIF_PRESETS).find((name) =>
+    (Object.keys(GIF_PRESETS[name]) as (keyof GifPreset)[]).every(
+      (key) => GIF_PRESETS[name][key] === gif[key],
+    ),
+  ) ?? "custom";
+
+const ENCODER_LABELS: Record<VideoEncoder, string> = {
+  Auto: "auto",
+  Software: "software (libx264)",
+  Nvenc: "nvidia nvenc",
+  Qsv: "intel quick sync",
+  Amf: "amd amf",
+};
 
 function GeneralPane(props: { c: AppConfig; patch: Patch }) {
   const c = () => props.c;
@@ -362,6 +393,38 @@ function GnomeCompanionSection() {
 
 function CapturePane(props: { c: AppConfig; patch: Patch }) {
   const c = () => props.c;
+  const [support] = createResource(api.videoEncoderSupport);
+  const [gifAdvanced, setGifAdvanced] = createSignal(false);
+  const patchGif = (next: Partial<GifOptions>) =>
+    props.patch("capture", { ...c().capture, gif: { ...c().capture.gif, ...next } });
+  const gifNumber = (key: "scale_percent" | "max_width" | "colors", min: number, max: number) => (
+    <input
+      type="number"
+      min={min}
+      max={max}
+      value={c().capture.gif[key]}
+      onChange={(e) =>
+        patchGif({
+          [key]: commitNumber(e.currentTarget, { min, max, fallback: c().capture.gif[key], int: true }),
+        })
+      }
+    />
+  );
+  const gifCheck = (key: "dither" | "diff_frames", on: string, off: string) => (
+    <label class="check">
+      <input
+        type="checkbox"
+        checked={c().capture.gif[key]}
+        onChange={(e) => patchGif({ [key]: e.currentTarget.checked })}
+      />
+      <span class="check-label">{c().capture.gif[key] ? on : off}</span>
+    </label>
+  );
+  const encoderChoices = (): VideoEncoder[] => {
+    const current = c().capture.video_encoder;
+    const list: VideoEncoder[] = ["Auto", "Software", ...(support()?.hardware ?? [])];
+    return list.includes(current) ? list : [...list, current];
+  };
   return (
     <>
       <Section title="cursor">
@@ -465,6 +528,95 @@ function CapturePane(props: { c: AppConfig; patch: Patch }) {
           </div>
         </div>
         <div class="field">
+          <label class="field-label">gif size</label>
+          <div class="field-control">
+            <select
+              value={gifPresetOf(c().capture.gif)}
+              onChange={(e) => {
+                const preset = GIF_PRESETS[e.currentTarget.value];
+                if (preset) patchGif(preset);
+              }}
+            >
+              <option value="small">small: 640px wide, 64 colors</option>
+              <option value="balanced">balanced: full size, 256 colors</option>
+              <option value="quality">quality: a palette per frame</option>
+              <option value="custom" disabled hidden={gifPresetOf(c().capture.gif) !== "custom"}>
+                custom
+              </option>
+            </select>
+            <button class="link" onClick={() => setGifAdvanced(!gifAdvanced())}>
+              {gifAdvanced() ? "hide advanced" : "advanced"}
+            </button>
+          </div>
+        </div>
+        <Show when={gifAdvanced()}>
+          <div class="field">
+            <label class="field-label">gif scale</label>
+            <div class="field-control">
+              {gifNumber("scale_percent", 10, 100)}
+              <span class="field-hint">percent of the recorded size, 10-100</span>
+            </div>
+          </div>
+          <div class="field">
+            <label class="field-label">gif max width</label>
+            <div class="field-control">
+              {gifNumber("max_width", 0, 4096)}
+              <span class="field-hint">px, 0 for no limit; wider gifs shrink to fit</span>
+            </div>
+          </div>
+          <div class="field">
+            <label class="field-label">gif colors</label>
+            <div class="field-control">
+              {gifNumber("colors", 2, 256)}
+              <span class="field-hint">palette size, 2-256; fewer colors, smaller file</span>
+            </div>
+          </div>
+          <div class="field">
+            <label class="field-label">dither</label>
+            <div class="field-control">
+              {gifCheck("dither", "smooth gradients", "flat color bands")}
+              <span class="field-hint">dithering hides banding but costs some file size</span>
+            </div>
+          </div>
+          <div class="field">
+            <label class="field-label">palette</label>
+            <div class="field-control">
+              <select
+                value={c().capture.gif.palette}
+                onChange={(e) => patchGif({ palette: e.currentTarget.value as GifOptions["palette"] })}
+              >
+                <option value="Global">one palette for the whole gif</option>
+                <option value="PerFrame">a palette per frame</option>
+              </select>
+            </div>
+          </div>
+          <div class="field">
+            <label class="field-label">changed pixels only</label>
+            <div class="field-control">
+              {gifCheck("diff_frames", "frames store only what moved", "every frame stored whole")}
+            </div>
+          </div>
+          <div class="field">
+            <label class="field-label">gif engine</label>
+            <div class="field-control">
+              <select
+                value={c().capture.gif.engine}
+                onChange={(e) => patchGif({ engine: e.currentTarget.value as GifOptions["engine"] })}
+              >
+                <option value="Builtin">built-in</option>
+                <option value="Ffmpeg" disabled={support()?.ffmpeg === false}>
+                  ffmpeg, high quality
+                </option>
+              </select>
+              <span class="field-hint">
+                {support()?.ffmpeg === false
+                  ? "needs ffmpeg; starting an mp4 recording offers to download it"
+                  : "ffmpeg builds the palette from what changes between frames; slower to save"}
+              </span>
+            </div>
+          </div>
+        </Show>
+        <div class="field">
           <label class="field-label">video frame rate</label>
           <div class="field-control">
             <input
@@ -504,6 +656,31 @@ function CapturePane(props: { c: AppConfig; patch: Patch }) {
               <option value="Compact">compact — smallest files</option>
             </select>
             <span class="field-hint">mp4 encode quality; gifs are unaffected</span>
+          </div>
+        </div>
+        <div class="field">
+          <label class="field-label">video encoder</label>
+          <div class="field-control">
+            <select
+              value={c().capture.video_encoder}
+              onChange={(e) =>
+                props.patch("capture", {
+                  ...c().capture,
+                  video_encoder: e.currentTarget.value as VideoEncoder,
+                })
+              }
+            >
+              <For each={encoderChoices()}>
+                {(encoder) => <option value={encoder}>{ENCODER_LABELS[encoder]}</option>}
+              </For>
+            </select>
+            <span class="field-hint">
+              {support.loading
+                ? "checking gpu encoders..."
+                : support()?.hardware.length
+                  ? "a gpu encoder takes load off the cpu; auto picks the first one that works"
+                  : "no gpu encoder passed a test encode; mp4s use libx264"}
+            </span>
           </div>
         </div>
         <div class="field">
@@ -784,10 +961,21 @@ function HotkeysPane(props: { c: AppConfig; patch: Patch }) {
             </Show>
           </div>
         </div>
+        <div class="field">
+          <label class="field-label">pause recording</label>
+          <div class="field-control">
+            <HotkeyInput
+              value={props.c.hotkeys.pause_recording}
+              onChange={(v) => props.patch("hotkeys", { ...props.c.hotkeys, pause_recording: v })}
+            />
+            <span class="field-hint">pauses and resumes the current gif or mp4 recording</span>
+          </div>
+        </div>
         <Show when={err()}>
           <p class="flash" data-tone="err">{err()}</p>
         </Show>
       </Section>
+
 
       <Show when={IS_LINUX}>
         <Section title="advanced input">
@@ -1131,6 +1319,31 @@ function NotifyPane(props: { c: AppConfig; patch: Patch }) {
             </select>
           </div>
         </div>
+        <Show when={!IS_LINUX && (c().ui.close_behavior ?? "minimize-to-tray") === "minimize-to-tray"}>
+          <div class="field">
+            <label class="field-label">free memory when hidden</label>
+            <div class="field-control">
+              <label class="check">
+                <input
+                  type="checkbox"
+                  checked={c().ui.free_memory_when_hidden}
+                  onChange={(e) =>
+                    props.patch("ui", {
+                      ...c().ui,
+                      free_memory_when_hidden: e.currentTarget.checked,
+                    })
+                  }
+                />
+                <span class="check-label">
+                  {c().ui.free_memory_when_hidden
+                    ? "closes the window's web view in the tray"
+                    : "keeps the window ready in the tray"}
+                </span>
+              </label>
+              <span class="field-hint">saves memory while hidden; reopening from the tray takes a moment longer</span>
+            </div>
+          </div>
+        </Show>
         <div class="field">
           <label class="field-label">clipboard history</label>
           <div class="field-control">

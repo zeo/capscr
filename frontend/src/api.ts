@@ -35,6 +35,20 @@ export interface CaptureConfig {
   video_quality: "High" | "Balanced" | "Compact";
   hdr: HdrConfig;
   record_audio: boolean;
+  gif: GifOptions;
+  video_encoder: VideoEncoder;
+}
+
+export type VideoEncoder = "Auto" | "Software" | "Nvenc" | "Qsv" | "Amf";
+
+export interface GifOptions {
+  scale_percent: number;
+  max_width: number;
+  colors: number;
+  dither: boolean;
+  palette: "Global" | "PerFrame";
+  diff_frames: boolean;
+  engine: "Builtin" | "Ffmpeg";
 }
 
 export interface FtpConfig {
@@ -104,6 +118,7 @@ export interface UiConfig {
   check_updates_on_launch: boolean;
   save_clipboard_to_history: boolean;
   tray_hint_dismissed: boolean;
+  free_memory_when_hidden: boolean;
 }
 
 export interface CaptureTask {
@@ -132,6 +147,7 @@ export interface AppConfig {
   hotkeys: {
     screenshot: string;
     record_gif: string;
+    pause_recording: string;
     disabled_globally: boolean;
     // linux evdev opt-in; absent means unresolved (backend migrates it)
     advanced_input?: boolean | null;
@@ -313,6 +329,8 @@ export const api = {
   ) => invoke<ConnectionTestReport>("test_upload_connection", { destination, config }),
   fireTask: (taskId: string) => invoke<void>("fire_task", { taskId }),
   stopRecording: () => invoke<void>("stop_recording"),
+  videoEncoderSupport: () =>
+    invoke<{ ffmpeg: boolean; hardware: VideoEncoder[] }>("video_encoder_support"),
   runOcr: (path: string) => invoke<string>("run_ocr", { path }),
   pinImage: (path: string) => invoke<void>("pin_image", { path }),
   getPinnedImagePath: (label: string) => invoke<string | null>("get_pinned_image_path", { label }),

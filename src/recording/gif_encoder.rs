@@ -10,6 +10,40 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::capture::{MonitorInfo, Rectangle, ScreenCapture};
+
+// the post-stop gif encode is cpu-bound; the saving thread drops below normal
+// for its duration so the desktop stays responsive
+#[cfg(windows)]
+struct BelowNormalPriority(windows::Win32::System::Threading::THREAD_PRIORITY);
+
+#[cfg(windows)]
+impl BelowNormalPriority {
+    fn enter() -> Self {
+        use windows::Win32::System::Threading::{
+            GetCurrentThread, GetThreadPriority, SetThreadPriority, THREAD_PRIORITY,
+            THREAD_PRIORITY_BELOW_NORMAL,
+        };
+        unsafe {
+            let thread = GetCurrentThread();
+            let previous = THREAD_PRIORITY(GetThreadPriority(thread));
+            let _ = SetThreadPriority(thread, THREAD_PRIORITY_BELOW_NORMAL);
+            Self(previous)
+        }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for BelowNormalPriority {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = windows::Win32::System::Threading::SetThreadPriority(
+                windows::Win32::System::Threading::GetCurrentThread(),
+                self.0,
+            );
+        }
+    }
+}
+
 use crate::config::{GifEngine, GifOptions, GifPalette};
 
 fn find_best_monitor(rect: Rectangle) -> Option<MonitorInfo> {
@@ -426,7 +460,12 @@ fn save_gif_ffmpeg(
     ];
 
     let mut run = |extra: &[&str]| -> Result<()> {
-        let mut child = ffmpeg_command()
+        let mut command = ffmpeg_command();
+        // CREATE_NO_WINDOW | BELOW_NORMAL_PRIORITY_CLASS: the encode runs after
+        // stop and should not compete with whatever the user does next
+        #[cfg(windows)]
+        std::os::windows::process::CommandExt::creation_flags(&mut command, 0x0800_4000);
+        let mut child = command
             .args(input)
             .args(extra)
             .stdin(std::process::Stdio::piped())
@@ -589,7 +628,11 @@ impl GifRecorder {
                 }
             },
             RecordingFormat::Mp4 => FrameSink::Mp4 {
-                streamer: Mp4Streamer::new(self.settings.fps, self.settings.video_crf),
+                streamer: Mp4Streamer::new(
+                    self.settings.fps,
+                    self.settings.video_crf,
+                    self.settings.video_encoder,
+                ),
                 capture_end: None,
             },
         };
@@ -997,6 +1040,8 @@ impl GifRecorder {
         if spool.is_empty() {
             return Err(anyhow!("No frames captured"));
         }
+        #[cfg(windows)]
+        let _priority = BelowNormalPriority::enter();
 
         let orig_width = spool.metas()[0].width;
         let orig_height = spool.metas()[0].height;

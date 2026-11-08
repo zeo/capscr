@@ -7,6 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use super::gif_encoder::find_ffmpeg;
+use crate::config::VideoEncoder;
 
 // encodes the recording as it happens: frames go straight into a live ffmpeg
 // child, so an hour-long capture costs one frame of RAM and saving is a remux
@@ -15,6 +16,7 @@ use super::gif_encoder::find_ffmpeg;
 pub struct Mp4Streamer {
     fps: u32,
     crf: u8,
+    encoder: VideoEncoder,
     temp_path: PathBuf,
     child: Option<Child>,
     stdin: Option<ChildStdin>,
@@ -29,7 +31,7 @@ pub struct Mp4Streamer {
 }
 
 impl Mp4Streamer {
-    pub fn new(fps: u32, crf: u8) -> Self {
+    pub fn new(fps: u32, crf: u8, encoder: VideoEncoder) -> Self {
         let temp_path = std::env::temp_dir().join(format!(
             "capscr_video_{}.mp4",
             uuid::Uuid::new_v4().as_simple()
@@ -37,6 +39,7 @@ impl Mp4Streamer {
         Self {
             fps: fps.clamp(1, 60),
             crf: crf.min(51),
+            encoder: resolve_encoder(encoder),
             temp_path,
             child: None,
             stdin: None,
@@ -93,34 +96,31 @@ impl Mp4Streamer {
 
     fn spawn_encoder(&mut self, width: u32, height: u32) -> Result<()> {
         (self.width, self.height) = even_dims(width, height);
-
-        let crf = self.crf.to_string();
-        let args = [
-            "-f",
-            "rawvideo",
-            "-pix_fmt",
-            "rgba",
-            "-s",
-            &format!("{}x{}", self.width, self.height),
-            "-r",
-            &self.fps.to_string(),
-            "-i",
-            "-",
-            "-c:v",
-            "libx264",
-            // realtime encode must keep up with capture or the pipe stalls
-            "-preset",
-            "veryfast",
-            "-pix_fmt",
-            "yuv420p",
-            "-crf",
-            &crf,
-            "-y",
-            &self.temp_path.to_string_lossy(),
-        ];
+        if self.encoder != VideoEncoder::Software && !hardware_fits(self.width, self.height) {
+            tracing::info!(
+                "{}x{} is outside hardware encoder limits; recording with libx264",
+                self.width,
+                self.height
+            );
+            self.encoder = VideoEncoder::Software;
+        }
 
         let mut child = ffmpeg_command()
-            .args(args)
+            .args([
+                "-f",
+                "rawvideo",
+                "-pix_fmt",
+                "rgba",
+                "-s",
+                &format!("{}x{}", self.width, self.height),
+                "-r",
+                &self.fps.to_string(),
+                "-i",
+                "-",
+            ])
+            .args(encoder_args(self.encoder, self.crf))
+            .arg("-y")
+            .arg(&self.temp_path)
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -199,6 +199,112 @@ impl Drop for Mp4Streamer {
     }
 }
 
+// constant-quality output args per encoder; the crf scale maps onto each
+// encoder's own 0-51 quantizer
+fn encoder_args(encoder: VideoEncoder, crf: u8) -> Vec<String> {
+    let q = crf.to_string();
+    let args: &[&str] = match encoder {
+        VideoEncoder::Nvenc => &[
+            "-c:v",
+            "h264_nvenc",
+            "-preset",
+            "p4",
+            "-rc",
+            "vbr",
+            "-cq",
+            &q,
+            "-b:v",
+            "0",
+            "-pix_fmt",
+            "yuv420p",
+        ],
+        VideoEncoder::Qsv => &[
+            "-c:v",
+            "h264_qsv",
+            "-preset",
+            "veryfast",
+            "-global_quality",
+            &q,
+            "-pix_fmt",
+            "nv12",
+        ],
+        VideoEncoder::Amf => &[
+            "-c:v", "h264_amf", "-rc", "cqp", "-qp_i", &q, "-qp_p", &q, "-pix_fmt", "nv12",
+        ],
+        // realtime encode must keep up with capture or the pipe stalls
+        VideoEncoder::Auto | VideoEncoder::Software => &[
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", &q, "-pix_fmt", "yuv420p",
+        ],
+    };
+    args.iter().map(|arg| arg.to_string()).collect()
+}
+
+// a listed hardware encoder can still fail on a machine without that gpu or
+// driver, so each one gets a one-frame trial encode
+fn encoder_works(encoder: VideoEncoder) -> bool {
+    ffmpeg_command()
+        .args([
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=c=black:s=256x256:r=30",
+            "-frames:v",
+            "1",
+        ])
+        .args(encoder_args(encoder, 23))
+        .args(["-f", "null", "-"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+/// hardware h264 encoders that passed a trial encode, probed once per run;
+/// empty without ffmpeg, and not cached then so a later download is seen
+pub fn hardware_encoders() -> Vec<VideoEncoder> {
+    static PROBED: std::sync::OnceLock<Vec<VideoEncoder>> = std::sync::OnceLock::new();
+    if let Some(found) = PROBED.get() {
+        return found.clone();
+    }
+    if !super::is_ffmpeg_available() {
+        return Vec::new();
+    }
+    PROBED
+        .get_or_init(|| {
+            [VideoEncoder::Nvenc, VideoEncoder::Qsv, VideoEncoder::Amf]
+                .into_iter()
+                .filter(|&encoder| encoder_works(encoder))
+                .collect()
+        })
+        .clone()
+}
+
+fn resolve_encoder(choice: VideoEncoder) -> VideoEncoder {
+    if choice == VideoEncoder::Software {
+        return choice;
+    }
+    let hardware = hardware_encoders();
+    let picked = match choice {
+        VideoEncoder::Auto => hardware.first().copied().unwrap_or(VideoEncoder::Software),
+        hw if hardware.contains(&hw) => hw,
+        hw => {
+            tracing::warn!("{hw:?} failed its trial encode; recording with libx264");
+            VideoEncoder::Software
+        }
+    };
+    tracing::info!("mp4 encoder: {picked:?}");
+    picked
+}
+
+// nvenc and amf reject frames under about 256x128 or over 4096 on a side
+fn hardware_fits(width: u32, height: u32) -> bool {
+    width.min(height) >= 128 && (256..=4096).contains(&width.max(height))
+}
+
 // libx264 needs even dimensions for yuv420p
 fn even_dims(width: u32, height: u32) -> (u32, u32) {
     (width.max(2) & !1, height.max(2) & !1)
@@ -230,10 +336,20 @@ mod tests {
     }
 
     #[test]
+    fn hardware_size_limits() {
+        assert!(hardware_fits(256, 128));
+        assert!(hardware_fits(128, 1000));
+        assert!(hardware_fits(4096, 2160));
+        assert!(!hardware_fits(224, 126));
+        assert!(!hardware_fits(256, 100));
+        assert!(!hardware_fits(5120, 1440));
+    }
+
+    #[test]
     fn abandoned_streamer_leaves_no_temp_file() {
         let path;
         {
-            let s = Mp4Streamer::new(15, 23);
+            let s = Mp4Streamer::new(15, 23, VideoEncoder::Software);
             path = s.temp_path.clone();
         }
         assert!(!path.exists());
@@ -267,7 +383,7 @@ mod tests {
         }
         // 40 frames every 100ms: per-frame rounding at 15fps used to stretch
         // this to 5.3s; the cumulative schedule must land on 4.0s
-        let mut streamer = Mp4Streamer::new(15, 23);
+        let mut streamer = Mp4Streamer::new(15, 23, VideoEncoder::Software);
         for i in 0..40u32 {
             let shade = (i * 6) as u8;
             let img = RgbaImage::from_pixel(64, 48, image::Rgba([shade, 30, 60, 255]));
@@ -283,11 +399,46 @@ mod tests {
     }
 
     #[test]
-    fn static_stream_uses_capture_end() {
+    fn hardware_encoders_stream_valid_files() {
+        for encoder in hardware_encoders() {
+            let mut streamer = Mp4Streamer::new(15, 23, encoder);
+            for i in 0..30u32 {
+                let shade = (i * 8) as u8;
+                let img = RgbaImage::from_pixel(320, 180, image::Rgba([shade, 30, 60, 255]));
+                streamer
+                    .push(Arc::new(img), Duration::from_millis(i as u64 * 100))
+                    .unwrap();
+            }
+            assert_eq!(streamer.encoder, encoder);
+            let path = streamer.finish(None).unwrap();
+            let bytes = std::fs::read(&path).unwrap();
+            let _ = std::fs::remove_file(&path);
+            let secs = mp4_duration_secs(&bytes).expect("mvhd box present");
+            assert!((2.8..=3.2).contains(&secs), "{encoder:?}: {secs}s, want ~3.0");
+        }
+    }
+
+    #[test]
+    fn small_region_falls_back_to_software() {
+        let mut streamer = Mp4Streamer::new(15, 23, VideoEncoder::Software);
+        streamer.encoder = VideoEncoder::Nvenc;
         if !super::super::is_ffmpeg_available() {
             return;
         }
-        let mut streamer = Mp4Streamer::new(15, 23);
+        let img = RgbaImage::from_pixel(64, 48, image::Rgba([0, 0, 0, 255]));
+        streamer.push(Arc::new(img), Duration::ZERO).unwrap();
+        assert_eq!(streamer.encoder, VideoEncoder::Software);
+        let path = streamer.finish(None).unwrap();
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn static_stream_uses_capture_end() {
+
+        if !super::super::is_ffmpeg_available() {
+            return;
+        }
+        let mut streamer = Mp4Streamer::new(15, 23, VideoEncoder::Software);
         let image = RgbaImage::from_pixel(64, 48, image::Rgba([40, 80, 120, 255]));
         streamer.push(Arc::new(image), Duration::ZERO).unwrap();
 

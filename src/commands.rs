@@ -2442,7 +2442,14 @@ fn heal_stuck_boot(window: tauri::WebviewWindow) {
 // the tray. Without this, the first tray click pays the full WebView2 cold-
 // boot cost (multi-second on most machines, >1min on some).
 pub fn prewarm_hub_window(app: &tauri::App) -> tauri::Result<()> {
-    if app.get_webview_window(HUB_LABEL).is_some() {
+    let free_memory = app
+        .state::<AppState>()
+        .config
+        .lock()
+        .unwrap()
+        .ui
+        .free_memory_when_hidden;
+    if free_memory || app.get_webview_window(HUB_LABEL).is_some() {
         return Ok(());
     }
     let url = tauri::WebviewUrl::App("index.html".into());
@@ -2618,29 +2625,20 @@ pub fn complete_hub_close(force_exit: bool, app: AppHandle) -> Result<(), String
         exit_app(app);
         return Ok(());
     }
-    let close_behavior = app
-        .state::<AppState>()
-        .config
-        .lock()
-        .unwrap()
-        .ui
-        .close_behavior;
-    match close_behavior {
+    let ui = app.state::<AppState>().config.lock().unwrap().ui.clone();
+    match ui.close_behavior {
         crate::config::CloseBehavior::MinimizeToTray => {
             let Some(window) = app.get_webview_window(HUB_LABEL) else {
                 return Ok(());
             };
             // on linux the hidden hub's webkit processes would keep ~100mb
-            // resident; destroy and recreate on demand
-            #[cfg(target_os = "linux")]
-            {
+            // resident, so it is always destroyed and recreated on demand
+            if cfg!(target_os = "linux") || ui.free_memory_when_hidden {
                 if let Ok(url) = window.url() {
                     remember_canonical_url(&app, &url);
                 }
                 let _ = window.destroy();
-            }
-            #[cfg(not(target_os = "linux"))]
-            {
+            } else {
                 let _ = window.hide();
             }
         }
@@ -3628,6 +3626,7 @@ pub(crate) fn start_gif_recording(
             crate::recording::RecordingFormat::Gif
         },
         gif: cfg.capture.gif.clone(),
+        video_encoder: cfg.capture.video_encoder,
     };
 
     // steer the wayland frame grabs; windows composites the cursor per frame
@@ -3685,6 +3684,23 @@ pub(crate) fn start_gif_recording(
     });
 
     Ok(())
+}
+
+#[derive(Serialize)]
+pub struct VideoEncoderSupport {
+    ffmpeg: bool,
+    hardware: Vec<crate::config::VideoEncoder>,
+}
+
+// the first call runs the hardware trial encodes, so it stays off the main thread
+#[tauri::command]
+pub async fn video_encoder_support() -> Result<VideoEncoderSupport, String> {
+    tauri::async_runtime::spawn_blocking(|| VideoEncoderSupport {
+        ffmpeg: crate::recording::is_ffmpeg_available(),
+        hardware: crate::recording::hardware_encoders(),
+    })
+    .await
+    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]

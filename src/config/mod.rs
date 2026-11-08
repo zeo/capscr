@@ -290,6 +290,20 @@ pub struct CaptureConfig {
     pub record_audio: bool,
     #[serde(default)]
     pub gif: GifOptions,
+    #[serde(default)]
+    pub video_encoder: VideoEncoder,
+}
+
+/// h264 encoder for mp4 recordings; a hardware pick that fails its trial
+/// encode falls back to libx264
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum VideoEncoder {
+    #[default]
+    Auto,
+    Software,
+    Nvenc,
+    Qsv,
+    Amf,
 }
 
 fn default_record_audio() -> bool {
@@ -384,6 +398,7 @@ impl Default for CaptureConfig {
             hdr: HdrConfig::default(),
             record_audio: false,
             gif: GifOptions::default(),
+            video_encoder: VideoEncoder::default(),
         }
     }
 }
@@ -513,6 +528,9 @@ pub struct UiConfig {
     // it never nags again on tray-less desktops (vanilla gnome)
     #[serde(default)]
     pub tray_hint_dismissed: bool,
+    // destroy the hidden hub webview instead of keeping it warm; linux always does
+    #[serde(default)]
+    pub free_memory_when_hidden: bool,
 }
 
 fn default_true() -> bool {
@@ -533,6 +551,7 @@ impl Default for UiConfig {
             check_updates_on_launch: true,
             save_clipboard_to_history: false,
             tray_hint_dismissed: false,
+            free_memory_when_hidden: false,
         }
     }
 }
