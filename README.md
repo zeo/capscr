@@ -1,6 +1,6 @@
 # capscr
 
-HDR-aware screen capture for Windows and Linux. Tray-first, signed updates, no telemetry.
+A screen capture tool for Windows and Linux that lives in the tray. It handles HDR monitors, records GIF and MP4, and updates itself from signed releases. It sends no telemetry.
 
 ![the capscr hub, history view](shot-history.png)
 
@@ -9,25 +9,24 @@ HDR-aware screen capture for Windows and Linux. Tray-first, signed updates, no t
 - homepage: [rot.lt/work/capscr](https://rot.lt/work/capscr)
 - plugins: [rot.lt/work/capscr/plugins](https://rot.lt/work/capscr/plugins), registry at [`zeo/capscr-plugins`](https://github.com/zeo/capscr-plugins)
 - downloads: [GitHub Releases](https://github.com/zeo/capscr/releases)
-- license: MIT
 
 ## features
 
-Every hotkey is a task: a capture mode (region, region-last, window, fullscreen, active monitor, region GIF, region MP4) plus a post-action (save, clipboard, editor, annotate, upload, OCR). Bind as many as you want in the hub.
+Each hotkey runs a task, which pairs a capture mode with what happens afterwards. The modes are region, last region, window, fullscreen, active monitor, region GIF and region MP4. Afterwards capscr can save, copy, open the editor, annotate, upload or copy the text out with OCR. There's no limit on the number of tasks.
 
-The selection overlay does region drag, window click, Enter for fullscreen, and `Alt+click` to copy a pixel's `#RRGGBB`. Live size readout, 8x loupe, window-snap highlight.
+In the selection overlay you drag out a region, click a window, or press Enter for the whole screen. `Alt+click` copies the pixel under the cursor as `#RRGGBB`. The overlay shows the selection size as you drag and an 8x magnifier, and highlights the window it will snap to.
 
 HDR capture (Windows) goes through Windows.Graphics.Capture FP16 with an ICtCp luminance-only tonemap and per-monitor SDR-white detection. Output is SDR PNG, or HDR-preserved PNG (PQ cICP / HLG). Linux compositors don't expose HDR pixels to capture clients yet, so Linux captures are SDR.
 
-Recording produces GIF or H.264 MP4 (ffmpeg, auto-downloaded and sha256-verified on Windows; system ffmpeg on Linux), with a live timer and stop control drawn outside the captured area.
+Region recording saves GIF or H.264 MP4. On Windows the selection stays on screen as a frame you can move, resize or snap to a preset size, before and during recording, and a toolbar beside it has record, pause and stop. Neither shows up in the output. On Linux recording starts as soon as you finish the selection, and the toolbar has pause and stop. GIF output can be scaled, cut to fewer colors, dithered, or run through ffmpeg's palette filters. MP4 can use NVENC, Quick Sync or AMF when ffmpeg supports them. On Windows capscr downloads ffmpeg and checks its sha256; on Linux it uses the system copy.
 
 Uploads go to Imgur, custom HTTPS POST, SFTP, or S3. Destinations pass SSRF checks (DNS double-resolve, private-IP rejection), and stored passwords live in the platform credential vault (DPAPI / Secret Service), never on disk in cleartext. Plain FTP is rejected because it leaks credentials in transit.
 
-Updates are in-place, Minisign-signed, through the shared rot installer. deb and rpm installs update through the system package manager.
+Updates install in place through the rot installer and are signed with Minisign. deb and rpm installs update through the system package manager instead.
 
 ## install
 
-Grab a file from the [releases page](https://github.com/zeo/capscr/releases/latest):
+Pick a file from the [releases page](https://github.com/zeo/capscr/releases/latest):
 
 | file | use |
 |---|---|
@@ -37,7 +36,7 @@ Grab a file from the [releases page](https://github.com/zeo/capscr/releases/late
 | `capscr-x.x.x-linux-x86_64-offline-setup` | Linux offline installer |
 | `capscr_x.x.x_amd64.deb` | Debian / Ubuntu / Mint |
 | `capscr-x.x.x-1.x86_64.rpm` | Fedora / openSUSE |
-| `capscr_x.x.x_amd64.AppImage` | any glibc 2.39+ distro; `chmod +x` and run |
+| `capscr_x.x.x_amd64.AppImage` | any distro with glibc 2.39+; `chmod +x` and run it |
 
 Needs Windows 10 1903+, or a Linux desktop with webkit2gtk 4.1 and glibc 2.39+. MP4 recording uses `ffmpeg`, OCR uses `tesseract`, X11 file-clipboard uses `xclip`; the deb and rpm pull these in as recommends.
 
@@ -45,15 +44,15 @@ X11 and Wayland both work. Wayland picks a pixel source per compositor (KWin Scr
 
 | feature | X11 | KDE Wayland | wlroots Wayland | GNOME Wayland |
 |---|---|---|---|---|
-| capture, editor, upload, GIF + MP4 | ✅ | ✅ | ✅ | ✅ |
+| capture, editor, upload, GIF + MP4 | yes | yes | yes | yes |
 | window picking | capscr overlay | KWin picker | capscr overlay | portal picker |
-| keyboard global hotkeys | ✅ | ✅ | portal, else Advanced input | ✅ |
+| keyboard global hotkeys | yes | yes | portal, else Advanced input | yes |
 | mouse side-button hotkeys | Advanced input | Advanced input | Advanced input | Advanced input |
-| recording bar above fullscreen | ✅ | ✅ | ✅ | best-effort |
-| tray icon | ✅ | ✅ | depends on host | needs AppIndicator |
+| recording bar above fullscreen | yes | yes | yes | best-effort |
+| tray icon | yes | yes | depends on host | needs AppIndicator |
 | HDR-preserved capture | no | no | no | no |
 
-Advanced input (Settings → hotkeys) reads `/dev/input` directly and needs the `input` group; it covers mouse buttons everywhere and keyboards on portalless compositors. The "no" row needs compositor-side changes, written up in [`docs/platform-limits.md`](docs/platform-limits.md).
+Advanced input (Settings → hotkeys) reads `/dev/input` directly and needs the `input` group; it covers mouse buttons everywhere and keyboards on portalless compositors. HDR-preserved capture on Linux needs changes in the compositors themselves; the details are in [`docs/platform-limits.md`](docs/platform-limits.md).
 
 ## default hotkeys
 
@@ -63,11 +62,11 @@ Advanced input (Settings → hotkeys) reads `/dev/input` directly and needs the 
 | `Ctrl+Shift+G` | region GIF → save |
 | `Ctrl+Shift+V` | region MP4 → save |
 
-All rebindable in the Tasks tab.
+The Tasks tab rebinds all of them.
 
 ## configuration
 
-`%APPDATA%\capscr\capscr\config\config.toml` on Windows, `~/.config/capscr/config.toml` on Linux. The hub edits everything, but the file is plain TOML:
+`%APPDATA%\capscr\capscr\config\config.toml` on Windows, `~/.config/capscr/config.toml` on Linux. Every setting is in the hub, and the file is plain TOML if you'd rather edit it by hand:
 
 ```toml
 [capture.hdr]
@@ -87,7 +86,7 @@ remote_dir = "/screenshots"
 public_url_template = "https://files.example.com/{filename}"
 ```
 
-SFTP takes Ed25519 and ECDSA keys via `private_key_path`. RSA is off until RUSTSEC-2023-0071 is resolved upstream.
+SFTP accepts Ed25519 and ECDSA keys through `private_key_path`. RSA keys stay disabled until RUSTSEC-2023-0071 is fixed upstream.
 
 ## build from source
 
