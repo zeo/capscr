@@ -10,6 +10,10 @@ format follows [keep-a-changelog](https://keepachangelog.com/en/1.1.0/) loosely.
 - rustls, rustls-webpki, quinn-proto, webpki-root-certs, zstd and crypto-bigint updated to patched releases, and the yanked async-executor, chacha20, clipboard-win and wnaf versions replaced
 - vite, solid-js, seroval and postcss updated in the frontend so `npm audit` comes back clean
 
+### fixed
+- the history filter box no longer draws a second input frame inside the pill, and gets a focus ring
+- task titles and the onboarding heading use the bundled medium weight instead of a synthesized bold
+
 ## [0.5.57] - 2026-11-08
 
 ### added
