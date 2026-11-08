@@ -4,7 +4,7 @@ use windows::Win32::Foundation::HWND;
 use windows::Win32::Graphics::Gdi::{
     BitBlt, CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GdiFlush, GetDC,
     ReleaseDC, SelectObject, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, CAPTUREBLT, DIB_RGB_COLORS,
-    HBITMAP, SRCCOPY,
+    HBITMAP, HDC, HGDIOBJ, SRCCOPY,
 };
 
 // returns the DIB section bitmap together with the pointer to its pixel bits,
@@ -31,85 +31,133 @@ fn create_32bpp_dib(width: i32, height: i32) -> Option<(HBITMAP, *mut std::ffi::
         )
     }
     .ok()?;
-    if hbmp.is_invalid() || bits_ptr.is_null() {
+    if hbmp.is_invalid() {
+        return None;
+    }
+    if bits_ptr.is_null() {
+        unsafe {
+            let _ = DeleteObject(hbmp);
+        }
         return None;
     }
     Some((hbmp, bits_ptr))
 }
 
-pub fn fast_gdi_capture(x: i32, y: i32, width: u32, height: u32) -> Result<RgbaImage> {
-    unsafe {
-        let screen_dc = GetDC(HWND::default());
-        if screen_dc.is_invalid() {
-            return Err(anyhow!("GetDC failed"));
+pub(crate) struct GdiRegionGrabber {
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+    screen_dc: HDC,
+    mem_dc: HDC,
+    bitmap: HBITMAP,
+    old_bitmap: HGDIOBJ,
+    bits_ptr: *mut std::ffi::c_void,
+    byte_len: usize,
+}
+
+impl GdiRegionGrabber {
+    pub(crate) fn new(x: i32, y: i32, width: u32, height: u32) -> Result<Self> {
+        if width == 0 || height == 0 || width > i32::MAX as u32 || height > i32::MAX as u32 {
+            return Err(anyhow!("invalid GDI capture dimensions {width}x{height}"));
         }
-        let mem_dc = CreateCompatibleDC(screen_dc);
-        if mem_dc.is_invalid() {
-            ReleaseDC(HWND::default(), screen_dc);
-            return Err(anyhow!("CreateCompatibleDC failed"));
+        let byte_len = (width as usize)
+            .checked_mul(height as usize)
+            .and_then(|count| count.checked_mul(4))
+            .ok_or_else(|| anyhow!("GDI capture dimensions overflow"))?;
+        if byte_len > isize::MAX as usize {
+            return Err(anyhow!("GDI capture buffer is too large"));
         }
-        let (bitmap, bits_ptr) = match create_32bpp_dib(width as i32, height as i32) {
-            Some(v) => v,
-            None => {
-                // release the DCs the other exits already clean up; the `?`
-                // shortcut here leaked them under gdi-handle/memory pressure
+
+        unsafe {
+            let screen_dc = GetDC(HWND::default());
+            if screen_dc.is_invalid() {
+                return Err(anyhow!("GetDC failed"));
+            }
+            let mem_dc = CreateCompatibleDC(screen_dc);
+            if mem_dc.is_invalid() {
+                ReleaseDC(HWND::default(), screen_dc);
+                return Err(anyhow!("CreateCompatibleDC failed"));
+            }
+            let (bitmap, bits_ptr) = match create_32bpp_dib(width as i32, height as i32) {
+                Some(value) => value,
+                None => {
+                    let _ = DeleteDC(mem_dc);
+                    ReleaseDC(HWND::default(), screen_dc);
+                    return Err(anyhow!("create_32bpp_dib failed"));
+                }
+            };
+            let old_bitmap = SelectObject(mem_dc, bitmap);
+            if old_bitmap.is_invalid() {
+                let _ = DeleteObject(bitmap);
                 let _ = DeleteDC(mem_dc);
                 ReleaseDC(HWND::default(), screen_dc);
-                return Err(anyhow!("create_32bpp_dib failed"));
+                return Err(anyhow!("SelectObject failed"));
             }
-        };
 
-        let old_bitmap = SelectObject(mem_dc, bitmap);
-        let ok = BitBlt(
-            mem_dc,
-            0,
-            0,
-            width as i32,
-            height as i32,
-            screen_dc,
-            x,
-            y,
-            windows::Win32::Graphics::Gdi::ROP_CODE(SRCCOPY.0 | CAPTUREBLT.0),
-        );
-
-        if ok.is_err() {
-            SelectObject(mem_dc, old_bitmap);
-            let _ = DeleteObject(bitmap);
-            let _ = DeleteDC(mem_dc);
-            ReleaseDC(HWND::default(), screen_dc);
-            return Err(anyhow!("BitBlt failed"));
+            Ok(Self {
+                x,
+                y,
+                width,
+                height,
+                screen_dc,
+                mem_dc,
+                bitmap,
+                old_bitmap,
+                bits_ptr,
+                byte_len,
+            })
         }
-
-        // flush the GDI batch so the BitBlt has finished writing the DIB before
-        // the CPU reads its bits directly. reading the DIB section pointer skips
-        // the extra full-frame copy GetDIBits would otherwise perform.
-        let _ = GdiFlush();
-
-        let pixel_count = (width as usize) * (height as usize);
-        let mut rgba_data = vec![0u8; pixel_count * 4];
-        // read the blitted BGRA bits straight from the DIB section and write
-        // RGBA in the same pass — one copy+swap instead of GetDIBits then swap.
-        let src = std::slice::from_raw_parts(bits_ptr as *const u8, pixel_count * 4);
-        // BGRA (DIB) -> RGBA, forcing opaque alpha. screen BitBlt leaves the
-        // alpha byte undefined (usually 0); a desktop capture is always opaque,
-        // and writing 255 here lets capture_one_monitor's ensure_opaque pass
-        // early-return instead of scanning and rewriting the whole frame.
-        super::par_convert(src, &mut rgba_data, |s| [s[2], s[1], s[0], 255]);
-
-        SelectObject(mem_dc, old_bitmap);
-        let _ = DeleteObject(bitmap);
-        let _ = DeleteDC(mem_dc);
-        ReleaseDC(HWND::default(), screen_dc);
-
-        RgbaImage::from_raw(width, height, rgba_data)
-            .ok_or_else(|| anyhow!("RgbaImage::from_raw failed"))
     }
+
+    pub(crate) fn grab(&mut self) -> Result<RgbaImage> {
+        unsafe {
+            BitBlt(
+                self.mem_dc,
+                0,
+                0,
+                self.width as i32,
+                self.height as i32,
+                self.screen_dc,
+                self.x,
+                self.y,
+                windows::Win32::Graphics::Gdi::ROP_CODE(SRCCOPY.0 | CAPTUREBLT.0),
+            )
+            .map_err(|_| anyhow!("BitBlt failed"))?;
+
+            let _ = GdiFlush();
+
+            let mut rgba_data = vec![0u8; self.byte_len];
+            let src = std::slice::from_raw_parts(self.bits_ptr as *const u8, self.byte_len);
+            super::par_convert(src, &mut rgba_data, |pixel| {
+                [pixel[2], pixel[1], pixel[0], 255]
+            });
+
+            RgbaImage::from_raw(self.width, self.height, rgba_data)
+                .ok_or_else(|| anyhow!("RgbaImage::from_raw failed"))
+        }
+    }
+}
+
+impl Drop for GdiRegionGrabber {
+    fn drop(&mut self) {
+        unsafe {
+            SelectObject(self.mem_dc, self.old_bitmap);
+            let _ = DeleteObject(self.bitmap);
+            let _ = DeleteDC(self.mem_dc);
+            ReleaseDC(HWND::default(), self.screen_dc);
+        }
+    }
+}
+
+pub fn fast_gdi_capture(x: i32, y: i32, width: u32, height: u32) -> Result<RgbaImage> {
+    GdiRegionGrabber::new(x, y, width, height)?.grab()
 }
 
 use super::MonitorInfo;
 use windows::Win32::Foundation::{BOOL, LPARAM, RECT};
 use windows::Win32::Graphics::Gdi::{
-    EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFOEXW,
+    EnumDisplayMonitors, GetMonitorInfoW, HMONITOR, MONITORINFOEXW,
 };
 
 struct MonitorEnumState {
@@ -172,4 +220,49 @@ unsafe extern "system" fn monitor_enum_proc(
     }
 
     BOOL(1)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Instant;
+
+    #[test]
+    fn persistent_region_capture_rejects_empty_dimensions() {
+        assert!(GdiRegionGrabber::new(0, 0, 0, 64).is_err());
+        assert!(GdiRegionGrabber::new(0, 0, 64, 0).is_err());
+    }
+
+    #[test]
+    #[ignore = "requires an interactive Windows desktop"]
+    fn persistent_region_capture_produces_requested_frames() {
+        let monitor = fast_list_monitors()
+            .expect("list monitors")
+            .into_iter()
+            .find(|monitor| monitor.is_primary)
+            .expect("primary monitor");
+        let width = monitor.width.min(686);
+        let height = monitor.height.min(726);
+        let center = (
+            monitor.x + monitor.width as i32 / 2,
+            monitor.y + monitor.height as i32 / 2,
+        );
+        let is_hdr = crate::capture::HdrCapture::is_hdr_at_point(center.0, center.1);
+        let mut source = GdiRegionGrabber::new(monitor.x, monitor.y, width, height)
+            .expect("create persistent region source");
+
+        let started = Instant::now();
+        for _ in 0..30 {
+            let frame = source.grab().expect("capture region frame");
+            assert_eq!(frame.dimensions(), (width, height));
+        }
+        let elapsed = started.elapsed();
+        eprintln!(
+            "captured 30 {width}x{height} frames from {}x{} in {:.1}ms ({:.2}ms/frame), hdr={is_hdr}",
+            monitor.width,
+            monitor.height,
+            elapsed.as_secs_f64() * 1000.0,
+            elapsed.as_secs_f64() * 1000.0 / 30.0
+        );
+    }
 }

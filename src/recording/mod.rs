@@ -48,6 +48,7 @@ pub struct RecordingSettings {
     // decides the frame sink: gif spools raw frames to disk for a post-stop
     // encode, mp4 streams into a live ffmpeg child
     pub format: RecordingFormat,
+    pub gif: crate::config::GifOptions,
 }
 
 impl Default for RecordingSettings {
@@ -60,6 +61,7 @@ impl Default for RecordingSettings {
             show_cursor: false,
             record_audio: false,
             format: RecordingFormat::Gif,
+            gif: Default::default(),
         }
     }
 }
@@ -78,6 +80,7 @@ mod tests {
             show_cursor: false,
             record_audio: false,
             format: RecordingFormat::Mp4,
+            gif: Default::default(),
         };
         assert_eq!(settings.quality, 90);
         assert_eq!(settings.fps, 30);

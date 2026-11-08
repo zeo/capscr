@@ -56,6 +56,7 @@ mod windows_impl {
     static REGION_H: AtomicI32 = AtomicI32::new(0);
     static FLASH_STATE: AtomicBool = AtomicBool::new(true);
     static RUNNING: AtomicBool = AtomicBool::new(false);
+    static STOP_REQUESTED: AtomicBool = AtomicBool::new(false);
     static BAR_DPI: AtomicI32 = AtomicI32::new(96);
     static MAX_SECS: AtomicU64 = AtomicU64::new(0);
     static START_TIME: Mutex<Option<Instant>> = Mutex::new(None);
@@ -72,6 +73,7 @@ mod windows_impl {
         REGION_W.store(region.width as i32, Ordering::SeqCst);
         REGION_H.store(region.height as i32, Ordering::SeqCst);
         FLASH_STATE.store(true, Ordering::SeqCst);
+        STOP_REQUESTED.store(false, Ordering::SeqCst);
         MAX_SECS.store(max_secs, Ordering::SeqCst);
         *START_TIME.lock().unwrap() = Some(Instant::now());
         *ON_STOP.lock().unwrap() = Some(on_stop);
@@ -85,6 +87,7 @@ mod windows_impl {
         if !RUNNING.load(Ordering::SeqCst) {
             return;
         }
+        STOP_REQUESTED.store(true, Ordering::SeqCst);
 
         if let Some(hwnd) = *OVERLAY_HWND.lock().unwrap() {
             unsafe {
@@ -98,6 +101,15 @@ mod windows_impl {
         if let Some(cb) = cb {
             cb();
         }
+    }
+
+    fn clear_overlay_state() {
+        *OVERLAY_HWND.lock().unwrap() = None;
+        *CONTROL_HWND.lock().unwrap() = None;
+        *START_TIME.lock().unwrap() = None;
+        *ON_STOP.lock().unwrap() = None;
+        STOP_REQUESTED.store(false, Ordering::SeqCst);
+        RUNNING.store(false, Ordering::SeqCst);
     }
 
     fn scaled(v: i32) -> i32 {
@@ -162,7 +174,7 @@ mod windows_impl {
             let instance = match GetModuleHandleW(PCWSTR::null()) {
                 Ok(i) => i,
                 Err(_) => {
-                    RUNNING.store(false, Ordering::SeqCst);
+                    clear_overlay_state();
                     return;
                 }
             };
@@ -216,17 +228,26 @@ mod windows_impl {
             ) {
                 Ok(h) => h,
                 Err(_) => {
-                    RUNNING.store(false, Ordering::SeqCst);
+                    clear_overlay_state();
                     return;
                 }
             };
 
-            *OVERLAY_HWND.lock().unwrap() = Some(hwnd.0 as isize);
-
             let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0x00010101), 255, LWA_COLORKEY);
-
-            let _ = ShowWindow(hwnd, SW_SHOWNA);
-            let _ = SetTimer(hwnd, BORDER_TIMER_ID, FLASH_INTERVAL_MS, None);
+            let border_excluded = match SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE) {
+                Ok(()) => true,
+                Err(error) => {
+                    tracing::warn!(
+                        "recording border capture exclusion unavailable; hiding border: {error}"
+                    );
+                    false
+                }
+            };
+            *OVERLAY_HWND.lock().unwrap() = Some(hwnd.0 as isize);
+            if border_excluded {
+                let _ = ShowWindow(hwnd, SW_SHOWNA);
+                let _ = SetTimer(hwnd, BORDER_TIMER_ID, FLASH_INTERVAL_MS, None);
+            }
 
             // dpi of the monitor hosting the region drives the bar's pixel size
             let region_rect = RECT {
@@ -275,7 +296,7 @@ mod windows_impl {
             }
 
             let mut msg = MSG::default();
-            while RUNNING.load(Ordering::SeqCst) {
+            while RUNNING.load(Ordering::SeqCst) && !STOP_REQUESTED.load(Ordering::SeqCst) {
                 if GetMessageW(&mut msg, None, 0, 0).as_bool() {
                     if msg.message == WM_STOP_OVERLAY {
                         break;
@@ -295,11 +316,7 @@ mod windows_impl {
                 let _ = ShowWindow(bar, SW_HIDE);
                 let _ = DestroyWindow(bar);
             }
-            *OVERLAY_HWND.lock().unwrap() = None;
-            *CONTROL_HWND.lock().unwrap() = None;
-            *START_TIME.lock().unwrap() = None;
-            *ON_STOP.lock().unwrap() = None;
-            RUNNING.store(false, Ordering::SeqCst);
+            clear_overlay_state();
         }
     }
 
@@ -524,6 +541,65 @@ mod windows_impl {
             _ => DefWindowProcW(hwnd, msg, wparam, lparam),
         }
     }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use std::time::{Duration, Instant};
+        use windows::Win32::UI::WindowsAndMessaging::GetWindowDisplayAffinity;
+
+        static OVERLAY_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+        struct OverlayGuard;
+
+        impl Drop for OverlayGuard {
+            fn drop(&mut self) {
+                stop();
+                let deadline = Instant::now() + Duration::from_secs(2);
+                while RUNNING.load(Ordering::SeqCst) && Instant::now() < deadline {
+                    thread::sleep(Duration::from_millis(10));
+                }
+            }
+        }
+
+        #[test]
+        fn border_is_excluded_from_capture() {
+            let _serial = OVERLAY_TEST_LOCK.lock().unwrap();
+            start(Rectangle::new(32, 32, 160, 90), 1, Box::new(|| {}));
+            let _guard = OverlayGuard;
+
+            let deadline = Instant::now() + Duration::from_secs(2);
+            let border = loop {
+                let border = *OVERLAY_HWND.lock().unwrap();
+                if let Some(border) = border {
+                    break border;
+                }
+                assert!(Instant::now() < deadline, "recording overlay did not open");
+                thread::sleep(Duration::from_millis(10));
+            };
+
+            let mut affinity = 0u32;
+            unsafe {
+                GetWindowDisplayAffinity(HWND(border as *mut _), &mut affinity).unwrap();
+            }
+
+            assert_eq!(affinity, WDA_EXCLUDEFROMCAPTURE.0);
+        }
+
+        #[test]
+        fn immediate_stop_request_is_not_lost() {
+            let _serial = OVERLAY_TEST_LOCK.lock().unwrap();
+            start(Rectangle::new(32, 32, 160, 90), 10, Box::new(|| {}));
+            let _guard = OverlayGuard;
+            stop();
+
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while RUNNING.load(Ordering::SeqCst) && Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(10));
+            }
+            assert!(!RUNNING.load(Ordering::SeqCst));
+        }
+    }
 }
 
 // linux: a small always-on-top webview (label "recbar") with the elapsed
@@ -604,7 +680,12 @@ pub mod linux_impl {
 
         #[test]
         fn sits_below_when_there_is_room() {
-            let region = Rectangle { x: 100, y: 100, width: 400, height: 200 };
+            let region = Rectangle {
+                x: 100,
+                y: 100,
+                width: 400,
+                height: 200,
+            };
             let (x, y) = bar_position(region, &[mon(0, 0, 1920, 1080)], false);
             assert_eq!(y, 308); // 100 + 200 + 8
             assert_eq!(x, 352); // right edge 500 - 148
@@ -613,21 +694,36 @@ pub mod linux_impl {
         #[test]
         fn flips_above_when_no_room_below() {
             // region hugs the monitor's bottom edge
-            let region = Rectangle { x: 100, y: 800, width: 400, height: 280 };
+            let region = Rectangle {
+                x: 100,
+                y: 800,
+                width: 400,
+                height: 280,
+            };
             let (_, y) = bar_position(region, &[mon(0, 0, 1920, 1080)], false);
             assert_eq!(y, 756); // 800 - 36 - 8
         }
 
         #[test]
         fn sits_beside_full_height_region() {
-            let region = Rectangle { x: 0, y: 0, width: 400, height: 1080 };
+            let region = Rectangle {
+                x: 0,
+                y: 0,
+                width: 400,
+                height: 1080,
+            };
             let (x, y) = bar_position(region, &[mon(0, 0, 1920, 1080)], false);
             assert_eq!((x, y), (408, 1044)); // right of the region, bottom-aligned
         }
 
         #[test]
         fn escapes_to_second_monitor_when_one_is_fully_recorded() {
-            let region = Rectangle { x: 0, y: 0, width: 1920, height: 1080 };
+            let region = Rectangle {
+                x: 0,
+                y: 0,
+                width: 1920,
+                height: 1080,
+            };
             let (x, y) = bar_position(
                 region,
                 &[mon(0, 0, 1920, 1080), mon(1920, 0, 1920, 1080)],
@@ -638,14 +734,24 @@ pub mod linux_impl {
 
         #[test]
         fn tucks_inside_when_the_region_covers_everything() {
-            let region = Rectangle { x: 0, y: 0, width: 1920, height: 1080 };
+            let region = Rectangle {
+                x: 0,
+                y: 0,
+                width: 1920,
+                height: 1080,
+            };
             let (x, y) = bar_position(region, &[mon(0, 0, 1920, 1080)], false);
             assert_eq!((x, y), (1772, 1036)); // inside: bottom-right corner
         }
 
         #[test]
         fn excluded_bar_still_prefers_the_outside_spots() {
-            let region = Rectangle { x: 100, y: 100, width: 400, height: 200 };
+            let region = Rectangle {
+                x: 100,
+                y: 100,
+                width: 400,
+                height: 200,
+            };
             let (x, y) = bar_position(region, &[mon(0, 0, 1920, 1080)], true);
             assert_eq!((x, y), (352, 308)); // below, same as the windows bar
         }
@@ -654,14 +760,24 @@ pub mod linux_impl {
         fn excluded_bar_goes_inside_instead_of_beside() {
             // full-height region: the visible bar sits beside it, the
             // excluded bar tucks inside like windows clamps to the work area
-            let region = Rectangle { x: 0, y: 0, width: 400, height: 1080 };
+            let region = Rectangle {
+                x: 0,
+                y: 0,
+                width: 400,
+                height: 1080,
+            };
             let (x, y) = bar_position(region, &[mon(0, 0, 1920, 1080)], true);
             assert_eq!((x, y), (252, 1036)); // inside: bottom-right of the region
         }
 
         #[test]
         fn excluded_bar_never_roams_to_a_second_monitor() {
-            let region = Rectangle { x: 0, y: 0, width: 1920, height: 1080 };
+            let region = Rectangle {
+                x: 0,
+                y: 0,
+                width: 1920,
+                height: 1080,
+            };
             let (x, y) = bar_position(
                 region,
                 &[mon(0, 0, 1920, 1080), mon(1920, 0, 1920, 1080)],
@@ -705,7 +821,9 @@ pub mod linux_impl {
         window.set_app_paintable(true);
         window.set_default_size(width, height);
         window.set_size_request(width, height);
-        if let Some(visual) = gtk::prelude::WidgetExt::screen(&window).and_then(|screen| screen.rgba_visual()) {
+        if let Some(visual) =
+            gtk::prelude::WidgetExt::screen(&window).and_then(|screen| screen.rgba_visual())
+        {
             window.set_visual(Some(&visual));
         }
 
@@ -713,7 +831,10 @@ pub mod linux_impl {
         {
             let flash_on = flash_on.clone();
             window.connect_draw(move |widget, cr| {
-                let (w, h) = (widget.allocated_width() as f64, widget.allocated_height() as f64);
+                let (w, h) = (
+                    widget.allocated_width() as f64,
+                    widget.allocated_height() as f64,
+                );
                 cr.set_operator(gtk::cairo::Operator::Source);
                 cr.set_source_rgba(0.0, 0.0, 0.0, 0.0);
                 let _ = cr.paint();
@@ -763,7 +884,8 @@ pub mod linux_impl {
         // it, exactly like the WS_EX_TRANSPARENT windows overlay
         window.input_shape_combine_region(Some(&gtk::cairo::Region::create()));
 
-        let weak: gtk::glib::SendWeakRef<gtk::Window> = gtk::prelude::ObjectExt::downgrade(&window).into();
+        let weak: gtk::glib::SendWeakRef<gtk::Window> =
+            gtk::prelude::ObjectExt::downgrade(&window).into();
         *FRAME.lock().unwrap() = Some(weak.clone());
         gtk::glib::timeout_add_local(
             std::time::Duration::from_millis(FRAME_FLASH_MS as u64),

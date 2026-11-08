@@ -288,10 +288,65 @@ pub struct CaptureConfig {
     pub hdr: HdrConfig,
     #[serde(default = "default_record_audio")]
     pub record_audio: bool,
+    #[serde(default)]
+    pub gif: GifOptions,
 }
 
 fn default_record_audio() -> bool {
     false
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum GifPalette {
+    #[default]
+    Global,
+    PerFrame,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum GifEngine {
+    #[default]
+    Builtin,
+    Ffmpeg,
+}
+
+/// how a gif recording is shrunk into 256-color frames
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GifOptions {
+    pub scale_percent: u8,
+    // 0 leaves the width alone
+    pub max_width: u32,
+    pub colors: u16,
+    pub dither: bool,
+    pub palette: GifPalette,
+    // unchanged pixels become transparent so each frame only stores what moved
+    pub diff_frames: bool,
+    pub engine: GifEngine,
+}
+
+impl Default for GifOptions {
+    fn default() -> Self {
+        Self {
+            scale_percent: 100,
+            max_width: 0,
+            colors: 256,
+            dither: true,
+            palette: GifPalette::Global,
+            diff_frames: true,
+            engine: GifEngine::Builtin,
+        }
+    }
+}
+
+impl GifOptions {
+    fn repair(&mut self) {
+        self.scale_percent = self.scale_percent.clamp(10, 100);
+        self.colors = self.colors.clamp(2, 256);
+        if self.max_width != 0 {
+            self.max_width = self.max_width.clamp(16, 4096);
+        }
+    }
 }
 
 fn default_video_fps() -> u32 {
@@ -328,6 +383,7 @@ impl Default for CaptureConfig {
             video_quality: VideoQuality::default(),
             hdr: HdrConfig::default(),
             record_audio: false,
+            gif: GifOptions::default(),
         }
     }
 }
@@ -909,6 +965,13 @@ impl Config {
                 MAX_GIF_FPS
             ));
         }
+        let mut gif = self.capture.gif.clone();
+        gif.repair();
+        if gif != self.capture.gif {
+            return Err(anyhow!(
+                "gif options out of range: scale 10-100%, colors 2-256, max width 0 or 16-4096"
+            ));
+        }
         if self.capture.gif_max_duration_secs > MAX_GIF_DURATION_SECS {
             return Err(anyhow!(
                 "gif_max_duration_secs must be <= {}",
@@ -1067,6 +1130,7 @@ impl Config {
         self.output.quality = self.output.quality.min(MAX_QUALITY);
         self.capture.gif_fps = self.capture.gif_fps.clamp(MIN_GIF_FPS, MAX_GIF_FPS);
         self.capture.video_fps = self.capture.video_fps.clamp(MIN_GIF_FPS, MAX_GIF_FPS);
+        self.capture.gif.repair();
         self.capture.gif_max_duration_secs = self
             .capture
             .gif_max_duration_secs
@@ -1298,8 +1362,7 @@ impl Config {
         let content = toml::to_string_pretty(&to_persist)?;
         // atomic write: write to a temp file, then rename so a crash
         // mid-write can't leave config.toml truncated/corrupted
-        let tmp =
-            path.with_extension(format!("toml.{}.tmp", uuid::Uuid::new_v4().as_simple()));
+        let tmp = path.with_extension(format!("toml.{}.tmp", uuid::Uuid::new_v4().as_simple()));
         if let Err(error) = fs::write(&tmp, &content) {
             let _ = fs::remove_file(&tmp);
             return Err(anyhow!("config temp write failed: {error}"));
@@ -1472,6 +1535,23 @@ mod tests {
     }
 
     #[test]
+    fn gif_options_default_validate_and_repair() {
+        let old: CaptureConfig = toml::from_str("gif_fps = 15\n").unwrap();
+        assert_eq!(old.gif, GifOptions::default());
+
+        let mut config = Config::default();
+        config.capture.gif.colors = 1;
+        config.capture.gif.scale_percent = 0;
+        config.capture.gif.max_width = 8;
+        assert!(config.validate().unwrap_err().to_string().contains("gif"));
+        config.sanitize();
+        assert_eq!(config.capture.gif.colors, 2);
+        assert_eq!(config.capture.gif.scale_percent, 10);
+        assert_eq!(config.capture.gif.max_width, 16);
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
     fn test_validate_rejects_invalid_tick_interval() {
         let mut config = Config::default();
         config.performance.tick_interval_ms = 10;
@@ -1615,8 +1695,7 @@ mod tests {
         assert!(error.to_string().contains("quality"));
         assert_eq!(config.upload.ftp.password, "pending replacement");
         assert_eq!(
-            config.upload.ftp.password_encrypted,
-            "keyring:stored",
+            config.upload.ftp.password_encrypted, "keyring:stored",
             "validation must run before credential storage"
         );
     }

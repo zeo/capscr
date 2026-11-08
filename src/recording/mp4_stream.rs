@@ -3,6 +3,7 @@ use image::RgbaImage;
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Stdio};
+use std::sync::Arc;
 use std::time::Duration;
 
 use super::gif_encoder::find_ffmpeg;
@@ -24,7 +25,7 @@ pub struct Mp4Streamer {
     frames_pushed: u64,
     // the frame currently on screen; its tick count is only known once the
     // next frame's capture time arrives
-    pending: Option<(RgbaImage, Duration)>,
+    pending: Option<(Arc<RgbaImage>, Duration)>,
 }
 
 impl Mp4Streamer {
@@ -52,7 +53,7 @@ impl Mp4Streamer {
         self.frames_pushed
     }
 
-    pub fn push(&mut self, image: RgbaImage, at: Duration) -> Result<()> {
+    pub fn push(&mut self, image: Arc<RgbaImage>, at: Duration) -> Result<()> {
         if self.child.is_none() {
             self.spawn_encoder(image.width(), image.height())?;
         }
@@ -64,12 +65,13 @@ impl Mp4Streamer {
         Ok(())
     }
 
-    /// flushes the pending frame with one nominal hold, closes the pipe, and
-    /// waits for ffmpeg. returns the finished video-only temp file
-    pub fn finish(&mut self) -> Result<PathBuf> {
+    /// flushes the pending frame through capture_end and returns the video-only temp file
+    pub fn finish(&mut self, capture_end: Option<Duration>) -> Result<PathBuf> {
         if let Some((img, at)) = self.pending.take() {
             let nominal = Duration::from_secs_f64(1.0 / self.fps as f64);
-            self.write_span(&img, at, at.saturating_add(nominal))?;
+            let nominal_end = at.saturating_add(nominal);
+            let end = capture_end.unwrap_or(nominal_end).max(nominal_end);
+            self.write_span(&img, at, end)?;
             if self.frames_written == 0 {
                 // sub-tick recording: still emit one frame so the file is valid
                 self.write_raw(&img, 1)?;
@@ -270,13 +272,30 @@ mod tests {
             let shade = (i * 6) as u8;
             let img = RgbaImage::from_pixel(64, 48, image::Rgba([shade, 30, 60, 255]));
             streamer
-                .push(img, Duration::from_millis(i as u64 * 100))
+                .push(Arc::new(img), Duration::from_millis(i as u64 * 100))
                 .unwrap();
         }
-        let path = streamer.finish().unwrap();
+        let path = streamer.finish(None).unwrap();
         let bytes = std::fs::read(&path).unwrap();
         let _ = std::fs::remove_file(&path);
         let secs = mp4_duration_secs(&bytes).expect("mvhd box present");
         assert!((3.8..=4.2).contains(&secs), "duration {secs}s, want ~4.0");
+    }
+
+    #[test]
+    fn static_stream_uses_capture_end() {
+        if !super::super::is_ffmpeg_available() {
+            return;
+        }
+        let mut streamer = Mp4Streamer::new(15, 23);
+        let image = RgbaImage::from_pixel(64, 48, image::Rgba([40, 80, 120, 255]));
+        streamer.push(Arc::new(image), Duration::ZERO).unwrap();
+
+        let path = streamer.finish(Some(Duration::from_secs(1))).unwrap();
+        assert_eq!(streamer.frames_written, 15);
+        let bytes = std::fs::read(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+        let secs = mp4_duration_secs(&bytes).expect("mvhd box present");
+        assert!((0.9..=1.1).contains(&secs), "duration {secs}s, want ~1.0");
     }
 }

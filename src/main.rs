@@ -334,6 +334,7 @@ fn main() {
             commands::sftp_forget_host,
             commands::test_upload_connection,
             commands::fire_task,
+            commands::stop_recording,
             commands::run_ocr,
             commands::pin_image,
             commands::get_pinned_image_path,

@@ -3,12 +3,14 @@ use gif::{Encoder, Frame, Repeat};
 use image::RgbaImage;
 use std::fs::OpenOptions;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::capture::{MonitorInfo, Rectangle, ScreenCapture};
+use crate::config::{GifEngine, GifOptions, GifPalette};
 
 fn find_best_monitor(rect: Rectangle) -> Option<MonitorInfo> {
     let monitors = crate::capture::list_monitors().ok()?;
@@ -43,6 +45,30 @@ fn find_best_monitor(rect: Rectangle) -> Option<MonitorInfo> {
     best_monitor
 }
 
+fn region_within_monitor(rect: Rectangle, monitor: &MonitorInfo) -> bool {
+    let (Ok(rect_width), Ok(rect_height), Ok(monitor_width), Ok(monitor_height)) = (
+        i32::try_from(rect.width),
+        i32::try_from(rect.height),
+        i32::try_from(monitor.width),
+        i32::try_from(monitor.height),
+    ) else {
+        return false;
+    };
+    let (Some(rect_right), Some(rect_bottom), Some(monitor_right), Some(monitor_bottom)) = (
+        rect.x.checked_add(rect_width),
+        rect.y.checked_add(rect_height),
+        monitor.x.checked_add(monitor_width),
+        monitor.y.checked_add(monitor_height),
+    ) else {
+        return false;
+    };
+
+    rect.x >= monitor.x
+        && rect.y >= monitor.y
+        && rect_right <= monitor_right
+        && rect_bottom <= monitor_bottom
+}
+
 use super::mp4_stream::{ffmpeg_command, Mp4Streamer};
 use super::spool::FrameSpool;
 use super::{RecordingFormat, RecordingSettings, RecordingState, StopReason};
@@ -52,13 +78,20 @@ const MAX_FRAMES: usize = 21600;
 const MAX_GIF_DIMENSION: u32 = 4096;
 const MAX_GIF_FILE_SIZE: u64 = 500 * 1024 * 1024;
 const MIN_FRAME_INTERVAL_MS: u64 = 16;
+const DIRECT_BLACK_RECHECK_FRAMES: u32 = 30;
 
 // where kept frames go during capture. RAM stays flat either way: gif frames
 // spool to a temp file for the post-stop encode, mp4 frames stream into a
 // live ffmpeg child as they arrive
 enum FrameSink {
-    Gif(FrameSpool),
-    Mp4(Mp4Streamer),
+    Gif {
+        spool: FrameSpool,
+        capture_end: Option<Duration>,
+    },
+    Mp4 {
+        streamer: Mp4Streamer,
+        capture_end: Option<Duration>,
+    },
 }
 
 pub struct GifRecorder {
@@ -67,14 +100,15 @@ pub struct GifRecorder {
     sink: Arc<Mutex<Option<FrameSink>>>,
     stop_reason: Arc<Mutex<Option<StopReason>>>,
     stop_signal: Option<Sender<()>>,
-    region: Option<Rectangle>,
+    // read every tick so the frame can be moved and resized mid-recording
+    region: Arc<Mutex<Option<Rectangle>>>,
+    paused: Arc<AtomicBool>,
     audio_temp_path: Option<std::path::PathBuf>,
     audio_stop_tx: Option<Sender<()>>,
 }
 
-// map each frame's real end time (next frame's capture time; the last frame
-// holds one nominal interval) onto a discrete output clock. Rounding every
-// frame independently drifts by up to one unit per frame — a 15fps gif loses
+// map capture timestamps and the final horizon onto a discrete output clock.
+// Rounding every frame independently drifts by up to one unit per frame — a 15fps gif loses
 // 6.7ms each frame and plays ~11% fast — so the schedule tracks the cumulative
 // target instead, keeping total drift under one unit for any length. A frame
 // whose slot lands below `min_units` gets 0 (the caller drops it and its time
@@ -83,6 +117,7 @@ pub struct GifRecorder {
 fn schedule_frames(
     times: &[Duration],
     nominal: Duration,
+    capture_end: Option<Duration>,
     units_per_sec: f64,
     min_units: u64,
     max_units: u64,
@@ -92,9 +127,10 @@ fn schedule_frames(
         .iter()
         .enumerate()
         .map(|(i, t)| {
+            let nominal_end = t.saturating_add(nominal);
             let end = match times.get(i + 1) {
                 Some(next) => *next.max(t),
-                None => t.saturating_add(nominal),
+                None => capture_end.unwrap_or(nominal_end).max(nominal_end),
             };
             let target = (end.as_secs_f64() * units_per_sec).round() as u64;
             let slot = target.saturating_sub(emitted);
@@ -120,8 +156,12 @@ fn schedule_frames(
 
 // gif delays count in hundredths of a second; players treat <2cs as a slow
 // 10cs default, so that's the drop threshold. 6000cs caps a single hold at 60s
-fn gif_delay_schedule(times: &[Duration], nominal: Duration) -> Vec<u16> {
-    schedule_frames(times, nominal, 100.0, 2, 6000)
+fn gif_delay_schedule(
+    times: &[Duration],
+    nominal: Duration,
+    capture_end: Option<Duration>,
+) -> Vec<u16> {
+    schedule_frames(times, nominal, capture_end, 100.0, 2, 6000)
         .into_iter()
         .map(|u| u as u16)
         .collect()
@@ -131,45 +171,322 @@ fn gif_delay_schedule(times: &[Duration], nominal: Duration) -> Vec<u16> {
 // once per tick of its slot so wall-clock timing survives dedup and slow
 // captures. 0 means the frame is skipped entirely
 fn mp4_repeat_schedule(times: &[Duration], nominal: Duration, fps: u32) -> Vec<u64> {
-    schedule_frames(times, nominal, fps as f64, 1, 60 * fps.max(1) as u64)
+    schedule_frames(times, nominal, None, fps as f64, 1, 60 * fps.max(1) as u64)
 }
 
-fn compute_frame_fingerprint(image: &RgbaImage) -> u64 {
-    let w = image.width();
-    let h = image.height();
-    if w == 0 || h == 0 {
-        return 0;
+// recorded time with every pause cut out, so the output plays straight
+// through a pause and max duration counts only what was captured
+#[derive(Default)]
+struct PauseClock {
+    paused_total: Duration,
+    paused_since: Option<Instant>,
+}
+
+impl PauseClock {
+    fn update(&mut self, paused: bool, now: Instant) {
+        match (paused, self.paused_since) {
+            (true, None) => self.paused_since = Some(now),
+            (false, Some(since)) => {
+                self.paused_total += now.saturating_duration_since(since);
+                self.paused_since = None;
+            }
+            _ => {}
+        }
     }
 
-    let mut hash: u64 = 0;
-    let sample_points = [
-        (w / 4, h / 4),
-        (w / 2, h / 4),
-        (3 * w / 4, h / 4),
-        (w / 4, h / 2),
-        (w / 2, h / 2),
-        (3 * w / 4, h / 2),
-        (w / 4, 3 * h / 4),
-        (w / 2, 3 * h / 4),
-        (3 * w / 4, 3 * h / 4),
-        (w / 8, h / 8),
-        (7 * w / 8, h / 8),
-        (w / 8, 7 * h / 8),
-        (7 * w / 8, 7 * h / 8),
-        (w / 3, h / 3),
-        (2 * w / 3, h / 3),
-        (w / 3, 2 * h / 3),
+    fn is_paused(&self) -> bool {
+        self.paused_since.is_some()
+    }
+
+    fn active(&self, start: Instant, now: Instant) -> Duration {
+        let pausing = self
+            .paused_since
+            .map_or(Duration::ZERO, |since| now.saturating_duration_since(since));
+        now.saturating_duration_since(start)
+            .saturating_sub(self.paused_total + pausing)
+    }
+}
+
+fn frames_match(previous: Option<&RgbaImage>, current: &RgbaImage) -> bool {
+    previous.is_some_and(|previous| {
+        previous.dimensions() == current.dimensions() && previous.as_raw() == current.as_raw()
+    })
+}
+
+fn should_probe_direct_black(cooldown: &mut u32, is_black: bool) -> bool {
+    if !is_black {
+        *cooldown = 0;
+        return false;
+    }
+    if *cooldown == 0 {
+        return true;
+    }
+    *cooldown -= 1;
+    false
+}
+
+fn is_exact_black(image: &RgbaImage) -> bool {
+    image
+        .as_raw()
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .all(|pixel| pixel[0] == 0 && pixel[1] == 0 && pixel[2] == 0)
+}
+
+fn gif_output_dims(width: u32, height: u32, opts: &GifOptions) -> (u32, u32) {
+    let mut scale = opts.scale_percent.clamp(10, 100) as f64 / 100.0;
+    if opts.max_width > 0 && width as f64 * scale > opts.max_width as f64 {
+        scale = opts.max_width as f64 / width as f64;
+    }
+    let dim = |v: u32| ((v as f64 * scale).round() as u32).max(1);
+    (dim(width), dim(height))
+}
+
+// ~10k pixels per frame is plenty for the palette network to learn from
+fn sample_pixels(rgba: &[u8], samples: &mut Vec<u8>) {
+    let pixels = rgba.as_chunks::<4>().0;
+    let step = (pixels.len() / 10_000).max(1);
+    for pixel in pixels.iter().step_by(step) {
+        samples.extend_from_slice(pixel);
+    }
+    if samples.is_empty() {
+        samples.extend_from_slice(&[0, 0, 0, 255]);
+    }
+}
+
+// nearest-color lookups go through a 6-bit-per-channel cache: 262k slots,
+// at most 3 levels off per channel, far below the palette's own error
+struct Quantizer {
+    nq: color_quant::NeuQuant,
+    palette: Vec<u8>,
+    cache: Vec<u16>,
+}
+
+impl Quantizer {
+    fn new(samples: &[u8], colors: usize) -> Self {
+        let nq = color_quant::NeuQuant::new(10, colors, samples);
+        let palette = nq.color_map_rgb();
+        Self {
+            nq,
+            palette,
+            cache: vec![u16::MAX; 1 << 18],
+        }
+    }
+
+    fn index(&mut self, r: u8, g: u8, b: u8) -> u8 {
+        let key = ((r as usize >> 2) << 12) | ((g as usize >> 2) << 6) | (b as usize >> 2);
+        if self.cache[key] == u16::MAX {
+            self.cache[key] = self.nq.index_of(&[r, g, b, 255]) as u16;
+        }
+        self.cache[key] as u8
+    }
+}
+
+// floyd-steinberg when dithering. with `keep`, pixels equal to the previous
+// emitted frame get the skip index so the decoder leaves them on screen
+fn quantize_frame(
+    rgba: &[u8],
+    width: usize,
+    quantizer: &mut Quantizer,
+    dither: bool,
+    keep: Option<(&[u8], u8)>,
+) -> Vec<u8> {
+    let pixels = rgba.as_chunks::<4>().0;
+    let previous = keep.map(|(prev, skip)| (prev.as_chunks::<4>().0, skip));
+    let stride = width + 2;
+    let mut error = vec![[0i16; 3]; if dither { stride * 2 } else { 0 }];
+    let mut out = vec![0u8; pixels.len()];
+
+    for (i, px) in pixels.iter().enumerate() {
+        let x = i % width;
+        let row = (i / width) & 1;
+        let (cur, next) = (row * stride + x + 1, (row ^ 1) * stride + x + 1);
+        if dither && x == 0 {
+            error[(row ^ 1) * stride..(row ^ 1) * stride + stride].fill([0; 3]);
+        }
+        if let Some((prev, skip)) = previous {
+            if prev.get(i) == Some(px) {
+                out[i] = skip;
+                continue;
+            }
+        }
+        if !dither {
+            out[i] = quantizer.index(px[0], px[1], px[2]);
+            continue;
+        }
+        let e = error[cur];
+        let c = |k: usize| (px[k] as i16 + e[k]).clamp(0, 255);
+        let (r, g, b) = (c(0), c(1), c(2));
+        let idx = quantizer.index(r as u8, g as u8, b as u8);
+        out[i] = idx;
+        let p = &quantizer.palette[idx as usize * 3..idx as usize * 3 + 3];
+        for (k, v) in [r, g, b].into_iter().enumerate() {
+            let d = v - p[k] as i16;
+            error[cur + 1][k] += d * 7 / 16;
+            error[next - 1][k] += d * 3 / 16;
+            error[next][k] += d * 5 / 16;
+            error[next + 1][k] += d / 16;
+        }
+    }
+    out
+}
+
+// smallest rectangle holding every changed pixel; an unchanged frame still
+// needs one pixel to carry its delay
+fn crop_changed(
+    indexes: &[u8],
+    width: u32,
+    height: u32,
+    skip: u8,
+) -> (u32, u32, u32, u32, Vec<u8>) {
+    let w = width as usize;
+    let (mut x0, mut y0, mut x1, mut y1) = (w, height as usize, 0, 0);
+    for (i, _) in indexes.iter().enumerate().filter(|(_, &v)| v != skip) {
+        let (x, y) = (i % w, i / w);
+        x0 = x0.min(x);
+        y0 = y0.min(y);
+        x1 = x1.max(x + 1);
+        y1 = y1.max(y + 1);
+    }
+    if x1 == 0 {
+        return (0, 0, 1, 1, vec![skip]);
+    }
+    let buffer = (y0..y1)
+        .flat_map(|y| indexes[y * w + x0..y * w + x1].iter().copied())
+        .collect();
+    (
+        x0 as u32,
+        y0 as u32,
+        (x1 - x0) as u32,
+        (y1 - y0) as u32,
+        buffer,
+    )
+}
+
+// ffmpeg's gif muxer rounds each frame to whole centiseconds, so frames go in
+// at a rate that divides 100 and every tick lands exactly
+fn ffmpeg_gif_rate(fps: u32) -> u32 {
+    [1, 2, 4, 5, 10, 20, 25, 50]
+        .into_iter()
+        .find(|&r| r >= fps)
+        .unwrap_or(50)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn save_gif_ffmpeg(
+    spool: &mut FrameSpool,
+    times: &[Duration],
+    nominal: Duration,
+    capture_end: Option<Duration>,
+    (in_width, in_height): (u32, u32),
+    (out_width, out_height): (u32, u32),
+    opts: &GifOptions,
+    path: &Path,
+) -> Result<()> {
+    let rate = ffmpeg_gif_rate((1.0 / nominal.as_secs_f64()).round() as u32);
+    let repeats = schedule_frames(
+        times,
+        nominal,
+        capture_end,
+        rate as f64,
+        1,
+        60 * rate as u64,
+    );
+    let dither = if opts.dither { "sierra2_4a" } else { "none" };
+    let diff = if opts.diff_frames {
+        "rectangle"
+    } else {
+        "none"
+    };
+    let scale = format!("scale={out_width}:{out_height}:flags=lanczos");
+    let colors = opts.colors.clamp(2, 256);
+    let size = format!("{in_width}x{in_height}");
+    let rate_arg = rate.to_string();
+    let input = [
+        "-f", "rawvideo", "-pix_fmt", "rgba", "-s", &size, "-r", &rate_arg, "-i", "-",
     ];
 
-    for (i, &(x, y)) in sample_points.iter().enumerate() {
-        let x = x.min(w - 1);
-        let y = y.min(h - 1);
-        let pixel = image.get_pixel(x, y);
-        let val = ((pixel[0] as u64) << 16) | ((pixel[1] as u64) << 8) | (pixel[2] as u64);
-        hash ^= val.wrapping_shl((i as u32 * 4) % 64);
-    }
+    let mut run = |extra: &[&str]| -> Result<()> {
+        let mut child = ffmpeg_command()
+            .args(input)
+            .args(extra)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .map_err(|e| anyhow!("Failed to spawn ffmpeg: {e}"))?;
+        let mut stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| anyhow!("ffmpeg stdin closed"))?;
+        let mut written = Ok(());
+        'frames: for (i, &count) in repeats.iter().enumerate() {
+            if count == 0 {
+                continue;
+            }
+            let frame = match spool.read_frame(i) {
+                Ok(frame) => frame,
+                Err(e) => {
+                    written = Err(e);
+                    break;
+                }
+            };
+            let frame = if frame.dimensions() != (in_width, in_height) {
+                image::imageops::resize(
+                    &frame,
+                    in_width,
+                    in_height,
+                    image::imageops::FilterType::Triangle,
+                )
+            } else {
+                frame
+            };
+            for _ in 0..count {
+                if let Err(e) = std::io::Write::write_all(&mut stdin, frame.as_raw()) {
+                    written = Err(e.into());
+                    break 'frames;
+                }
+            }
+        }
+        drop(stdin);
+        let status = child.wait()?;
+        written?;
+        if !status.success() {
+            return Err(anyhow!("ffmpeg exited with {status}"));
+        }
+        Ok(())
+    };
 
-    hash
+    let out = path.to_string_lossy().into_owned();
+    let result = if opts.palette == GifPalette::PerFrame {
+        // diff_mode keeps the previous frame's indexes outside the changed
+        // rectangle, which point at the wrong colors once each frame has its own palette
+        let graph = format!(
+            "{scale},split[a][b];[a]palettegen=max_colors={colors}:stats_mode=single[p];[b][p]paletteuse=new=1:dither={dither}"
+        );
+        run(&["-filter_complex", &graph, "-y", &out])
+    } else {
+        // a global palette needs every frame first; two passes over the on-disk
+        // spool keep ffmpeg from buffering the whole recording in memory
+        let palette_path = std::env::temp_dir().join(format!(
+            "capscr_palette_{}.png",
+            uuid::Uuid::new_v4().as_simple()
+        ));
+        let palette = palette_path.to_string_lossy().into_owned();
+        let pass_one = format!("{scale},palettegen=max_colors={colors}:stats_mode=diff");
+        let result = run(&["-vf", &pass_one, "-y", &palette]).and_then(|()| {
+            let graph =
+                format!("[0:v]{scale}[x];[x][1:v]paletteuse=dither={dither}:diff_mode={diff}");
+            run(&["-i", &palette, "-filter_complex", &graph, "-y", &out])
+        });
+        let _ = std::fs::remove_file(&palette_path);
+        result
+    };
+    if result.is_err() {
+        let _ = std::fs::remove_file(path);
+    }
+    result
 }
 
 impl GifRecorder {
@@ -180,15 +497,30 @@ impl GifRecorder {
             sink: Arc::new(Mutex::new(None)),
             stop_reason: Arc::new(Mutex::new(None)),
             stop_signal: None,
-            region: None,
+            region: Arc::new(Mutex::new(None)),
+            paused: Arc::new(AtomicBool::new(false)),
             audio_temp_path: None,
             audio_stop_tx: None,
         }
     }
 
-    pub fn with_region(mut self, region: Rectangle) -> Self {
-        self.region = Some(region);
+    pub fn with_region(self, region: Rectangle) -> Self {
+        self.set_region(region);
         self
+    }
+
+    pub fn set_region(&self, region: Rectangle) {
+        if region.width > 0 && region.height > 0 {
+            *self.region.lock().unwrap_or_else(|e| e.into_inner()) = Some(region);
+        }
+    }
+
+    pub fn set_paused(&self, paused: bool) {
+        self.paused.store(paused, Ordering::SeqCst);
+    }
+
+    pub fn is_paused(&self) -> bool {
+        self.paused.load(Ordering::SeqCst)
     }
 
     #[allow(dead_code)]
@@ -216,15 +548,19 @@ impl GifRecorder {
 
         let new_sink = match self.settings.format {
             RecordingFormat::Gif => match FrameSpool::create() {
-                Ok(spool) => FrameSink::Gif(spool),
+                Ok(spool) => FrameSink::Gif {
+                    spool,
+                    capture_end: None,
+                },
                 Err(e) => {
                     *self.state.lock().unwrap_or_else(|p| p.into_inner()) = RecordingState::Idle;
                     return Err(e);
                 }
             },
-            RecordingFormat::Mp4 => {
-                FrameSink::Mp4(Mp4Streamer::new(self.settings.fps, self.settings.video_crf))
-            }
+            RecordingFormat::Mp4 => FrameSink::Mp4 {
+                streamer: Mp4Streamer::new(self.settings.fps, self.settings.video_crf),
+                capture_end: None,
+            },
         };
         *self.sink.lock().unwrap_or_else(|e| e.into_inner()) = Some(new_sink);
         *self.stop_reason.lock().unwrap_or_else(|e| e.into_inner()) = None;
@@ -254,8 +590,19 @@ impl GifRecorder {
         let stop_reason = Arc::clone(&self.stop_reason);
         let fps = self.settings.fps.max(1);
         let max_duration = self.settings.max_duration;
-        let region = self.region;
-        let best_monitor = region.and_then(find_best_monitor);
+        let live_region = Arc::clone(&self.region);
+        let paused = Arc::clone(&self.paused);
+        let mut region = *live_region.lock().unwrap_or_else(|e| e.into_inner());
+        let mut best_monitor = region.and_then(find_best_monitor);
+        let virtual_origin = crate::capture::list_monitors()
+            .ok()
+            .and_then(|monitors| {
+                Some((
+                    monitors.iter().map(|monitor| monitor.x).min()?,
+                    monitors.iter().map(|monitor| monitor.y).min()?,
+                ))
+            })
+            .unwrap_or((0, 0));
         let show_cursor = self.settings.show_cursor;
 
         thread::spawn(move || {
@@ -275,28 +622,55 @@ impl GifRecorder {
                 TimerGuard
             };
 
-            // one persistent frame source per recording: x11 GetImage or a
-            // compositor-side wayland grabber, picked by the source chain.
-            // region-sized direct grabs keep frame cost in the low
-            // milliseconds, where the generic whole-monitor-then-crop path
-            // can cost whole seconds. any failure falls back to that path
+            // one persistent region source per recording: reusable GDI on
+            // windows, or the compositor and x11 source chain on linux
+            // failures fall back to the generic monitor capture path
             #[cfg(target_os = "linux")]
             let mut direct_source = match region {
                 Some(rect) => match crate::capture::RecordingSource::new(rect, show_cursor) {
                     Ok(source) => Some(source),
                     Err(e) => {
-                        tracing::warn!("direct region source unavailable ({e:#}); using generic path");
+                        tracing::warn!(
+                            "direct region source unavailable ({e:#}); using generic path"
+                        );
                         None
                     }
                 },
                 None => None,
             };
 
+            #[cfg(windows)]
+            let open_direct = |rect: Rectangle, monitor: Option<&MonitorInfo>| {
+                if !region_within_monitor(rect, monitor?) {
+                    return None;
+                }
+                match crate::capture::GdiRegionGrabber::new(
+                    rect.x,
+                    rect.y,
+                    rect.width.min(MAX_GIF_DIMENSION),
+                    rect.height.min(MAX_GIF_DIMENSION),
+                ) {
+                    Ok(source) => Some(source),
+                    Err(error) => {
+                        tracing::warn!(
+                            "direct Windows region source unavailable ({error:#}); using generic path"
+                        );
+                        None
+                    }
+                }
+            };
+            #[cfg(windows)]
+            let mut direct_source =
+                region.and_then(|rect| open_direct(rect, best_monitor.as_ref()));
+            #[cfg(windows)]
+            let mut direct_black_probe_cooldown = 0;
+
             let min_frame_duration = Duration::from_millis(MIN_FRAME_INTERVAL_MS);
             let frame_duration = Duration::from_secs_f64(1.0 / fps as f64).max(min_frame_duration);
             let start_time = Instant::now();
+            let mut clock = PauseClock::default();
             let mut frames_kept: usize = 0;
-            let mut last_fingerprint: u64 = 0;
+            let mut last_frame: Option<Arc<RgbaImage>> = None;
             let mut consecutive_dupes: u32 = 0;
 
             let reason = loop {
@@ -304,8 +678,25 @@ impl GifRecorder {
                     break StopReason::Requested;
                 }
 
-                if start_time.elapsed() >= max_duration {
+                clock.update(paused.load(Ordering::SeqCst), Instant::now());
+                if clock.is_paused() {
+                    thread::sleep(Duration::from_millis(20));
+                    continue;
+                }
+
+                if clock.active(start_time, Instant::now()) >= max_duration {
                     break StopReason::MaxDuration;
+                }
+
+                let latest = *live_region.lock().unwrap_or_else(|e| e.into_inner());
+                if latest != region {
+                    region = latest;
+                    best_monitor = region.and_then(find_best_monitor);
+                    #[cfg(windows)]
+                    {
+                        direct_source =
+                            region.and_then(|rect| open_direct(rect, best_monitor.as_ref()));
+                    }
                 }
 
                 let frame_start = Instant::now();
@@ -325,51 +716,101 @@ impl GifRecorder {
                             )
                             .ok()
                     });
-                    #[cfg(not(target_os = "linux"))]
+
+                    #[cfg(windows)]
+                    let direct_result = direct_source.as_mut().map(|source| source.grab());
+                    #[cfg(windows)]
+                    let direct = match direct_result {
+                        Some(Ok(image)) => Some(image),
+                        Some(Err(error)) => {
+                            tracing::warn!(
+                                "direct Windows region source failed ({error:#}); using generic path"
+                            );
+                            direct_source = None;
+                            None
+                        }
+                        None => None,
+                    };
+
+                    #[cfg(not(any(windows, target_os = "linux")))]
                     let direct: Option<RgbaImage> = None;
 
-                    if let Some(img) = direct {
-                        Ok(img)
-                    } else {
-                        let single_monitor_capture = if let Some(ref m) = best_monitor {
-                            crate::capture::capture_one_monitor(m).map(|img| {
-                                let local_x = (rect.x - m.x).max(0) as u32;
-                                let local_y = (rect.y - m.y).max(0) as u32;
-                                let max_w = img.width().saturating_sub(local_x);
-                                let max_h = img.height().saturating_sub(local_y);
-                                let w = rect.width.min(max_w).min(MAX_GIF_DIMENSION);
-                                let h = rect.height.min(max_h).min(MAX_GIF_DIMENSION);
-                                (img, local_x, local_y, w, h)
-                            })
-                        } else {
-                            Err(anyhow!("No monitor matches the region"))
-                        };
+                    let capture_fallback = || -> Result<RgbaImage> {
+                        let width = rect.width.min(MAX_GIF_DIMENSION);
+                        let height = rect.height.min(MAX_GIF_DIMENSION);
+                        if width == 0 || height == 0 {
+                            return Err(anyhow!("Invalid region"));
+                        }
 
-                        match single_monitor_capture {
-                            Ok((img, local_x, local_y, w, h)) => {
-                                if w == 0 || h == 0 {
-                                    Err(anyhow!("Invalid region"))
-                                } else {
-                                    Ok(image::imageops::crop_imm(&img, local_x, local_y, w, h)
-                                        .to_image())
+                        if let Some(monitor) = best_monitor
+                            .as_ref()
+                            .filter(|monitor| region_within_monitor(rect, monitor))
+                        {
+                            if let Ok(image) = crate::capture::capture_one_monitor(monitor) {
+                                let local_x = (rect.x - monitor.x) as u32;
+                                let local_y = (rect.y - monitor.y) as u32;
+                                let fits = local_x
+                                    .checked_add(width)
+                                    .is_some_and(|right| right <= image.width())
+                                    && local_y
+                                        .checked_add(height)
+                                        .is_some_and(|bottom| bottom <= image.height());
+                                if fits {
+                                    return Ok(image::imageops::crop_imm(
+                                        &image, local_x, local_y, width, height,
+                                    )
+                                    .to_image());
                                 }
                             }
-                            Err(_) => {
-                                let full = ScreenCapture::all_monitors();
-                                full.and_then(|img| {
-                                    let x = rect.x.max(0) as u32;
-                                    let y = rect.y.max(0) as u32;
-                                    let max_w = img.width().saturating_sub(x);
-                                    let max_h = img.height().saturating_sub(y);
-                                    let w = rect.width.min(max_w).min(MAX_GIF_DIMENSION);
-                                    let h = rect.height.min(max_h).min(MAX_GIF_DIMENSION);
-                                    if w == 0 || h == 0 {
-                                        return Err(anyhow!("Invalid region"));
+                        }
+
+                        let full = ScreenCapture::all_monitors()?;
+                        let x = rect.x.saturating_sub(virtual_origin.0).max(0) as u32;
+                        let y = rect.y.saturating_sub(virtual_origin.1).max(0) as u32;
+                        let fits = x
+                            .checked_add(width)
+                            .is_some_and(|right| right <= full.width())
+                            && y.checked_add(height)
+                                .is_some_and(|bottom| bottom <= full.height());
+                        if !fits {
+                            return Err(anyhow!("Region extends beyond the captured desktop"));
+                        }
+                        Ok(image::imageops::crop_imm(&full, x, y, width, height).to_image())
+                    };
+
+                    if let Some(img) = direct {
+                        #[cfg(windows)]
+                        {
+                            let probe_black = should_probe_direct_black(
+                                &mut direct_black_probe_cooldown,
+                                crate::capture::is_black_frame(&img) && is_exact_black(&img),
+                            );
+                            if probe_black {
+                                match capture_fallback() {
+                                    Ok(fallback) if !is_exact_black(&fallback) => {
+                                        tracing::warn!(
+                                            "direct Windows region source returned black; using monitor fallback"
+                                        );
+                                        direct_source = None;
+                                        Ok(fallback)
                                     }
-                                    Ok(image::imageops::crop_imm(&img, x, y, w, h).to_image())
-                                })
+                                    Ok(_) => {
+                                        direct_black_probe_cooldown = DIRECT_BLACK_RECHECK_FRAMES;
+                                        Ok(img)
+                                    }
+                                    Err(_) => {
+                                        direct_black_probe_cooldown = DIRECT_BLACK_RECHECK_FRAMES;
+                                        Ok(img)
+                                    }
+                                }
+                            } else {
+                                Ok(img)
                             }
                         }
+                        #[cfg(not(windows))]
+                        Ok(img)
+                    } else {
+                        capture_fallback()
                     }
                 } else {
                     ScreenCapture::all_monitors().map(|img| {
@@ -400,29 +841,22 @@ impl GifRecorder {
                 if let Ok(mut image) = capture_result {
                     if image.width() <= MAX_GIF_DIMENSION && image.height() <= MAX_GIF_DIMENSION {
                         // grab the cursor once so the same snapshot drives both the
-                        // dedup fingerprint and the composite below
+                        // frame comparison and the composite below
                         let cursor_shot = if show_cursor && region.is_some() {
                             crate::capture::capture_cursor_shot()
                         } else {
                             None
                         };
 
-                        let mut fingerprint = compute_frame_fingerprint(&image);
                         if let (Some(shot), Some(rect)) = (&cursor_shot, region) {
-                            let (cx, cy) = shot.screen_pos();
-                            // only perturb the fingerprint while the cursor is inside the
-                            // region: movement within it yields new frames, while a cursor
-                            // moving outside the capture must not defeat dedup
-                            if cx >= rect.x
-                                && cy >= rect.y
-                                && cx < rect.x.saturating_add(rect.width as i32)
-                                && cy < rect.y.saturating_add(rect.height as i32)
-                            {
-                                fingerprint ^= ((cx as u32 as u64) << 32) | (cy as u32 as u64);
-                            }
+                            crate::capture::composite_cursor_shot(
+                                &mut image,
+                                shot,
+                                (rect.x, rect.y),
+                            );
                         }
 
-                        if fingerprint == last_fingerprint {
+                        if frames_match(last_frame.as_deref(), &image) {
                             consecutive_dupes += 1;
                             if consecutive_dupes < 30 {
                                 let elapsed = frame_start.elapsed();
@@ -433,34 +867,27 @@ impl GifRecorder {
                             }
                         }
                         consecutive_dupes = 0;
-                        last_fingerprint = fingerprint;
-
-                        // paint the cursor only onto frames we actually keep
-                        if let (Some(shot), Some(rect)) = (&cursor_shot, region) {
-                            crate::capture::composite_cursor_shot(
-                                &mut image,
-                                shot,
-                                (rect.x, rect.y),
-                            );
-                        }
 
                         if frames_kept >= MAX_FRAMES {
                             break StopReason::FrameCap;
                         }
 
-                        let at = frame_start.duration_since(start_time);
+                        let at = clock.active(start_time, frame_start);
+                        let image = Arc::new(image);
                         let mut sink_guard = sink.lock().unwrap_or_else(|e| e.into_inner());
                         match sink_guard.as_mut() {
-                            Some(FrameSink::Gif(spool)) => match spool.push(&image, at) {
-                                Ok(true) => frames_kept += 1,
-                                Ok(false) => break StopReason::DiskFull,
-                                Err(e) => {
-                                    tracing::error!("frame spool write failed: {e}");
-                                    break StopReason::EncoderFailed;
+                            Some(FrameSink::Gif { spool, .. }) => {
+                                match spool.push(image.as_ref(), at) {
+                                    Ok(true) => frames_kept += 1,
+                                    Ok(false) => break StopReason::DiskFull,
+                                    Err(e) => {
+                                        tracing::error!("frame spool write failed: {e}");
+                                        break StopReason::EncoderFailed;
+                                    }
                                 }
-                            },
-                            Some(FrameSink::Mp4(streamer)) => {
-                                if let Err(e) = streamer.push(image, at) {
+                            }
+                            Some(FrameSink::Mp4 { streamer, .. }) => {
+                                if let Err(e) = streamer.push(Arc::clone(&image), at) {
                                     tracing::error!("mp4 stream write failed: {e}");
                                     break StopReason::EncoderFailed;
                                 }
@@ -469,6 +896,7 @@ impl GifRecorder {
                             // reset() cleared the sink under us — just end
                             None => break StopReason::Requested,
                         }
+                        last_frame = Some(image);
                     }
                 }
 
@@ -477,6 +905,17 @@ impl GifRecorder {
                     thread::sleep(frame_duration - elapsed);
                 }
             };
+
+            let capture_stopped_at = clock.active(start_time, Instant::now());
+            let mut sink_guard = sink.lock().unwrap_or_else(|e| e.into_inner());
+            match sink_guard.as_mut() {
+                Some(FrameSink::Gif { capture_end, .. })
+                | Some(FrameSink::Mp4 { capture_end, .. }) => {
+                    *capture_end = Some(capture_stopped_at);
+                }
+                None => {}
+            }
+            drop(sink_guard);
 
             *stop_reason.lock().unwrap_or_else(|e| e.into_inner()) = Some(reason);
             if let Ok(mut state_lock) = state.lock() {
@@ -499,8 +938,8 @@ impl GifRecorder {
     #[allow(dead_code)]
     pub fn frame_count(&self) -> usize {
         match self.sink.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
-            Some(FrameSink::Gif(spool)) => spool.len(),
-            Some(FrameSink::Mp4(streamer)) => streamer.frames_pushed() as usize,
+            Some(FrameSink::Gif { spool, .. }) => spool.len(),
+            Some(FrameSink::Mp4 { streamer, .. }) => streamer.frames_pushed() as usize,
             None => 0,
         }
     }
@@ -518,8 +957,8 @@ impl GifRecorder {
         }
 
         let mut sink_guard = self.sink.lock().unwrap_or_else(|e| e.into_inner());
-        let spool = match sink_guard.as_mut() {
-            Some(FrameSink::Gif(spool)) => spool,
+        let (spool, capture_end) = match sink_guard.as_mut() {
+            Some(FrameSink::Gif { spool, capture_end }) => (spool, *capture_end),
             _ => return Err(anyhow!("No frames captured")),
         };
 
@@ -540,9 +979,6 @@ impl GifRecorder {
             return Err(anyhow!("Image has zero dimension"));
         }
 
-        let width = orig_width as u16;
-        let height = orig_height as u16;
-
         if let Some(parent) = path.parent() {
             if !parent.as_os_str().is_empty() {
                 std::fs::create_dir_all(parent)?;
@@ -552,8 +988,30 @@ impl GifRecorder {
         let fps = self.settings.fps.clamp(1, 60);
         let nominal = Duration::from_secs_f64(1.0 / fps as f64);
         let times: Vec<Duration> = spool.metas().iter().map(|m| m.at).collect();
-        let delays = gif_delay_schedule(&times, nominal);
+        let opts = &self.settings.gif;
+        let (out_width, out_height) = gif_output_dims(orig_width, orig_height, opts);
 
+        if opts.engine == GifEngine::Ffmpeg {
+            if !is_ffmpeg_available() {
+                tracing::warn!("ffmpeg gif engine selected but ffmpeg is missing; using built-in");
+            } else {
+                match save_gif_ffmpeg(
+                    spool,
+                    &times,
+                    nominal,
+                    capture_end,
+                    (orig_width, orig_height),
+                    (out_width, out_height),
+                    opts,
+                    path,
+                ) {
+                    Ok(()) => return self.finish_gif(path),
+                    Err(e) => tracing::warn!("ffmpeg gif encode failed ({e:#}); using built-in"),
+                }
+            }
+        }
+
+        let delays = gif_delay_schedule(&times, nominal, capture_end);
         let filter = if self.settings.quality >= 80 {
             image::imageops::FilterType::Lanczos3
         } else if self.settings.quality >= 50 {
@@ -562,39 +1020,29 @@ impl GifRecorder {
             image::imageops::FilterType::Nearest
         };
 
-        let num_frames = spool.len();
-        let sample_step = (num_frames / 15).max(1);
-        let mut sample_pixels = Vec::new();
-
-        for i in (0..num_frames).step_by(sample_step) {
-            let frame = spool.read_frame(i)?;
-            let resized = if frame.width() != orig_width || frame.height() != orig_height {
-                image::imageops::resize(&frame, orig_width, orig_height, filter)
-            } else {
-                frame
-            };
-
-            let rgba = resized.as_raw();
-            let total_pixels = resized.width() * resized.height();
-            let pixel_step = (total_pixels / 10000).max(1) as usize;
-
-            for chunk in rgba.as_chunks::<4>().0.iter().step_by(pixel_step) {
-                sample_pixels.extend_from_slice(chunk);
+        // diff mode reserves the last palette slot for "keep what's on screen"
+        let colors = (opts.colors.clamp(2, 256) as usize - opts.diff_frames as usize).max(2);
+        let skip = colors as u8;
+        let with_skip = |mut palette: Vec<u8>| {
+            if opts.diff_frames {
+                palette.extend_from_slice(&[0, 0, 0]);
             }
-        }
+            palette
+        };
 
-        if sample_pixels.is_empty() {
-            sample_pixels.extend_from_slice(&[0, 0, 0, 255]);
+        let mut global = None;
+        if opts.palette == GifPalette::Global {
+            let num_frames = spool.len();
+            let mut samples = Vec::new();
+            for i in (0..num_frames).step_by((num_frames / 15).max(1)) {
+                sample_pixels(spool.read_frame(i)?.as_raw(), &mut samples);
+            }
+            global = Some(Quantizer::new(&samples, colors));
         }
-
-        let nq = color_quant::NeuQuant::new(10, 256, &sample_pixels);
-        let colormap_rgba = nq.color_map_rgba();
-        let mut global_palette = Vec::with_capacity(256 * 3);
-        for chunk in colormap_rgba.as_chunks::<4>().0 {
-            global_palette.push(chunk[0]);
-            global_palette.push(chunk[1]);
-            global_palette.push(chunk[2]);
-        }
+        let global_palette = global
+            .as_ref()
+            .map(|q| with_skip(q.palette.clone()))
+            .unwrap_or_default();
 
         {
             let file = OpenOptions::new()
@@ -602,9 +1050,11 @@ impl GifRecorder {
                 .create(true)
                 .truncate(true)
                 .open(path)?;
-            let mut encoder = Encoder::new(file, width, height, &global_palette)?;
+            let mut encoder =
+                Encoder::new(file, out_width as u16, out_height as u16, &global_palette)?;
             encoder.set_repeat(Repeat::Infinite)?;
 
+            let mut previous: Option<RgbaImage> = None;
             for (frame_idx, &delay) in delays.iter().enumerate() {
                 // 0-delay frames were folded into a neighbour by the schedule;
                 // skipping them here also skips their disk read + quantize cost
@@ -612,53 +1062,58 @@ impl GifRecorder {
                     continue;
                 }
                 let frame = spool.read_frame(frame_idx)?;
-                let resized = if frame.width() != orig_width || frame.height() != orig_height {
-                    image::imageops::resize(&frame, orig_width, orig_height, filter)
+                let frame = if frame.dimensions() != (out_width, out_height) {
+                    image::imageops::resize(&frame, out_width, out_height, filter)
                 } else {
                     frame
                 };
 
-                let rgba_data = resized.as_raw();
-                let pixel_count = (width as usize).saturating_mul(height as usize);
-
-                if pixel_count.saturating_mul(4) > 64 * 1024 * 1024 {
-                    return Err(anyhow!("Frame too large to encode"));
-                }
-
-                let mut indexed_pixels = vec![0u8; pixel_count];
-                let mut last_pixel = [0u8; 4];
-                let mut last_index = 0u8;
-                let mut cache_valid = false;
-
-                for (idx, chunk) in rgba_data.as_chunks::<4>().0.iter().enumerate() {
-                    if cache_valid
-                        && chunk[0] == last_pixel[0]
-                        && chunk[1] == last_pixel[1]
-                        && chunk[2] == last_pixel[2]
-                        && chunk[3] == last_pixel[3]
-                    {
-                        indexed_pixels[idx] = last_index;
-                    } else {
-                        let color_idx = nq.index_of(chunk) as u8;
-                        indexed_pixels[idx] = color_idx;
-                        last_pixel.copy_from_slice(chunk);
-                        last_index = color_idx;
-                        cache_valid = true;
+                let mut local = None;
+                let quantizer = match global.as_mut() {
+                    Some(q) => q,
+                    None => {
+                        let mut samples = Vec::new();
+                        sample_pixels(frame.as_raw(), &mut samples);
+                        local.insert(Quantizer::new(&samples, colors))
                     }
-                }
-
-                let frame = Frame {
-                    width,
-                    height,
-                    delay: delays[frame_idx],
-                    buffer: std::borrow::Cow::Owned(indexed_pixels),
-                    ..Default::default()
+                };
+                let keep = previous
+                    .as_ref()
+                    .filter(|_| opts.diff_frames)
+                    .map(|p| (p.as_raw().as_slice(), skip));
+                let indexes = quantize_frame(
+                    frame.as_raw(),
+                    out_width as usize,
+                    quantizer,
+                    opts.dither,
+                    keep,
+                );
+                let (left, top, width, height, buffer) = if keep.is_some() {
+                    crop_changed(&indexes, out_width, out_height, skip)
+                } else {
+                    (0, 0, out_width, out_height, indexes)
                 };
 
-                encoder.write_frame(&frame)?;
+                encoder.write_frame(&Frame {
+                    width: width as u16,
+                    height: height as u16,
+                    left: left as u16,
+                    top: top as u16,
+                    delay,
+                    dispose: gif::DisposalMethod::Keep,
+                    transparent: opts.diff_frames.then_some(skip),
+                    palette: local.map(|q| with_skip(q.palette)),
+                    buffer: std::borrow::Cow::Owned(buffer),
+                    ..Default::default()
+                })?;
+                previous = Some(frame);
             }
-        } // encoder and file handle dropped here — all bytes flushed before size check
+        } // encoder and file handle dropped here, so every byte is flushed before the size check
 
+        self.finish_gif(path)
+    }
+
+    fn finish_gif(&self, path: &Path) -> Result<()> {
         if let Ok(metadata) = std::fs::metadata(path) {
             if metadata.len() > MAX_GIF_FILE_SIZE {
                 let _ = std::fs::remove_file(path);
@@ -693,11 +1148,14 @@ impl GifRecorder {
         let temp_video = {
             let mut sink_guard = self.sink.lock().unwrap_or_else(|e| e.into_inner());
             match sink_guard.as_mut() {
-                Some(FrameSink::Mp4(streamer)) => {
+                Some(FrameSink::Mp4 {
+                    streamer,
+                    capture_end,
+                }) => {
                     if streamer.frames_pushed() == 0 {
                         return Err(anyhow!("No frames captured"));
                     }
-                    streamer.finish()?
+                    streamer.finish(*capture_end)?
                 }
                 _ => return Err(anyhow!("No frames captured")),
             }
@@ -1109,6 +1567,90 @@ mod tests {
     }
 
     #[test]
+    fn frame_comparison_detects_a_localized_change() {
+        let base = RgbaImage::from_pixel(320, 180, image::Rgba([20, 30, 40, 255]));
+        let mut changed = base.clone();
+        for y in 2..10 {
+            for x in 2..10 {
+                changed.put_pixel(x, y, image::Rgba([220, 40, 30, 255]));
+            }
+        }
+
+        assert!(frames_match(Some(&base), &base));
+        assert!(!frames_match(Some(&base), &changed));
+    }
+
+    #[test]
+    fn black_source_confirmation_expires_after_nonblack_frame() {
+        let mut cooldown = 0;
+
+        assert!(should_probe_direct_black(&mut cooldown, true));
+        cooldown = DIRECT_BLACK_RECHECK_FRAMES;
+        assert!(!should_probe_direct_black(&mut cooldown, true));
+        assert!(!should_probe_direct_black(&mut cooldown, false));
+        assert_eq!(cooldown, 0);
+        assert!(should_probe_direct_black(&mut cooldown, true));
+    }
+
+    #[test]
+    fn exact_black_check_detects_sparse_content() {
+        let mut image = RgbaImage::from_pixel(8, 8, image::Rgba([0, 0, 0, 255]));
+        image.put_pixel(3, 1, image::Rgba([0, 0, 1, 255]));
+
+        assert!(crate::capture::is_black_frame(&image));
+        assert!(!is_exact_black(&image));
+    }
+
+    #[test]
+    fn monitor_containment_rejects_spanning_region() {
+        let monitor = MonitorInfo {
+            id: 1,
+            name: "left".to_string(),
+            x: -1080,
+            y: 0,
+            width: 1080,
+            height: 1920,
+            is_primary: false,
+        };
+
+        assert!(region_within_monitor(
+            Rectangle {
+                x: -1000,
+                y: 100,
+                width: 800,
+                height: 600,
+            },
+            &monitor,
+        ));
+        assert!(!region_within_monitor(
+            Rectangle {
+                x: -100,
+                y: 100,
+                width: 200,
+                height: 600,
+            },
+            &monitor,
+        ));
+    }
+
+    #[test]
+    #[ignore = "performance probe"]
+    fn full_frame_comparison_fits_a_fifteen_fps_tick() {
+        let previous = RgbaImage::from_pixel(4096, 4096, image::Rgba([20, 30, 40, 255]));
+        let current = previous.clone();
+        let started = Instant::now();
+        for _ in 0..10 {
+            assert!(frames_match(
+                Some(std::hint::black_box(&previous)),
+                std::hint::black_box(&current),
+            ));
+        }
+        let per_frame = started.elapsed() / 10;
+        eprintln!("4096x4096 full-frame comparison: {per_frame:?}/frame");
+        assert!(per_frame < Duration::from_millis(66));
+    }
+
+    #[test]
     fn gif_schedule_uses_real_gaps() {
         let times = vec![
             Duration::from_millis(0),
@@ -1116,7 +1658,7 @@ mod tests {
             Duration::from_millis(600),
         ];
         let nominal = Duration::from_millis(66);
-        let delays = gif_delay_schedule(&times, nominal);
+        let delays = gif_delay_schedule(&times, nominal, None);
         assert_eq!(delays, vec![10, 50, 7]);
     }
 
@@ -1125,7 +1667,7 @@ mod tests {
         // 15fps captures are 66.7ms apart; per-frame truncation used to emit
         // 6cs each (10% fast). the cumulative schedule must land on ~667cs
         let times = times_at_interval(100, 1000.0 / 15.0);
-        let delays = gif_delay_schedule(&times, Duration::from_secs_f64(1.0 / 15.0));
+        let delays = gif_delay_schedule(&times, Duration::from_secs_f64(1.0 / 15.0), None);
         let total: u64 = delays.iter().map(|&d| d as u64).sum();
         assert!((666..=668).contains(&total), "total {total}cs, want ~667");
         assert!(delays.iter().all(|&d| d == 0 || d >= 2));
@@ -1136,7 +1678,7 @@ mod tests {
         // 60fps capture: 16.7ms/frame is under the 2cs player floor, so some
         // frames must be dropped rather than padding the gif 20% slower
         let times = times_at_interval(120, 1000.0 / 60.0);
-        let delays = gif_delay_schedule(&times, Duration::from_secs_f64(1.0 / 60.0));
+        let delays = gif_delay_schedule(&times, Duration::from_secs_f64(1.0 / 60.0), None);
         let total: u64 = delays.iter().map(|&d| d as u64).sum();
         assert!((199..=201).contains(&total), "total {total}cs, want ~200");
         assert!(delays.contains(&0), "expected dropped frames");
@@ -1146,14 +1688,14 @@ mod tests {
     #[test]
     fn gif_schedule_caps_single_hold() {
         let times = vec![Duration::from_millis(0), Duration::from_secs(120)];
-        let delays = gif_delay_schedule(&times, Duration::from_millis(66));
+        let delays = gif_delay_schedule(&times, Duration::from_millis(66), None);
         assert_eq!(delays[0], 6000);
     }
 
     #[test]
     fn gif_schedule_keeps_at_least_one_frame() {
         let times = vec![Duration::from_millis(0), Duration::from_millis(5)];
-        let delays = gif_delay_schedule(&times, Duration::from_millis(5));
+        let delays = gif_delay_schedule(&times, Duration::from_millis(5), None);
         assert_eq!(delays.iter().filter(|&&d| d > 0).count(), 1);
         assert!(delays.iter().all(|&d| d == 0 || d >= 2));
     }
@@ -1207,7 +1749,10 @@ mod tests {
                     .push(&img, Duration::from_millis(i as u64 * 222))
                     .unwrap();
             }
-            *recorder.sink.lock().unwrap() = Some(FrameSink::Gif(spool));
+            *recorder.sink.lock().unwrap() = Some(FrameSink::Gif {
+                spool,
+                capture_end: None,
+            });
         }
 
         let path = std::env::temp_dir().join(format!(
@@ -1235,6 +1780,222 @@ mod tests {
             (982..=985).contains(&total_cs),
             "total {total_cs}cs, want ~983"
         );
+    }
+
+    #[test]
+    fn gif_save_preserves_static_tail_until_capture_end() {
+        let recorder = GifRecorder::new(RecordingSettings::default());
+        {
+            let mut spool = FrameSpool::create().unwrap();
+            let image = RgbaImage::from_pixel(32, 24, image::Rgba([40, 80, 120, 255]));
+            spool.push(&image, Duration::ZERO).unwrap();
+            *recorder.sink.lock().unwrap() = Some(FrameSink::Gif {
+                spool,
+                capture_end: Some(Duration::from_secs(1)),
+            });
+        }
+
+        let path = std::env::temp_dir().join(format!(
+            "capscr_static_test_{}.gif",
+            uuid::Uuid::new_v4().as_simple()
+        ));
+        recorder.save(&path).unwrap();
+
+        let mut decoder = gif::DecodeOptions::new()
+            .read_info(std::fs::File::open(&path).unwrap())
+            .unwrap();
+        let mut total_cs = 0u64;
+        let mut frames = 0;
+        while let Some(frame) = decoder.read_next_frame().unwrap() {
+            total_cs += frame.delay as u64;
+            frames += 1;
+        }
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(frames, 1);
+        assert_eq!(total_cs, 100);
+    }
+
+    #[test]
+    fn pause_clock_cuts_paused_time() {
+        let start = Instant::now();
+        let mut clock = PauseClock::default();
+        clock.update(true, start + Duration::from_secs(2));
+        assert!(clock.is_paused());
+        assert_eq!(
+            clock.active(start, start + Duration::from_secs(5)),
+            Duration::from_secs(2)
+        );
+        clock.update(false, start + Duration::from_secs(5));
+        assert_eq!(
+            clock.active(start, start + Duration::from_secs(6)),
+            Duration::from_secs(3)
+        );
+    }
+
+    #[test]
+    fn output_dims_follow_scale_and_max_width() {
+        let mut opts = GifOptions::default();
+        assert_eq!(gif_output_dims(800, 600, &opts), (800, 600));
+        opts.scale_percent = 50;
+        assert_eq!(gif_output_dims(800, 600, &opts), (400, 300));
+        opts.max_width = 200;
+        assert_eq!(gif_output_dims(800, 600, &opts), (200, 150));
+    }
+
+    #[test]
+    fn crop_covers_only_changed_pixels() {
+        let mut indexes = vec![9u8; 6 * 4];
+        indexes[6 + 2] = 1;
+        indexes[2 * 6 + 4] = 2;
+        let (left, top, width, height, buffer) = crop_changed(&indexes, 6, 4, 9);
+        assert_eq!((left, top, width, height), (2, 1, 3, 2));
+        assert_eq!(buffer, vec![1, 9, 9, 9, 9, 2]);
+        assert_eq!(crop_changed(&[9; 4], 2, 2, 9).4, vec![9]);
+    }
+
+    fn moving_square(i: u32, width: u32, height: u32) -> RgbaImage {
+        RgbaImage::from_fn(width, height, |x, y| {
+            let sx = (i * 2) % (width - 6);
+            if (sx..sx + 6).contains(&x) && (8..14).contains(&y) {
+                image::Rgba([250, 250, 250, 255])
+            } else {
+                image::Rgba([(x * 8) as u8, (y * 10) as u8, 90, 255])
+            }
+        })
+    }
+
+    fn recorder_with(frames: &[RgbaImage], gif: GifOptions) -> GifRecorder {
+        let recorder = GifRecorder::new(RecordingSettings {
+            gif,
+            ..Default::default()
+        });
+        let mut spool = FrameSpool::create().unwrap();
+        for (i, frame) in frames.iter().enumerate() {
+            spool
+                .push(frame, Duration::from_millis(i as u64 * 100))
+                .unwrap();
+        }
+        *recorder.sink.lock().unwrap() = Some(FrameSink::Gif {
+            spool,
+            capture_end: Some(Duration::from_millis(frames.len() as u64 * 100)),
+        });
+        recorder
+    }
+
+    // composited frames plus total delay in centiseconds
+    fn decode_composited(recorder: &GifRecorder) -> (Vec<RgbaImage>, u64) {
+        use image::AnimationDecoder;
+        let path = std::env::temp_dir().join(format!(
+            "capscr_test_{}.gif",
+            uuid::Uuid::new_v4().as_simple()
+        ));
+        recorder.save(&path).unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+        let decoder = image::codecs::gif::GifDecoder::new(std::io::Cursor::new(bytes)).unwrap();
+        let mut total_cs = 0;
+        let frames = decoder
+            .into_frames()
+            .map(|frame| {
+                let frame = frame.unwrap();
+                let (num, den) = frame.delay().numer_denom_ms();
+                total_cs += (num / den / 10) as u64;
+                frame.into_buffer()
+            })
+            .collect();
+        (frames, total_cs)
+    }
+
+    fn mean_error(a: &RgbaImage, b: &RgbaImage) -> f64 {
+        let sum: u64 = a
+            .as_raw()
+            .iter()
+            .zip(b.as_raw())
+            .map(|(x, y)| x.abs_diff(*y) as u64)
+            .sum();
+        sum as f64 / a.as_raw().len() as f64
+    }
+
+    #[test]
+    fn every_builtin_mode_round_trips() {
+        let frames: Vec<_> = (0..12).map(|i| moving_square(i, 32, 24)).collect();
+        for dither in [false, true] {
+            for palette in [GifPalette::Global, GifPalette::PerFrame] {
+                for diff_frames in [false, true] {
+                    let opts = GifOptions {
+                        dither,
+                        palette,
+                        diff_frames,
+                        ..Default::default()
+                    };
+                    let label = format!("{opts:?}");
+                    let (decoded, total_cs) = decode_composited(&recorder_with(&frames, opts));
+                    assert_eq!(decoded.len(), frames.len(), "{label}");
+                    assert_eq!(total_cs, 120, "{label}");
+                    for (got, want) in decoded.iter().zip(&frames) {
+                        assert_eq!(got.dimensions(), (32, 24), "{label}");
+                        let err = mean_error(got, want);
+                        assert!(err < 12.0, "{label}: mean error {err}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn few_colors_and_scaling_still_encode() {
+        let frames: Vec<_> = (0..4).map(|i| moving_square(i, 32, 24)).collect();
+        let opts = GifOptions {
+            colors: 2,
+            scale_percent: 50,
+            ..Default::default()
+        };
+        let (decoded, _) = decode_composited(&recorder_with(&frames, opts));
+        assert_eq!(decoded.len(), 4);
+        assert_eq!(decoded[0].dimensions(), (16, 12));
+    }
+
+    #[test]
+    fn resized_region_keeps_the_first_canvas() {
+        let frames = vec![
+            moving_square(0, 32, 24),
+            moving_square(1, 32, 24),
+            moving_square(2, 48, 36),
+            moving_square(3, 20, 30),
+        ];
+        let (decoded, _) = decode_composited(&recorder_with(&frames, GifOptions::default()));
+        assert_eq!(decoded.len(), 4);
+        assert!(decoded.iter().all(|f| f.dimensions() == (32, 24)));
+    }
+
+    #[test]
+    fn ffmpeg_engine_matches_builtin_timing() {
+        if !is_ffmpeg_available() {
+            return;
+        }
+        let frames: Vec<_> = (0..12).map(|i| moving_square(i, 32, 24)).collect();
+        for palette in [GifPalette::Global, GifPalette::PerFrame] {
+            let opts = GifOptions {
+                engine: GifEngine::Ffmpeg,
+                palette,
+                ..Default::default()
+            };
+            let (decoded, total_cs) = decode_composited(&recorder_with(&frames, opts));
+            assert!(!decoded.is_empty());
+            assert_eq!(decoded[0].dimensions(), (32, 24));
+            assert!((115..=125).contains(&total_cs), "{palette:?}: {total_cs}cs");
+            let err = mean_error(decoded.last().unwrap(), frames.last().unwrap());
+            assert!(err < 12.0, "{palette:?}: mean error {err}");
+        }
+    }
+
+    #[test]
+    fn ffmpeg_rate_divides_centiseconds() {
+        assert_eq!(ffmpeg_gif_rate(15), 20);
+        assert_eq!(ffmpeg_gif_rate(30), 50);
+        assert_eq!(ffmpeg_gif_rate(60), 50);
+        assert_eq!(ffmpeg_gif_rate(10), 10);
     }
 
     #[test]

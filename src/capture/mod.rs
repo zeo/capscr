@@ -38,6 +38,8 @@ pub use cursor::{capture_cursor_shot, composite_cursor_shot, composite_system_cu
 #[cfg(windows)]
 pub use d2d_tonemap::capture_hdr_to_sdr_sweep;
 #[cfg(windows)]
+pub(crate) use gdi::GdiRegionGrabber;
+#[cfg(windows)]
 pub use gdi::{fast_gdi_capture, fast_list_monitors};
 pub use hdr::HdrCapture;
 pub use hdr_png::{encode_hdr_png, read_cicp, HdrBitmap, HdrTransfer};

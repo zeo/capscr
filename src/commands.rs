@@ -3611,6 +3611,7 @@ fn start_gif_recording(
         } else {
             crate::recording::RecordingFormat::Gif
         },
+        gif: cfg.capture.gif.clone(),
     };
 
     // steer the wayland frame grabs; windows composites the cursor per frame
@@ -3676,6 +3677,14 @@ fn start_gif_recording(
     });
 
     Ok(())
+}
+
+#[tauri::command]
+pub fn stop_recording(app: AppHandle) {
+    let recording = *app.state::<AppState>().recording_state.lock().unwrap();
+    if matches!(recording, RecordingState::Recording) {
+        stop_gif_recording(&app);
+    }
 }
 
 fn stop_gif_recording(app: &AppHandle) {
