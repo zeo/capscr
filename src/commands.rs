@@ -5,7 +5,7 @@ use crate::clipboard::{get_unique_filepath, save_image, show_notification, Clipb
 use crate::config::{
     CaptureTask, Config, PostCaptureAction, TaskCaptureMode, TaskPostAction, UploadDestination,
 };
-use crate::overlay::{RecordingOverlay, SelectionResult, UnifiedSelector};
+use crate::overlay::{SelectionResult, UnifiedSelector};
 use crate::plugin::{CaptureType, PluginEvent, PluginResponse};
 use crate::recording::{GifRecorder, RecordingSettings, RecordingState, StopReason};
 use crate::sound::Sound;
@@ -3136,6 +3136,10 @@ pub fn upload_edited_image(
 }
 
 pub fn trigger_task(app: &AppHandle, task_id: &str) {
+    if task_id == crate::state::PAUSE_BINDING_ID {
+        crate::recbar::toggle_pause(app);
+        return;
+    }
     let task = {
         let state = app.state::<AppState>();
         let config = state.config.lock().unwrap();
@@ -3516,9 +3520,15 @@ fn run_gif_task(task: &CaptureTask, app: &AppHandle) -> anyhow::Result<()> {
 
     let state = app.state::<AppState>();
     let current = *state.recording_state.lock().unwrap();
-    let active_id = state.recording_task_id.lock().unwrap().clone();
+    let armed_id = crate::recbar::armed_task_id();
+    if armed_id.as_deref() == Some(task.id.as_str()) {
+        crate::recbar::record(app);
+        return Ok(());
+    }
+    let busy = armed_id.is_some() || matches!(current, RecordingState::Recording);
+    let active_id = armed_id.or_else(|| state.recording_task_id.lock().unwrap().clone());
 
-    if matches!(current, RecordingState::Recording) {
+    if busy {
         // same task hotkey re-pressed -> user wants to stop
         // different task hotkey while recording -> reject and tell the user
         if active_id.as_deref() == Some(task.id.as_str()) {
@@ -3583,10 +3593,16 @@ fn run_gif_task(task: &CaptureTask, app: &AppHandle) -> anyhow::Result<()> {
         }
     };
 
+    #[cfg(windows)]
+    {
+        crate::recbar::arm(app, task, region);
+        Ok(())
+    }
+    #[cfg(not(windows))]
     start_gif_recording(task, app, region)
 }
 
-fn start_gif_recording(
+pub(crate) fn start_gif_recording(
     task: &CaptureTask,
     app: &AppHandle,
     region: Rectangle,
@@ -3640,15 +3656,7 @@ fn start_gif_recording(
     *state.recording_state.lock().unwrap() = RecordingState::Recording;
     *state.recording_task_id.lock().unwrap() = Some(task.id.clone());
 
-    // the overlay's stop button ends the recording the same way a re-pressed
-    // hotkey does; the callback fires on the overlay thread, which is safe
-    // because stop_gif_recording only touches mutex-guarded state
-    let app_for_stop = app.clone();
-    RecordingOverlay::start(
-        region,
-        cfg.capture.gif_max_duration_secs as u64,
-        Box::new(move || stop_gif_recording(&app_for_stop)),
-    );
+    crate::recbar::begin(app, task, region);
     let _ = app.emit("capscr://recording-started", task.id.clone());
     set_tray_tooltip(app, &format!("capscr · recording '{}'", task.name));
 
@@ -3701,7 +3709,7 @@ fn stop_gif_recording(app: &AppHandle) {
 }
 
 fn finalize_gif_recording(task: &CaptureTask, app: &AppHandle) {
-    RecordingOverlay::stop();
+    crate::recbar::finish(app);
 
     let state = app.state::<AppState>();
     *state.recording_state.lock().unwrap() = RecordingState::Processing;

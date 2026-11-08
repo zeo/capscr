@@ -4,6 +4,7 @@ mod gif_encoder;
 mod mp4_stream;
 mod spool;
 
+pub(crate) use gif_encoder::PauseClock;
 pub use gif_encoder::{is_ffmpeg_available, GifRecorder};
 pub use mp4_stream::ffmpeg_command;
 

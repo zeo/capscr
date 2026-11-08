@@ -2497,9 +2497,10 @@ kbd {
 }
 
 
-/* linux recording control bar: the window can come up larger than asked on
-   gtk-wayland, so the bar is a fixed-size pill anchored to the top-left (the
-   pinned position) and everything else stays transparent */
+/* recording control bar. on gtk-wayland the window can come up larger than
+   asked, so the bar is a fixed-size pill anchored to the top-left (the pinned
+   position) and everything else stays transparent. sizes match BAR_W/BAR_H
+   in recording.rs (linux) and recbar.rs (windows) */
 .recbar {
   position: fixed;
   top: 0;
@@ -2507,19 +2508,28 @@ kbd {
   box-sizing: border-box;
   display: flex;
   align-items: center;
-  gap: 8px;
-  width: 148px;
+  gap: 6px;
+  width: 184px;
   height: 36px;
-  padding: 0 10px;
+  padding: 0 6px 0 10px;
   background: var(--ink-0);
   border: 1px solid var(--rule-2);
+  user-select: none;
+}
+.recbar-wide {
+  width: 300px;
 }
 .recbar-dot {
+  flex: none;
   width: 8px;
   height: 8px;
   border-radius: 50%;
   background: #c0392b;
   animation: recbar-pulse 1.2s ease-in-out infinite;
+}
+.recbar[data-mode="paused"] .recbar-dot {
+  background: #e0a020;
+  animation: none;
 }
 @keyframes recbar-pulse {
   50% { opacity: 0.35; }
@@ -2527,17 +2537,42 @@ kbd {
 .recbar-time {
   font-variant-numeric: tabular-nums;
   color: var(--text-2);
-  flex: 1;
 }
-.recbar-stop {
+.recbar-size {
+  flex: 1;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--mute);
+  font-size: 12px;
+}
+.recbar-btn,
+.recbar-preset,
+.recbar-close {
   background: var(--ink-4);
   color: var(--text-2);
   border: 1px solid var(--rule-2);
   padding: 3px 10px;
   cursor: pointer;
+  font: inherit;
 }
-.recbar-stop:hover {
+.recbar-btn:hover,
+.recbar-preset:hover,
+.recbar-close:hover {
   background: var(--ink-5);
+}
+.recbar-rec {
+  color: #fff;
+  background: #c0392b;
+  border-color: #a5301f;
+}
+.recbar-rec:hover {
+  background: #d4432f;
+}
+.recbar-preset {
+  padding: 3px 4px;
+}
+.recbar-close {
+  padding: 3px 8px;
 }
 
 .editor-canvas[data-tool="select"] {

@@ -12,6 +12,7 @@ mod jumplist;
 mod marketplace;
 mod overlay;
 mod plugin;
+mod recbar;
 mod recording;
 mod secret;
 #[cfg(target_os = "linux")]
@@ -108,7 +109,8 @@ fn main() {
         capture::HdrCapture::prewarm();
     });
 
-    let initial_tasks = config.capture_tasks.clone();
+    let mut initial_tasks = config.capture_tasks.clone();
+    initial_tasks.extend(state::pause_binding(&config));
     let app_state = state::AppState::new(config);
 
     let autostart_desired = app_state.config.lock().unwrap().ui.auto_start;
@@ -273,6 +275,10 @@ fn main() {
             if let Err(e) = commands::prewarm_hub_window(app) {
                 tracing::warn!("hub pre-warm failed: {e}");
             }
+            #[cfg(windows)]
+            if let Err(e) = recbar::prewarm(app) {
+                tracing::warn!("recording bar pre-warm failed: {e}");
+            }
             // first-launch jump-list dispatch: if capscr.exe was launched with
             // --jump=<kind>, run that action now. We delay slightly so the tray
             // and webview are fully ready before any capture pipeline fires.
@@ -335,6 +341,11 @@ fn main() {
             commands::test_upload_connection,
             commands::fire_task,
             commands::stop_recording,
+            recbar::recbar_status,
+            recbar::recbar_record,
+            recbar::recbar_pause,
+            recbar::recbar_cancel,
+            recbar::recbar_preset,
             commands::run_ocr,
             commands::pin_image,
             commands::get_pinned_image_path,
@@ -346,8 +357,6 @@ fn main() {
             overlay::linux::selector_ready,
             #[cfg(target_os = "linux")]
             overlay::linux::selector_finish,
-            #[cfg(target_os = "linux")]
-            overlay::recording::linux_impl::recbar_stop,
         ])
         .build(tauri::generate_context!())
         .expect("error while building capscr")

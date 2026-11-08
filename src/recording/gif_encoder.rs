@@ -105,6 +105,9 @@ pub struct GifRecorder {
     paused: Arc<AtomicBool>,
     audio_temp_path: Option<std::path::PathBuf>,
     audio_stop_tx: Option<Sender<()>>,
+    audio_started: Option<Instant>,
+    // paused stretches of the audio clock, cut from the track at mux time
+    audio_pauses: Mutex<Vec<(Duration, Option<Duration>)>>,
 }
 
 // map capture timestamps and the final horizon onto a discrete output clock.
@@ -177,13 +180,13 @@ fn mp4_repeat_schedule(times: &[Duration], nominal: Duration, fps: u32) -> Vec<u
 // recorded time with every pause cut out, so the output plays straight
 // through a pause and max duration counts only what was captured
 #[derive(Default)]
-struct PauseClock {
+pub(crate) struct PauseClock {
     paused_total: Duration,
     paused_since: Option<Instant>,
 }
 
 impl PauseClock {
-    fn update(&mut self, paused: bool, now: Instant) {
+    pub(crate) fn update(&mut self, paused: bool, now: Instant) {
         match (paused, self.paused_since) {
             (true, None) => self.paused_since = Some(now),
             (false, Some(since)) => {
@@ -194,11 +197,11 @@ impl PauseClock {
         }
     }
 
-    fn is_paused(&self) -> bool {
+    pub(crate) fn is_paused(&self) -> bool {
         self.paused_since.is_some()
     }
 
-    fn active(&self, start: Instant, now: Instant) -> Duration {
+    pub(crate) fn active(&self, start: Instant, now: Instant) -> Duration {
         let pausing = self
             .paused_since
             .map_or(Duration::ZERO, |since| now.saturating_duration_since(since));
@@ -366,6 +369,21 @@ fn crop_changed(
 
 // ffmpeg's gif muxer rounds each frame to whole centiseconds, so frames go in
 // at a rate that divides 100 and every tick lands exactly
+// the video skips paused time, so the system-audio track drops it too
+fn audio_pause_filter(pauses: &[(Duration, Option<Duration>)]) -> Option<String> {
+    if pauses.is_empty() {
+        return None;
+    }
+    let spans: Vec<String> = pauses
+        .iter()
+        .map(|(from, to)| {
+            let to = to.map_or(1e9, |to| to.as_secs_f64());
+            format!("between(t,{:.3},{to:.3})", from.as_secs_f64())
+        })
+        .collect();
+    Some(format!("aselect='not({})',asetpts=N/SR/TB", spans.join("+")))
+}
+
 fn ffmpeg_gif_rate(fps: u32) -> u32 {
     [1, 2, 4, 5, 10, 20, 25, 50]
         .into_iter()
@@ -501,6 +519,8 @@ impl GifRecorder {
             paused: Arc::new(AtomicBool::new(false)),
             audio_temp_path: None,
             audio_stop_tx: None,
+            audio_started: None,
+            audio_pauses: Mutex::new(Vec::new()),
         }
     }
 
@@ -516,7 +536,18 @@ impl GifRecorder {
     }
 
     pub fn set_paused(&self, paused: bool) {
-        self.paused.store(paused, Ordering::SeqCst);
+        if self.paused.swap(paused, Ordering::SeqCst) == paused {
+            return;
+        }
+        if let Some(started) = self.audio_started {
+            let at = started.elapsed();
+            let mut pauses = self.audio_pauses.lock().unwrap_or_else(|e| e.into_inner());
+            if paused {
+                pauses.push((at, None));
+            } else if let Some(last) = pauses.last_mut() {
+                last.1 = Some(at);
+            }
+        }
     }
 
     pub fn is_paused(&self) -> bool {
@@ -577,6 +608,7 @@ impl GifRecorder {
 
             let (audio_tx, audio_rx) = channel();
             self.audio_stop_tx = Some(audio_tx);
+            self.audio_started = Some(Instant::now());
 
             thread::spawn(move || {
                 if let Err(e) = record_loopback_audio(&audio_path, audio_rx) {
@@ -1175,12 +1207,21 @@ impl GifRecorder {
 
         if audio_exists {
             let wav_path = self.audio_temp_path.as_ref().unwrap();
+            let pauses = self.audio_pauses.lock().unwrap_or_else(|e| e.into_inner());
             let mux_ok = ffmpeg_command()
                 .args([
                     "-i",
                     &temp_video.to_string_lossy(),
                     "-i",
                     &wav_path.to_string_lossy(),
+                ])
+                .args(
+                    audio_pause_filter(&pauses)
+                        .map(|filter| ["-af".to_string(), filter])
+                        .into_iter()
+                        .flatten(),
+                )
+                .args([
                     "-c:v",
                     "copy",
                     "-c:a",
@@ -1988,6 +2029,19 @@ mod tests {
             let err = mean_error(decoded.last().unwrap(), frames.last().unwrap());
             assert!(err < 12.0, "{palette:?}: mean error {err}");
         }
+    }
+
+    #[test]
+    fn audio_filter_cuts_each_pause() {
+        assert_eq!(audio_pause_filter(&[]), None);
+        let pauses = [
+            (Duration::from_millis(1000), Some(Duration::from_millis(2500))),
+            (Duration::from_secs(4), None),
+        ];
+        assert_eq!(
+            audio_pause_filter(&pauses).unwrap(),
+            "aselect='not(between(t,1.000,2.500)+between(t,4.000,1000000000.000))',asetpts=N/SR/TB"
+        );
     }
 
     #[test]

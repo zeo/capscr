@@ -453,6 +453,9 @@ pub struct HotkeyConfig {
     pub screenshot: String,
     #[serde(default)]
     pub record_gif: String,
+    // pauses and resumes the running recording; unbound by default
+    #[serde(default)]
+    pub pause_recording: String,
     // user-controlled global kill switch toggled from the tray or Settings.
     // when true, the LL keyboard hook is installed but its match table is
     // empty, so no chord can fire a task. preserved across restarts.
@@ -1005,7 +1008,11 @@ impl Config {
         if self.output.directory.to_string_lossy().contains("..") {
             return Err(anyhow!("output directory contains path traversal"));
         }
-        for hotkey in [&self.hotkeys.screenshot, &self.hotkeys.record_gif] {
+        for hotkey in [
+            &self.hotkeys.screenshot,
+            &self.hotkeys.record_gif,
+            &self.hotkeys.pause_recording,
+        ] {
             if hotkey.len() > MAX_HOTKEY_LEN {
                 return Err(anyhow!("hotkey string too long"));
             }
@@ -1214,7 +1221,11 @@ impl Config {
             s.chars()
                 .all(|c| c.is_alphanumeric() || c == '+' || c == ' ')
         };
-        for hk in [&mut self.hotkeys.screenshot, &mut self.hotkeys.record_gif] {
+        for hk in [
+            &mut self.hotkeys.screenshot,
+            &mut self.hotkeys.record_gif,
+            &mut self.hotkeys.pause_recording,
+        ] {
             if hk.len() > MAX_HOTKEY_LEN || !hotkey_chars_ok(hk) {
                 hk.clear();
             }
@@ -1256,6 +1267,7 @@ impl Default for Config {
             hotkeys: HotkeyConfig {
                 screenshot: "Ctrl+Shift+S".to_string(),
                 record_gif: "Ctrl+Shift+G".to_string(),
+                pause_recording: String::new(),
                 disabled_globally: false,
                 advanced_input: None,
             },

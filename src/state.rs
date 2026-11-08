@@ -16,6 +16,19 @@ pub(crate) type ThumbnailResult = std::result::Result<String, String>;
 pub(crate) type ThumbnailReceiver =
     tokio::sync::watch::Receiver<Option<ThumbnailResult>>;
 
+// the pause hotkey rides the task binding table under a reserved id
+pub const PAUSE_BINDING_ID: &str = "__pause_recording";
+
+pub fn pause_binding(config: &crate::config::Config) -> Option<CaptureTask> {
+    let hotkey = config.hotkeys.pause_recording.trim();
+    (!hotkey.is_empty()).then(|| CaptureTask {
+        id: PAUSE_BINDING_ID.to_string(),
+        name: "Pause recording".to_string(),
+        hotkey: hotkey.to_string(),
+        ..Default::default()
+    })
+}
+
 pub enum HotkeyCommand {
     Reload { tasks: Vec<CaptureTask> },
 }
@@ -185,7 +198,10 @@ impl AppState {
         }
     }
 
-    pub fn send_hotkey_reload(&self, tasks: Vec<CaptureTask>) {
+    pub fn send_hotkey_reload(&self, mut tasks: Vec<CaptureTask>) {
+        if !self.hotkeys_disabled.load(Ordering::SeqCst) {
+            tasks.extend(pause_binding(&self.config.lock().unwrap()));
+        }
         if let Some(tx) = self.hotkey_tx.lock().unwrap().as_ref() {
             let _ = tx.send(HotkeyCommand::Reload { tasks });
         }

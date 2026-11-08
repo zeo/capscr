@@ -1,86 +1,393 @@
 #![allow(dead_code)]
 
-use crate::capture::Rectangle;
+use crate::capture::{MonitorInfo, Rectangle};
+
+const LEFT: u8 = 1;
+const TOP: u8 = 2;
+const RIGHT: u8 = 4;
+const BOTTOM: u8 = 8;
+const MIN_SIDE: i32 = 32;
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum FrameMode {
+    Armed,
+    Recording,
+    Paused,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum FrameEvent {
+    Moved(Rectangle),
+    Record,
+    Cancel,
+}
+
+// which edges a point on the frame (client coords of a w x h window with a
+// `band` wide border) grabs: corners and edge midpoints resize, the rest of
+// the band moves (0)
+fn hit_edges(x: i32, y: i32, w: i32, h: i32, band: i32) -> u8 {
+    let grip = band * 3;
+    let (l, t) = (x < grip, y < grip);
+    let (r, b) = (!l && x >= w - grip, !t && y >= h - grip);
+    let (mid_x, mid_y) = ((x - w / 2).abs() < grip, (y - h / 2).abs() < grip);
+    let mut edges = 0;
+    if l && (t || b || mid_y) {
+        edges |= LEFT;
+    }
+    if r && (t || b || mid_y) {
+        edges |= RIGHT;
+    }
+    if t && (l || r || mid_x) {
+        edges |= TOP;
+    }
+    if b && (l || r || mid_x) {
+        edges |= BOTTOM;
+    }
+    edges
+}
+
+// the rect after dragging `edges` of `start` by (dx, dy); 0 moves it. with
+// keep_aspect the axis that changed more leads and the other follows, staying
+// centred when that axis isn't being dragged
+fn drag_rect(start: Rectangle, edges: u8, dx: i32, dy: i32, keep_aspect: bool) -> Rectangle {
+    if edges == 0 {
+        return Rectangle::new(start.x + dx, start.y + dy, start.width, start.height);
+    }
+    let (w0, h0) = (start.width as i32, start.height as i32);
+    let grow = |far: u8, near: u8, d: i32| {
+        if edges & far != 0 {
+            d
+        } else if edges & near != 0 {
+            -d
+        } else {
+            0
+        }
+    };
+    let mut w = (w0 + grow(RIGHT, LEFT, dx)).max(MIN_SIDE);
+    let mut h = (h0 + grow(BOTTOM, TOP, dy)).max(MIN_SIDE);
+    let horizontal = edges & (LEFT | RIGHT) != 0;
+    let vertical = edges & (TOP | BOTTOM) != 0;
+    if keep_aspect && h0 > 0 {
+        let ratio = w0 as f64 / h0 as f64;
+        if horizontal && (!vertical || (w - w0).abs() * h0 >= (h - h0).abs() * w0) {
+            h = ((w as f64 / ratio).round() as i32).max(MIN_SIDE);
+        } else {
+            w = ((h as f64 * ratio).round() as i32).max(MIN_SIDE);
+        }
+    }
+    let place = |origin: i32, old: i32, new: i32, near: u8, dragged: bool| {
+        if edges & near != 0 {
+            origin + old - new
+        } else if dragged {
+            origin
+        } else {
+            origin + (old - new) / 2
+        }
+    };
+    Rectangle::new(
+        place(start.x, w0, w, LEFT, horizontal),
+        place(start.y, h0, h, TOP, vertical),
+        w as u32,
+        h as u32,
+    )
+}
+
+// keeps a rect on screen: a moved rect (edges 0) slides back inside, a resized
+// one is cut at the bounds so its fixed edges stay put
+pub(crate) fn clamp_into(rect: Rectangle, bounds: Rectangle, edges: u8) -> Rectangle {
+    let (bx1, by1) = (
+        bounds.x + bounds.width as i32,
+        bounds.y + bounds.height as i32,
+    );
+    if edges == 0 {
+        let (w, h) = (rect.width.min(bounds.width), rect.height.min(bounds.height));
+        return Rectangle::new(
+            rect.x.clamp(bounds.x, bx1 - w as i32),
+            rect.y.clamp(bounds.y, by1 - h as i32),
+            w,
+            h,
+        );
+    }
+    let (x0, y0) = (rect.x.max(bounds.x), rect.y.max(bounds.y));
+    let x1 = (rect.x + rect.width as i32).min(bx1);
+    let y1 = (rect.y + rect.height as i32).min(by1);
+    Rectangle::new(
+        x0,
+        y0,
+        (x1 - x0).max(MIN_SIDE) as u32,
+        (y1 - y0).max(MIN_SIDE) as u32,
+    )
+}
+
+// where the control bar sits relative to the recorded region: below its
+// bottom-right corner, then above it. a bar excluded from capture otherwise
+// tucks inside the region, invisible to the recording. a visible one keeps
+// trying beside the region (right, then left, possibly on a neighbouring
+// monitor) before the inside fallback, which there only remains for a region
+// covering every monitor
+pub(crate) fn bar_position(
+    region: Rectangle,
+    (bar_w, bar_h): (i32, i32),
+    monitors: &[MonitorInfo],
+    excluded_from_capture: bool,
+) -> (i32, i32) {
+    let right = region.x + region.width as i32;
+    let bottom = region.y + region.height as i32;
+    let x_aligned = (right - bar_w).max(region.x);
+    let fits = |x: i32, y: i32| {
+        monitors.iter().any(|m| {
+            x >= m.x
+                && y >= m.y
+                && x + bar_w <= m.x + m.width as i32
+                && y + bar_h <= m.y + m.height as i32
+        })
+    };
+    let mut spots = vec![(x_aligned, bottom + 8), (x_aligned, region.y - bar_h - 8)];
+    if !excluded_from_capture {
+        spots.push((right + 8, bottom - bar_h));
+        spots.push((region.x - bar_w - 8, bottom - bar_h));
+    }
+    spots
+        .into_iter()
+        .find(|&(x, y)| fits(x, y))
+        .unwrap_or((x_aligned, bottom - bar_h - 8))
+}
+
+#[cfg(test)]
+mod frame_tests {
+    use super::*;
+
+    const BAR: (i32, i32) = (184, 36);
+
+    fn mon(x: i32, y: i32, w: u32, h: u32) -> MonitorInfo {
+        MonitorInfo {
+            id: 0,
+            name: "m".into(),
+            x,
+            y,
+            width: w,
+            height: h,
+            is_primary: true,
+        }
+    }
+
+    #[test]
+    fn band_regions_map_to_edges() {
+        // 400x300 window, 6px band, 18px grips
+        assert_eq!(hit_edges(2, 2, 400, 300, 6), LEFT | TOP);
+        assert_eq!(hit_edges(397, 297, 400, 300, 6), RIGHT | BOTTOM);
+        assert_eq!(hit_edges(2, 150, 400, 300, 6), LEFT);
+        assert_eq!(hit_edges(200, 297, 400, 300, 6), BOTTOM);
+        assert_eq!(hit_edges(100, 2, 400, 300, 6), 0);
+        assert_eq!(hit_edges(2, 80, 400, 300, 6), 0);
+    }
+
+    #[test]
+    fn tiny_frame_grips_never_claim_both_sides() {
+        let edges = hit_edges(30, 30, 56, 56, 12);
+        assert_eq!(edges & (LEFT | RIGHT), LEFT);
+        assert_eq!(edges & (TOP | BOTTOM), TOP);
+    }
+
+    #[test]
+    fn dragging_moves_and_resizes() {
+        let start = Rectangle::new(100, 100, 400, 300);
+        assert_eq!(
+            drag_rect(start, 0, 5, -5, false),
+            Rectangle::new(105, 95, 400, 300)
+        );
+        assert_eq!(
+            drag_rect(start, LEFT | TOP, -10, 20, false),
+            Rectangle::new(90, 120, 410, 280)
+        );
+        assert_eq!(
+            drag_rect(start, RIGHT, -1000, 0, false),
+            Rectangle::new(100, 100, MIN_SIDE as u32, 300)
+        );
+    }
+
+    #[test]
+    fn shift_drag_keeps_the_aspect_ratio() {
+        let start = Rectangle::new(100, 100, 400, 300);
+        assert_eq!(
+            drag_rect(start, RIGHT | BOTTOM, 200, 10, true),
+            Rectangle::new(100, 100, 600, 450)
+        );
+        // a side edge grows the other axis around the centre
+        assert_eq!(
+            drag_rect(start, RIGHT, 200, 0, true),
+            Rectangle::new(100, 25, 600, 450)
+        );
+    }
+
+    #[test]
+    fn moves_slide_back_and_resizes_crop() {
+        let screen = Rectangle::new(0, 0, 1920, 1080);
+        assert_eq!(
+            clamp_into(Rectangle::new(-50, 900, 400, 300), screen, 0),
+            Rectangle::new(0, 780, 400, 300)
+        );
+        assert_eq!(
+            clamp_into(Rectangle::new(-50, 100, 400, 300), screen, LEFT),
+            Rectangle::new(0, 100, 350, 300)
+        );
+    }
+
+    #[test]
+    fn sits_below_when_there_is_room() {
+        let region = Rectangle::new(100, 100, 400, 200);
+        let (x, y) = bar_position(region, BAR, &[mon(0, 0, 1920, 1080)], false);
+        assert_eq!(y, 308); // 100 + 200 + 8
+        assert_eq!(x, 316); // right edge 500 - 184
+    }
+
+    #[test]
+    fn flips_above_when_no_room_below() {
+        // region hugs the monitor's bottom edge
+        let region = Rectangle::new(100, 800, 400, 280);
+        let (_, y) = bar_position(region, BAR, &[mon(0, 0, 1920, 1080)], false);
+        assert_eq!(y, 756); // 800 - 36 - 8
+    }
+
+    #[test]
+    fn sits_beside_full_height_region() {
+        let region = Rectangle::new(0, 0, 400, 1080);
+        let (x, y) = bar_position(region, BAR, &[mon(0, 0, 1920, 1080)], false);
+        assert_eq!((x, y), (408, 1044)); // right of the region, bottom-aligned
+    }
+
+    #[test]
+    fn escapes_to_second_monitor_when_one_is_fully_recorded() {
+        let region = Rectangle::new(0, 0, 1920, 1080);
+        let monitors = [mon(0, 0, 1920, 1080), mon(1920, 0, 1920, 1080)];
+        let (x, y) = bar_position(region, BAR, &monitors, false);
+        assert_eq!((x, y), (1928, 1044)); // beside, on the second monitor
+    }
+
+    #[test]
+    fn tucks_inside_when_the_region_covers_everything() {
+        let region = Rectangle::new(0, 0, 1920, 1080);
+        let (x, y) = bar_position(region, BAR, &[mon(0, 0, 1920, 1080)], false);
+        assert_eq!((x, y), (1736, 1036)); // inside: bottom-right corner
+    }
+
+    #[test]
+    fn excluded_bar_still_prefers_the_outside_spots() {
+        let region = Rectangle::new(100, 100, 400, 200);
+        let (x, y) = bar_position(region, BAR, &[mon(0, 0, 1920, 1080)], true);
+        assert_eq!((x, y), (316, 308));
+    }
+
+    #[test]
+    fn excluded_bar_goes_inside_instead_of_beside() {
+        let region = Rectangle::new(0, 0, 400, 1080);
+        let (x, y) = bar_position(region, BAR, &[mon(0, 0, 1920, 1080)], true);
+        assert_eq!((x, y), (216, 1036)); // inside: bottom-right of the region
+    }
+
+    #[test]
+    fn excluded_bar_never_roams_to_a_second_monitor() {
+        let region = Rectangle::new(0, 0, 1920, 1080);
+        let monitors = [mon(0, 0, 1920, 1080), mon(1920, 0, 1920, 1080)];
+        let (x, y) = bar_position(region, BAR, &monitors, true);
+        assert_eq!((x, y), (1736, 1036)); // inside the region, not next door
+    }
+}
 
 #[cfg(windows)]
-mod windows_impl {
+pub mod windows_impl {
     use super::*;
-    use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, Ordering};
     use std::sync::Mutex;
     use std::thread;
-    use std::time::Instant;
     use windows::{
         core::PCWSTR,
         Win32::{
             Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
             Graphics::Gdi::{
-                BeginPaint, CombineRgn, CreateFontW, CreatePen, CreateRectRgn, CreateSolidBrush,
-                DeleteObject, DrawTextW, Ellipse, EndPaint, FillRect, FrameRect, GetMonitorInfoW,
-                GetStockObject, InvalidateRect, MonitorFromRect, Rectangle as GdiRectangle,
-                ScreenToClient, SelectClipRgn, SelectObject, SetBkMode, SetTextColor,
-                CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS, DEFAULT_CHARSET, DT_CENTER, DT_SINGLELINE,
-                DT_VCENTER, FW_SEMIBOLD, HOLLOW_BRUSH, HRGN, MONITORINFO, MONITOR_DEFAULTTONEAREST,
-                OUT_DEFAULT_PRECIS, PAINTSTRUCT, PS_SOLID, RGN_DIFF, TRANSPARENT,
+                BeginPaint, CreateSolidBrush, DeleteObject, EndPaint, FillRect, InvalidateRect,
+                MonitorFromRect, ScreenToClient, MONITOR_DEFAULTTONEAREST, PAINTSTRUCT,
             },
             System::LibraryLoader::GetModuleHandleW,
             UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI},
+            UI::Input::KeyboardAndMouse::{
+                GetKeyState, ReleaseCapture, SetCapture, VK_CONTROL, VK_DOWN, VK_ESCAPE, VK_LEFT,
+                VK_RETURN, VK_RIGHT, VK_SHIFT, VK_UP,
+            },
             UI::WindowsAndMessaging::{
-                CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetClientRect,
-                GetCursorPos, GetMessageW, KillTimer, LoadCursorW, PostMessageW, RegisterClassW,
-                SetCursor, SetLayeredWindowAttributes, SetTimer, SetWindowDisplayAffinity,
-                ShowWindow, TranslateMessage, CS_HREDRAW, CS_VREDRAW, IDC_ARROW, IDC_HAND,
-                LWA_COLORKEY, MSG, SW_HIDE, SW_SHOWNA, WDA_EXCLUDEFROMCAPTURE, WM_DESTROY,
-                WM_LBUTTONUP, WM_PAINT, WM_SETCURSOR, WM_TIMER, WM_USER, WNDCLASSW, WS_EX_LAYERED,
-                WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
+                CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetCursorPos,
+                GetMessageW, GetSystemMetrics, KillTimer, LoadCursorW, PostMessageW,
+                RegisterClassW, SetCursor, SetForegroundWindow, SetLayeredWindowAttributes,
+                SetTimer, SetWindowDisplayAffinity, SetWindowPos, ShowWindow, TranslateMessage,
+                CS_HREDRAW, CS_VREDRAW, IDC_SIZEALL, IDC_SIZENESW, IDC_SIZENS, IDC_SIZENWSE,
+                IDC_SIZEWE, LWA_COLORKEY, MSG, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN,
+                SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SWP_NOACTIVATE, SWP_NOZORDER, SW_HIDE,
+                SW_SHOWNA, WDA_EXCLUDEFROMCAPTURE, WM_CAPTURECHANGED, WM_DESTROY, WM_KEYDOWN,
+                WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_PAINT, WM_SETCURSOR, WM_TIMER,
+                WM_USER, WNDCLASSW, WS_EX_LAYERED, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
             },
         },
     };
 
     const WM_STOP_OVERLAY: u32 = WM_USER + 1;
-    const BORDER_WIDTH: i32 = 4;
-    const BORDER_TIMER_ID: usize = 1;
-    const BAR_TIMER_ID: usize = 2;
+    const WM_SET_MODE: u32 = WM_USER + 2;
+    const WM_SET_RECT: u32 = WM_USER + 3;
+    const FLASH_TIMER_ID: usize = 1;
     const FLASH_INTERVAL_MS: u32 = 500;
-    const BAR_REFRESH_MS: u32 = 250;
-    // logical (96-dpi) control bar metrics, scaled by the monitor dpi at runtime
-    const BAR_W: i32 = 176;
-    const BAR_H: i32 = 32;
-    const BAR_GAP: i32 = 6;
-    const STOP_W: i32 = 52;
+    const KEY: COLORREF = COLORREF(0x00010101);
 
     static OVERLAY_HWND: Mutex<Option<isize>> = Mutex::new(None);
-    static CONTROL_HWND: Mutex<Option<isize>> = Mutex::new(None);
     static REGION_X: AtomicI32 = AtomicI32::new(0);
     static REGION_Y: AtomicI32 = AtomicI32::new(0);
     static REGION_W: AtomicI32 = AtomicI32::new(0);
     static REGION_H: AtomicI32 = AtomicI32::new(0);
+    static BAND: AtomicI32 = AtomicI32::new(6);
+    static MODE: AtomicU8 = AtomicU8::new(0);
     static FLASH_STATE: AtomicBool = AtomicBool::new(true);
     static RUNNING: AtomicBool = AtomicBool::new(false);
     static STOP_REQUESTED: AtomicBool = AtomicBool::new(false);
-    static BAR_DPI: AtomicI32 = AtomicI32::new(96);
-    static MAX_SECS: AtomicU64 = AtomicU64::new(0);
-    static START_TIME: Mutex<Option<Instant>> = Mutex::new(None);
-    type StopCallback = Box<dyn Fn() + Send>;
-    static ON_STOP: Mutex<Option<StopCallback>> = Mutex::new(None);
+    static DRAG: Mutex<Option<(u8, POINT, Rectangle)>> = Mutex::new(None);
+    type EventCallback = Box<dyn Fn(FrameEvent) + Send>;
+    static ON_EVENT: Mutex<Option<EventCallback>> = Mutex::new(None);
 
-    pub fn start(region: Rectangle, max_secs: u64, on_stop: StopCallback) {
+    pub fn arm(region: Rectangle, on_event: EventCallback) {
+        // a frame closed a moment ago may still be tearing down
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        while RUNNING.load(Ordering::SeqCst) && std::time::Instant::now() < deadline {
+            thread::sleep(std::time::Duration::from_millis(10));
+        }
         if RUNNING.swap(true, Ordering::SeqCst) {
             return;
         }
-
-        REGION_X.store(region.x, Ordering::SeqCst);
-        REGION_Y.store(region.y, Ordering::SeqCst);
-        REGION_W.store(region.width as i32, Ordering::SeqCst);
-        REGION_H.store(region.height as i32, Ordering::SeqCst);
+        store_region(region);
+        MODE.store(FrameMode::Armed as u8, Ordering::SeqCst);
         FLASH_STATE.store(true, Ordering::SeqCst);
         STOP_REQUESTED.store(false, Ordering::SeqCst);
-        MAX_SECS.store(max_secs, Ordering::SeqCst);
-        *START_TIME.lock().unwrap() = Some(Instant::now());
-        *ON_STOP.lock().unwrap() = Some(on_stop);
+        *ON_EVENT.lock().unwrap() = Some(on_event);
+        thread::spawn(run_overlay_loop);
+    }
 
-        thread::spawn(|| {
-            run_overlay_loop();
-        });
+    pub fn set_mode(mode: FrameMode) {
+        MODE.store(mode as u8, Ordering::SeqCst);
+        post(WM_SET_MODE);
+    }
+
+    pub fn set_region(region: Rectangle) {
+        store_region(region);
+        post(WM_SET_RECT);
+    }
+
+    pub fn region() -> Rectangle {
+        Rectangle::new(
+            REGION_X.load(Ordering::SeqCst),
+            REGION_Y.load(Ordering::SeqCst),
+            REGION_W.load(Ordering::SeqCst) as u32,
+            REGION_H.load(Ordering::SeqCst) as u32,
+        )
+    }
+
+    pub fn band() -> i32 {
+        BAND.load(Ordering::SeqCst)
     }
 
     pub fn stop() {
@@ -88,85 +395,65 @@ mod windows_impl {
             return;
         }
         STOP_REQUESTED.store(true, Ordering::SeqCst);
+        post(WM_STOP_OVERLAY);
+    }
 
+    fn post(msg: u32) {
         if let Some(hwnd) = *OVERLAY_HWND.lock().unwrap() {
             unsafe {
-                let _ = PostMessageW(HWND(hwnd as *mut _), WM_STOP_OVERLAY, WPARAM(0), LPARAM(0));
+                let _ = PostMessageW(HWND(hwnd as *mut _), msg, WPARAM(0), LPARAM(0));
             }
         }
     }
 
-    fn fire_stop_callback() {
-        let cb = ON_STOP.lock().unwrap().take();
-        if let Some(cb) = cb {
-            cb();
+    fn store_region(region: Rectangle) {
+        REGION_X.store(region.x, Ordering::SeqCst);
+        REGION_Y.store(region.y, Ordering::SeqCst);
+        REGION_W.store(region.width as i32, Ordering::SeqCst);
+        REGION_H.store(region.height as i32, Ordering::SeqCst);
+    }
+
+    fn fire(event: FrameEvent) {
+        if let Some(cb) = ON_EVENT.lock().unwrap().as_ref() {
+            cb(event);
         }
     }
 
     fn clear_overlay_state() {
         *OVERLAY_HWND.lock().unwrap() = None;
-        *CONTROL_HWND.lock().unwrap() = None;
-        *START_TIME.lock().unwrap() = None;
-        *ON_STOP.lock().unwrap() = None;
+        *ON_EVENT.lock().unwrap() = None;
+        *DRAG.lock().unwrap() = None;
         STOP_REQUESTED.store(false, Ordering::SeqCst);
         RUNNING.store(false, Ordering::SeqCst);
     }
 
-    fn scaled(v: i32) -> i32 {
-        v * BAR_DPI.load(Ordering::SeqCst) / 96
-    }
-
-    fn stop_button_rect(client: &RECT) -> RECT {
-        let margin = scaled(5);
-        RECT {
-            left: client.right - scaled(STOP_W) - margin,
-            top: client.top + margin,
-            right: client.right - margin,
-            bottom: client.bottom - margin,
-        }
-    }
-
-    fn elapsed_label() -> Vec<u16> {
-        let elapsed = START_TIME
-            .lock()
-            .unwrap()
-            .map(|t| t.elapsed().as_secs())
-            .unwrap_or(0);
-        let max = MAX_SECS.load(Ordering::SeqCst);
-        let fmt = |s: u64| format!("{:02}:{:02}", s / 60, s % 60);
-        let text = if max > 0 {
-            format!("{} / {}", fmt(elapsed.min(max)), fmt(max))
-        } else {
-            fmt(elapsed)
-        };
-        text.encode_utf16().collect()
-    }
-
-    // bar sits right-aligned under the recorded region so it never appears in
-    // the frames; falls back to above the region, then clamps to the work area
-    fn bar_placement(region_rect: &RECT, bar_w: i32, bar_h: i32) -> (i32, i32) {
-        let mut x = region_rect.right - bar_w;
-        let mut y = region_rect.bottom + BORDER_WIDTH + scaled(BAR_GAP);
-
+    fn virtual_screen() -> Rectangle {
         unsafe {
-            let monitor = MonitorFromRect(region_rect, MONITOR_DEFAULTTONEAREST);
-            let mut info = MONITORINFO {
-                cbSize: std::mem::size_of::<MONITORINFO>() as u32,
-                ..Default::default()
-            };
-            if GetMonitorInfoW(monitor, &mut info).as_bool() {
-                let work = info.rcWork;
-                if y + bar_h > work.bottom {
-                    y = region_rect.top - BORDER_WIDTH - scaled(BAR_GAP) - bar_h;
-                }
-                if y < work.top {
-                    y = work.bottom - bar_h;
-                }
-                x = x.clamp(work.left, (work.right - bar_w).max(work.left));
-            }
+            Rectangle::new(
+                GetSystemMetrics(SM_XVIRTUALSCREEN),
+                GetSystemMetrics(SM_YVIRTUALSCREEN),
+                GetSystemMetrics(SM_CXVIRTUALSCREEN).max(1) as u32,
+                GetSystemMetrics(SM_CYVIRTUALSCREEN).max(1) as u32,
+            )
         }
+    }
 
-        (x, y)
+    // moves the window around the new region and tells the session
+    unsafe fn apply_region(hwnd: HWND, region: Rectangle, edges: u8) {
+        let region = clamp_into(region, virtual_screen(), edges);
+        store_region(region);
+        let b = band();
+        let _ = SetWindowPos(
+            hwnd,
+            None,
+            region.x - b,
+            region.y - b,
+            region.width as i32 + b * 2,
+            region.height as i32 + b * 2,
+            SWP_NOZORDER | SWP_NOACTIVATE,
+        );
+        let _ = InvalidateRect(hwnd, None, false);
+        fire(FrameEvent::Moved(region));
     }
 
     fn run_overlay_loop() {
@@ -178,49 +465,40 @@ mod windows_impl {
                     return;
                 }
             };
-
-            let border_class: Vec<u16> = "RecordingOverlayClass\0".encode_utf16().collect();
-            let bar_class: Vec<u16> = "RecordingControlClass\0".encode_utf16().collect();
+            let class: Vec<u16> = "RecordingFrameClass\0".encode_utf16().collect();
             let hinstance = windows::Win32::Foundation::HINSTANCE(instance.0);
-
-            let wc_border = WNDCLASSW {
+            RegisterClassW(&WNDCLASSW {
                 style: CS_HREDRAW | CS_VREDRAW,
-                lpfnWndProc: Some(overlay_wnd_proc),
+                lpfnWndProc: Some(frame_wnd_proc),
                 hInstance: hinstance,
-                lpszClassName: PCWSTR(border_class.as_ptr()),
+                lpszClassName: PCWSTR(class.as_ptr()),
                 ..Default::default()
+            });
+
+            let region = region();
+            let region_rect = RECT {
+                left: region.x,
+                top: region.y,
+                right: region.x + region.width as i32,
+                bottom: region.y + region.height as i32,
             };
-            RegisterClassW(&wc_border);
+            let monitor = MonitorFromRect(&region_rect, MONITOR_DEFAULTTONEAREST);
+            let (mut dpi_x, mut dpi_y) = (96u32, 96u32);
+            let _ = GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &mut dpi_x, &mut dpi_y);
+            BAND.store(6 * dpi_x.max(96) as i32 / 96, Ordering::SeqCst);
+            let b = band();
 
-            let wc_bar = WNDCLASSW {
-                style: CS_HREDRAW | CS_VREDRAW,
-                lpfnWndProc: Some(control_wnd_proc),
-                hInstance: hinstance,
-                hCursor: LoadCursorW(None, IDC_ARROW).unwrap_or_default(),
-                lpszClassName: PCWSTR(bar_class.as_ptr()),
-                ..Default::default()
-            };
-            RegisterClassW(&wc_bar);
-
-            let rx = REGION_X.load(Ordering::SeqCst);
-            let ry = REGION_Y.load(Ordering::SeqCst);
-            let rw = REGION_W.load(Ordering::SeqCst);
-            let rh = REGION_H.load(Ordering::SeqCst);
-
-            let x = rx - BORDER_WIDTH;
-            let y = ry - BORDER_WIDTH;
-            let w = rw + BORDER_WIDTH * 2;
-            let h = rh + BORDER_WIDTH * 2;
-
+            // the colour-keyed hole passes clicks through to the app below;
+            // only the band takes the mouse
             let hwnd = match CreateWindowExW(
-                WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_TRANSPARENT,
-                PCWSTR(border_class.as_ptr()),
+                WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
+                PCWSTR(class.as_ptr()),
                 PCWSTR::null(),
                 WS_POPUP,
-                x,
-                y,
-                w,
-                h,
+                region.x - b,
+                region.y - b,
+                region.width as i32 + b * 2,
+                region.height as i32 + b * 2,
                 None,
                 None,
                 hinstance,
@@ -232,180 +510,105 @@ mod windows_impl {
                     return;
                 }
             };
-
-            let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0x00010101), 255, LWA_COLORKEY);
-            let border_excluded = match SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE) {
-                Ok(()) => true,
-                Err(error) => {
-                    tracing::warn!(
-                        "recording border capture exclusion unavailable; hiding border: {error}"
-                    );
-                    false
-                }
-            };
+            let _ = SetLayeredWindowAttributes(hwnd, KEY, 255, LWA_COLORKEY);
+            // the band sits outside the recorded rect; exclusion also keeps it
+            // out of any other region that overlaps it
+            if let Err(error) = SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE) {
+                tracing::warn!("recording frame capture exclusion unavailable: {error}");
+            }
             *OVERLAY_HWND.lock().unwrap() = Some(hwnd.0 as isize);
-            if border_excluded {
-                let _ = ShowWindow(hwnd, SW_SHOWNA);
-                let _ = SetTimer(hwnd, BORDER_TIMER_ID, FLASH_INTERVAL_MS, None);
-            }
-
-            // dpi of the monitor hosting the region drives the bar's pixel size
-            let region_rect = RECT {
-                left: rx,
-                top: ry,
-                right: rx + rw,
-                bottom: ry + rh,
-            };
-            let monitor = MonitorFromRect(&region_rect, MONITOR_DEFAULTTONEAREST);
-            let mut dpi_x = 96u32;
-            let mut dpi_y = 96u32;
-            if GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &mut dpi_x, &mut dpi_y).is_ok() {
-                BAR_DPI.store(dpi_x.max(96) as i32, Ordering::SeqCst);
-            }
-
-            let bar_w = scaled(BAR_W);
-            let bar_h = scaled(BAR_H);
-            let (bar_x, bar_y) = bar_placement(&region_rect, bar_w, bar_h);
-
-            let bar_hwnd = CreateWindowExW(
-                WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
-                PCWSTR(bar_class.as_ptr()),
-                PCWSTR::null(),
-                WS_POPUP,
-                bar_x,
-                bar_y,
-                bar_w,
-                bar_h,
-                None,
-                None,
-                hinstance,
-                None,
-            )
-            .ok();
-
-            if let Some(bar) = bar_hwnd {
-                *CONTROL_HWND.lock().unwrap() = Some(bar.0 as isize);
-                // keep the timer/stop bar out of the recorded frames: on a
-                // full-height region there's no room to place it clear of the
-                // capture rect, so exclude it from capture outright. no-ops on
-                // pre-2004 builds, where bar_placement's positioning still tries
-                // to keep it outside the region
-                let _ = SetWindowDisplayAffinity(bar, WDA_EXCLUDEFROMCAPTURE);
-                let _ = ShowWindow(bar, SW_SHOWNA);
-                let _ = SetTimer(bar, BAR_TIMER_ID, BAR_REFRESH_MS, None);
-            }
+            let _ = ShowWindow(hwnd, SW_SHOWNA);
+            let _ = SetForegroundWindow(hwnd);
+            let _ = SetTimer(hwnd, FLASH_TIMER_ID, FLASH_INTERVAL_MS, None);
 
             let mut msg = MSG::default();
             while RUNNING.load(Ordering::SeqCst) && !STOP_REQUESTED.load(Ordering::SeqCst) {
-                if GetMessageW(&mut msg, None, 0, 0).as_bool() {
-                    if msg.message == WM_STOP_OVERLAY {
-                        break;
-                    }
-                    let _ = TranslateMessage(&msg);
-                    DispatchMessageW(&msg);
-                } else {
+                if !GetMessageW(&mut msg, None, 0, 0).as_bool() || msg.message == WM_STOP_OVERLAY {
                     break;
                 }
+                let _ = TranslateMessage(&msg);
+                DispatchMessageW(&msg);
             }
 
-            KillTimer(hwnd, BORDER_TIMER_ID).ok();
+            KillTimer(hwnd, FLASH_TIMER_ID).ok();
             let _ = ShowWindow(hwnd, SW_HIDE);
             let _ = DestroyWindow(hwnd);
-            if let Some(bar) = bar_hwnd {
-                KillTimer(bar, BAR_TIMER_ID).ok();
-                let _ = ShowWindow(bar, SW_HIDE);
-                let _ = DestroyWindow(bar);
-            }
             clear_overlay_state();
         }
     }
 
-    unsafe extern "system" fn overlay_wnd_proc(
-        hwnd: HWND,
-        msg: u32,
-        wparam: WPARAM,
-        lparam: LPARAM,
-    ) -> LRESULT {
-        match msg {
-            WM_PAINT => {
-                let mut ps = PAINTSTRUCT::default();
-                let hdc = BeginPaint(hwnd, &mut ps);
-
-                let w = REGION_W.load(Ordering::SeqCst) + BORDER_WIDTH * 2;
-                let h = REGION_H.load(Ordering::SeqCst) + BORDER_WIDTH * 2;
-
-                let bg_brush = CreateSolidBrush(COLORREF(0x00010101));
-                let bg_rect = RECT {
-                    left: 0,
-                    top: 0,
-                    right: w,
-                    bottom: h,
-                };
-                FillRect(hdc, &bg_rect, bg_brush);
-                let _ = DeleteObject(bg_brush);
-
-                if FLASH_STATE.load(Ordering::SeqCst) {
-                    let red = COLORREF(0x000000FF);
-                    let pen = CreatePen(PS_SOLID, BORDER_WIDTH, red);
-                    let old_pen = SelectObject(hdc, pen);
-                    let hollow = GetStockObject(HOLLOW_BRUSH);
-                    let old_brush = SelectObject(hdc, hollow);
-                    SetBkMode(hdc, TRANSPARENT);
-
-                    // clip the stroke to the border ring: pen rasterization
-                    // rounds outward and a stray row of red lands inside the
-                    // recorded region, faintly visible in captured frames.
-                    // The hole must stay colorkey-only so it stays transparent
-                    let ring = CreateRectRgn(0, 0, w, h);
-                    let hole = CreateRectRgn(
-                        BORDER_WIDTH,
-                        BORDER_WIDTH,
-                        w - BORDER_WIDTH,
-                        h - BORDER_WIDTH,
-                    );
-                    let _ = CombineRgn(ring, ring, hole, RGN_DIFF);
-                    SelectClipRgn(hdc, ring);
-
-                    let half = BORDER_WIDTH / 2;
-                    let _ = GdiRectangle(hdc, half, half, w - half, h - half);
-
-                    SelectClipRgn(hdc, HRGN::default());
-                    let _ = DeleteObject(hole);
-                    let _ = DeleteObject(ring);
-                    SelectObject(hdc, old_pen);
-                    SelectObject(hdc, old_brush);
-                    let _ = DeleteObject(pen);
-                }
-
-                let _ = EndPaint(hwnd, &ps);
-                LRESULT(0)
-            }
-            WM_TIMER => {
-                if wparam.0 == BORDER_TIMER_ID {
-                    let current = FLASH_STATE.load(Ordering::SeqCst);
-                    FLASH_STATE.store(!current, Ordering::SeqCst);
-                    // erase=false: WM_PAINT already FillRects the entire client
-                    // area each frame, so letting GDI erase to white first just
-                    // adds a flicker frame.
-                    let _ = InvalidateRect(hwnd, None, false);
-                }
-                LRESULT(0)
-            }
-            WM_STOP_OVERLAY => {
-                RUNNING.store(false, Ordering::SeqCst);
-                windows::Win32::UI::WindowsAndMessaging::PostQuitMessage(0);
-                LRESULT(0)
-            }
-            WM_DESTROY => {
-                RUNNING.store(false, Ordering::SeqCst);
-                windows::Win32::UI::WindowsAndMessaging::PostQuitMessage(0);
-                LRESULT(0)
-            }
-            _ => DefWindowProcW(hwnd, msg, wparam, lparam),
-        }
+    fn mode() -> u8 {
+        MODE.load(Ordering::SeqCst)
     }
 
-    unsafe extern "system" fn control_wnd_proc(
+    unsafe fn paint(hwnd: HWND) {
+        let mut ps = PAINTSTRUCT::default();
+        let hdc = BeginPaint(hwnd, &mut ps);
+        let b = band();
+        let (w, h) = (
+            REGION_W.load(Ordering::SeqCst) + b * 2,
+            REGION_H.load(Ordering::SeqCst) + b * 2,
+        );
+        let fill = |left, top, right, bottom, color: COLORREF| {
+            let brush = CreateSolidBrush(color);
+            let rect = RECT {
+                left,
+                top,
+                right,
+                bottom,
+            };
+            FillRect(hdc, &rect, brush);
+            let _ = DeleteObject(brush);
+        };
+        fill(0, 0, w, h, KEY);
+        let color = match mode() {
+            m if m == FrameMode::Recording as u8 => COLORREF(0x002B33E0),
+            m if m == FrameMode::Paused as u8 => COLORREF(0x0020A0F0),
+            _ => COLORREF(0x00BF6F2A),
+        };
+        if mode() != FrameMode::Recording as u8 || FLASH_STATE.load(Ordering::SeqCst) {
+            fill(0, 0, w, b, color);
+            fill(0, h - b, w, h, color);
+            fill(0, b, b, h - b, color);
+            fill(w - b, b, w, h - b, color);
+        }
+        // grips mark the corners and edge midpoints, where hit_edges resizes
+        let grip = b * 3;
+        let white = COLORREF(0x00FFFFFF);
+        for (x, y) in [(0, 0), (w - grip, 0), (0, h - b), (w - grip, h - b)] {
+            fill(x, y, x + grip, y + b, white);
+        }
+        for (x, y) in [(0, 0), (w - b, 0), (0, h - grip), (w - b, h - grip)] {
+            fill(x, y, x + b, y + grip, white);
+        }
+        fill(w / 2 - grip / 2, 0, w / 2 + grip / 2, b, white);
+        fill(w / 2 - grip / 2, h - b, w / 2 + grip / 2, h, white);
+        fill(0, h / 2 - grip / 2, b, h / 2 + grip / 2, white);
+        fill(w - b, h / 2 - grip / 2, w, h / 2 + grip / 2, white);
+        let _ = EndPaint(hwnd, &ps);
+    }
+
+    unsafe fn cursor_edges(hwnd: HWND) -> (u8, POINT) {
+        let mut screen = POINT::default();
+        let _ = GetCursorPos(&mut screen);
+        let mut pt = screen;
+        let _ = ScreenToClient(hwnd, &mut pt);
+        let b = band();
+        let edges = hit_edges(
+            pt.x,
+            pt.y,
+            REGION_W.load(Ordering::SeqCst) + b * 2,
+            REGION_H.load(Ordering::SeqCst) + b * 2,
+            b,
+        );
+        (edges, screen)
+    }
+
+    fn key_down(vk: u16) -> bool {
+        unsafe { GetKeyState(vk as i32) < 0 }
+    }
+
+    unsafe extern "system" fn frame_wnd_proc(
         hwnd: HWND,
         msg: u32,
         wparam: WPARAM,
@@ -413,130 +616,102 @@ mod windows_impl {
     ) -> LRESULT {
         match msg {
             WM_PAINT => {
-                let mut ps = PAINTSTRUCT::default();
-                let hdc = BeginPaint(hwnd, &mut ps);
-
-                let mut client = RECT::default();
-                let _ = GetClientRect(hwnd, &mut client);
-
-                let bg = CreateSolidBrush(COLORREF(0x001A1A1A));
-                FillRect(hdc, &client, bg);
-                let _ = DeleteObject(bg);
-                let frame = CreateSolidBrush(COLORREF(0x003C3C3C));
-                FrameRect(hdc, &client, frame);
-                let _ = DeleteObject(frame);
-
-                // flashing red recording dot
-                if FLASH_STATE.load(Ordering::SeqCst) {
-                    let dot = CreateSolidBrush(COLORREF(0x003C3CE6));
-                    let old_brush = SelectObject(hdc, dot);
-                    let pen = CreatePen(PS_SOLID, 1, COLORREF(0x003C3CE6));
-                    let old_pen = SelectObject(hdc, pen);
-                    let cy = (client.bottom - client.top) / 2;
-                    let r = scaled(5);
-                    let cx = scaled(13);
-                    let _ = Ellipse(hdc, cx - r, cy - r, cx + r, cy + r);
-                    SelectObject(hdc, old_pen);
-                    SelectObject(hdc, old_brush);
-                    let _ = DeleteObject(pen);
-                    let _ = DeleteObject(dot);
-                }
-
-                let font_name: Vec<u16> = "Consolas\0".encode_utf16().collect();
-                let font = CreateFontW(
-                    -scaled(13),
-                    0,
-                    0,
-                    0,
-                    FW_SEMIBOLD.0 as i32,
-                    0,
-                    0,
-                    0,
-                    DEFAULT_CHARSET.0 as u32,
-                    OUT_DEFAULT_PRECIS.0 as u32,
-                    CLIP_DEFAULT_PRECIS.0 as u32,
-                    CLEARTYPE_QUALITY.0 as u32,
-                    0,
-                    PCWSTR(font_name.as_ptr()),
-                );
-                let old_font = SelectObject(hdc, font);
-                SetBkMode(hdc, TRANSPARENT);
-
-                // elapsed / max time
-                SetTextColor(hdc, COLORREF(0x00E6E6E6));
-                let mut label = elapsed_label();
-                let stop = stop_button_rect(&client);
-                let mut time_rect = RECT {
-                    left: scaled(24),
-                    top: client.top,
-                    right: stop.left - scaled(4),
-                    bottom: client.bottom,
-                };
-                DrawTextW(
-                    hdc,
-                    &mut label,
-                    &mut time_rect,
-                    DT_SINGLELINE | DT_VCENTER | DT_CENTER,
-                );
-
-                // stop button
-                let btn_bg = CreateSolidBrush(COLORREF(0x00282828));
-                FillRect(hdc, &stop, btn_bg);
-                let _ = DeleteObject(btn_bg);
-                let btn_frame = CreateSolidBrush(COLORREF(0x00505050));
-                FrameRect(hdc, &stop, btn_frame);
-                let _ = DeleteObject(btn_frame);
-                SetTextColor(hdc, COLORREF(0x00F5F5F5));
-                let mut stop_label: Vec<u16> = "■ stop".encode_utf16().collect();
-                let mut stop_text_rect = stop;
-                DrawTextW(
-                    hdc,
-                    &mut stop_label,
-                    &mut stop_text_rect,
-                    DT_SINGLELINE | DT_VCENTER | DT_CENTER,
-                );
-
-                SelectObject(hdc, old_font);
-                let _ = DeleteObject(font);
-
-                let _ = EndPaint(hwnd, &ps);
+                paint(hwnd);
                 LRESULT(0)
             }
-            WM_TIMER => {
-                if wparam.0 == BAR_TIMER_ID {
+            WM_TIMER if wparam.0 == FLASH_TIMER_ID => {
+                if mode() == FrameMode::Recording as u8 {
+                    FLASH_STATE.fetch_xor(true, Ordering::SeqCst);
+                    // erase=false: paint fills the whole client, a white
+                    // erase first would only add a flicker frame
                     let _ = InvalidateRect(hwnd, None, false);
                 }
                 LRESULT(0)
             }
-            WM_LBUTTONUP => {
-                let x = (lparam.0 & 0xFFFF) as i16 as i32;
-                let y = ((lparam.0 >> 16) & 0xFFFF) as i16 as i32;
-                let mut client = RECT::default();
-                let _ = GetClientRect(hwnd, &mut client);
-                let stop = stop_button_rect(&client);
-                if x >= stop.left && x < stop.right && y >= stop.top && y < stop.bottom {
-                    fire_stop_callback();
-                }
+            WM_SET_MODE => {
+                FLASH_STATE.store(true, Ordering::SeqCst);
+                let _ = InvalidateRect(hwnd, None, false);
+                LRESULT(0)
+            }
+            WM_SET_RECT => {
+                apply_region(hwnd, region(), 0);
                 LRESULT(0)
             }
             WM_SETCURSOR => {
-                let mut pt = POINT::default();
-                let _ = GetCursorPos(&mut pt);
-                let _ = ScreenToClient(hwnd, &mut pt);
-                let mut client = RECT::default();
-                let _ = GetClientRect(hwnd, &mut client);
-                let stop = stop_button_rect(&client);
-                let over_button = pt.x >= stop.left
-                    && pt.x < stop.right
-                    && pt.y >= stop.top
-                    && pt.y < stop.bottom;
-                if let Ok(cursor) =
-                    LoadCursorW(None, if over_button { IDC_HAND } else { IDC_ARROW })
-                {
+                let (edges, _) = cursor_edges(hwnd);
+                let id = match edges {
+                    0 => IDC_SIZEALL,
+                    e if e == LEFT | TOP || e == RIGHT | BOTTOM => IDC_SIZENWSE,
+                    e if e == LEFT | BOTTOM || e == RIGHT | TOP => IDC_SIZENESW,
+                    LEFT | RIGHT => IDC_SIZEWE,
+                    _ => IDC_SIZENS,
+                };
+                if let Ok(cursor) = LoadCursorW(None, id) {
                     SetCursor(cursor);
                 }
                 LRESULT(1)
             }
+            WM_LBUTTONDOWN => {
+                let (edges, screen) = cursor_edges(hwnd);
+                *DRAG.lock().unwrap() = Some((edges, screen, region()));
+                SetCapture(hwnd);
+                LRESULT(0)
+            }
+            WM_MOUSEMOVE => {
+                let drag = *DRAG.lock().unwrap();
+                if let Some((edges, origin, start)) = drag {
+                    let mut pt = POINT::default();
+                    let _ = GetCursorPos(&mut pt);
+                    let next = drag_rect(
+                        start,
+                        edges,
+                        pt.x - origin.x,
+                        pt.y - origin.y,
+                        key_down(VK_SHIFT.0),
+                    );
+                    if next != region() {
+                        apply_region(hwnd, next, edges);
+                    }
+                }
+                LRESULT(0)
+            }
+            WM_LBUTTONUP => {
+                *DRAG.lock().unwrap() = None;
+                let _ = ReleaseCapture();
+                LRESULT(0)
+            }
+            WM_CAPTURECHANGED => {
+                *DRAG.lock().unwrap() = None;
+                LRESULT(0)
+            }
+            WM_KEYDOWN => {
+                let vk = wparam.0 as u16;
+                let step = if key_down(VK_SHIFT.0) { 10 } else { 1 };
+                let (dx, dy) = match vk {
+                    v if v == VK_LEFT.0 => (-step, 0),
+                    v if v == VK_RIGHT.0 => (step, 0),
+                    v if v == VK_UP.0 => (0, -step),
+                    v if v == VK_DOWN.0 => (0, step),
+                    _ => (0, 0),
+                };
+                let armed = mode() == FrameMode::Armed as u8;
+                if (dx, dy) != (0, 0) {
+                    // ctrl resizes from the bottom-right corner
+                    let edges = if key_down(VK_CONTROL.0) {
+                        RIGHT | BOTTOM
+                    } else {
+                        0
+                    };
+                    apply_region(hwnd, drag_rect(region(), edges, dx, dy, false), edges);
+                } else if vk == VK_RETURN.0 && armed {
+                    fire(FrameEvent::Record);
+                } else if vk == VK_ESCAPE.0 && armed {
+                    fire(FrameEvent::Cancel);
+                }
+                LRESULT(0)
+            }
+            // RUNNING drops only in clear_overlay_state, after teardown, so a
+            // frame armed right after this one can't have its state wiped
             WM_DESTROY => LRESULT(0),
             _ => DefWindowProcW(hwnd, msg, wparam, lparam),
         }
@@ -562,34 +737,53 @@ mod windows_impl {
             }
         }
 
-        #[test]
-        fn border_is_excluded_from_capture() {
-            let _serial = OVERLAY_TEST_LOCK.lock().unwrap();
-            start(Rectangle::new(32, 32, 160, 90), 1, Box::new(|| {}));
-            let _guard = OverlayGuard;
-
+        fn wait_for_window() -> isize {
             let deadline = Instant::now() + Duration::from_secs(2);
-            let border = loop {
-                let border = *OVERLAY_HWND.lock().unwrap();
-                if let Some(border) = border {
-                    break border;
+            loop {
+                if let Some(hwnd) = *OVERLAY_HWND.lock().unwrap() {
+                    return hwnd;
                 }
-                assert!(Instant::now() < deadline, "recording overlay did not open");
+                assert!(Instant::now() < deadline, "recording frame did not open");
                 thread::sleep(Duration::from_millis(10));
-            };
+            }
+        }
+
+        #[test]
+        fn frame_is_excluded_from_capture() {
+            let _serial = OVERLAY_TEST_LOCK.lock().unwrap();
+            arm(Rectangle::new(32, 32, 160, 90), Box::new(|_| {}));
+            let _guard = OverlayGuard;
+            let frame = wait_for_window();
 
             let mut affinity = 0u32;
             unsafe {
-                GetWindowDisplayAffinity(HWND(border as *mut _), &mut affinity).unwrap();
+                GetWindowDisplayAffinity(HWND(frame as *mut _), &mut affinity).unwrap();
             }
-
             assert_eq!(affinity, WDA_EXCLUDEFROMCAPTURE.0);
+        }
+
+        #[test]
+        fn preset_moves_the_frame_and_reports_it() {
+            let _serial = OVERLAY_TEST_LOCK.lock().unwrap();
+            let (tx, rx) = std::sync::mpsc::channel();
+            let tx = Mutex::new(tx);
+            arm(
+                Rectangle::new(32, 32, 160, 90),
+                Box::new(move |event| {
+                    let _ = tx.lock().unwrap().send(event);
+                }),
+            );
+            let _guard = OverlayGuard;
+            wait_for_window();
+            set_region(Rectangle::new(40, 50, 320, 240));
+            let event = rx.recv_timeout(Duration::from_secs(2)).unwrap();
+            assert_eq!(event, FrameEvent::Moved(Rectangle::new(40, 50, 320, 240)));
         }
 
         #[test]
         fn immediate_stop_request_is_not_lost() {
             let _serial = OVERLAY_TEST_LOCK.lock().unwrap();
-            start(Rectangle::new(32, 32, 160, 90), 10, Box::new(|| {}));
+            arm(Rectangle::new(32, 32, 160, 90), Box::new(|_| {}));
             let _guard = OverlayGuard;
             stop();
 
@@ -603,7 +797,7 @@ mod windows_impl {
 }
 
 // linux: a small always-on-top webview (label "recbar") with the elapsed
-// clock and stop button. on plasma >= 6.7 a kwin script marks it
+// clock, pause and stop. on plasma >= 6.7 a kwin script marks it
 // excludeFromCapture (the compositor-side WDA_EXCLUDEFROMCAPTURE), so it
 // places like the windows bar: below the region, above it, or inside it
 // without appearing in the frames. everywhere else it stays OUTSIDE the
@@ -616,178 +810,14 @@ pub mod linux_impl {
     use tauri::Manager;
 
     const LABEL: &str = "recbar";
-    const BAR_W: f64 = 148.0;
+    // keep in sync with .recbar in styles.css
+    const BAR_W: f64 = 184.0;
     const BAR_H: f64 = 36.0;
     // matches the windows overlay: a 4px ring just outside the region,
     // blinking every 500ms
     const FRAME_BORDER: i32 = 4;
     const FRAME_FLASH_MS: u32 = 500;
 
-    // where the stop-control bar sits relative to the recorded region: below
-    // its bottom-right corner, then above it. when the bar is excluded from
-    // capture (plasma >= 6.7) that is the whole windows-parity order and the
-    // fallback tucks it inside the region, invisible to the recording. when
-    // it isn't, the search keeps trying beside the region (right, then left,
-    // possibly on a neighbouring monitor) before the inside fallback, which
-    // there only remains for a region covering every monitor. returns global
-    // logical coordinates.
-    pub(crate) fn bar_position(
-        region: Rectangle,
-        monitors: &[crate::capture::MonitorInfo],
-        excluded_from_capture: bool,
-    ) -> (i32, i32) {
-        let right = region.x + region.width as i32;
-        let bottom = region.y + region.height as i32;
-        let x_aligned = (right - BAR_W as i32).max(region.x);
-        let fits = |x: i32, y: i32| {
-            monitors.iter().any(|m| {
-                x >= m.x
-                    && y >= m.y
-                    && x + BAR_W as i32 <= m.x + m.width as i32
-                    && y + BAR_H as i32 <= m.y + m.height as i32
-            })
-        };
-        let mut spots = vec![
-            (x_aligned, bottom + 8),
-            (x_aligned, region.y - BAR_H as i32 - 8),
-        ];
-        if !excluded_from_capture {
-            spots.push((right + 8, bottom - BAR_H as i32));
-            spots.push((region.x - BAR_W as i32 - 8, bottom - BAR_H as i32));
-        }
-        spots
-            .into_iter()
-            .find(|&(x, y)| fits(x, y))
-            .unwrap_or((x_aligned, bottom - BAR_H as i32 - 8))
-    }
-
-    #[cfg(test)]
-    mod tests {
-        use super::bar_position;
-        use crate::capture::{MonitorInfo, Rectangle};
-
-        fn mon(x: i32, y: i32, w: u32, h: u32) -> MonitorInfo {
-            MonitorInfo {
-                id: 0,
-                name: "m".into(),
-                x,
-                y,
-                width: w,
-                height: h,
-                is_primary: true,
-            }
-        }
-
-        #[test]
-        fn sits_below_when_there_is_room() {
-            let region = Rectangle {
-                x: 100,
-                y: 100,
-                width: 400,
-                height: 200,
-            };
-            let (x, y) = bar_position(region, &[mon(0, 0, 1920, 1080)], false);
-            assert_eq!(y, 308); // 100 + 200 + 8
-            assert_eq!(x, 352); // right edge 500 - 148
-        }
-
-        #[test]
-        fn flips_above_when_no_room_below() {
-            // region hugs the monitor's bottom edge
-            let region = Rectangle {
-                x: 100,
-                y: 800,
-                width: 400,
-                height: 280,
-            };
-            let (_, y) = bar_position(region, &[mon(0, 0, 1920, 1080)], false);
-            assert_eq!(y, 756); // 800 - 36 - 8
-        }
-
-        #[test]
-        fn sits_beside_full_height_region() {
-            let region = Rectangle {
-                x: 0,
-                y: 0,
-                width: 400,
-                height: 1080,
-            };
-            let (x, y) = bar_position(region, &[mon(0, 0, 1920, 1080)], false);
-            assert_eq!((x, y), (408, 1044)); // right of the region, bottom-aligned
-        }
-
-        #[test]
-        fn escapes_to_second_monitor_when_one_is_fully_recorded() {
-            let region = Rectangle {
-                x: 0,
-                y: 0,
-                width: 1920,
-                height: 1080,
-            };
-            let (x, y) = bar_position(
-                region,
-                &[mon(0, 0, 1920, 1080), mon(1920, 0, 1920, 1080)],
-                false,
-            );
-            assert_eq!((x, y), (1928, 1044)); // beside, on the second monitor
-        }
-
-        #[test]
-        fn tucks_inside_when_the_region_covers_everything() {
-            let region = Rectangle {
-                x: 0,
-                y: 0,
-                width: 1920,
-                height: 1080,
-            };
-            let (x, y) = bar_position(region, &[mon(0, 0, 1920, 1080)], false);
-            assert_eq!((x, y), (1772, 1036)); // inside: bottom-right corner
-        }
-
-        #[test]
-        fn excluded_bar_still_prefers_the_outside_spots() {
-            let region = Rectangle {
-                x: 100,
-                y: 100,
-                width: 400,
-                height: 200,
-            };
-            let (x, y) = bar_position(region, &[mon(0, 0, 1920, 1080)], true);
-            assert_eq!((x, y), (352, 308)); // below, same as the windows bar
-        }
-
-        #[test]
-        fn excluded_bar_goes_inside_instead_of_beside() {
-            // full-height region: the visible bar sits beside it, the
-            // excluded bar tucks inside like windows clamps to the work area
-            let region = Rectangle {
-                x: 0,
-                y: 0,
-                width: 400,
-                height: 1080,
-            };
-            let (x, y) = bar_position(region, &[mon(0, 0, 1920, 1080)], true);
-            assert_eq!((x, y), (252, 1036)); // inside: bottom-right of the region
-        }
-
-        #[test]
-        fn excluded_bar_never_roams_to_a_second_monitor() {
-            let region = Rectangle {
-                x: 0,
-                y: 0,
-                width: 1920,
-                height: 1080,
-            };
-            let (x, y) = bar_position(
-                region,
-                &[mon(0, 0, 1920, 1080), mon(1920, 0, 1920, 1080)],
-                true,
-            );
-            assert_eq!((x, y), (1772, 1036)); // inside the region, not next door
-        }
-    }
-
-    static ON_STOP: Mutex<Option<Box<dyn Fn() + Send>>> = Mutex::new(None);
     // holds the recbar's plasma-shell role objects for the recording's
     // lifetime; dropped (and destroyed) on stop so nothing leaks per run
     static PLASMA_GRANT: Mutex<Option<crate::overlay::plasma_ffi::PlasmaGrant>> = Mutex::new(None);
@@ -900,11 +930,10 @@ pub mod linux_impl {
         );
     }
 
-    pub fn start(region: Rectangle, _max_secs: u64, on_stop: Box<dyn Fn() + Send>) {
+    pub fn start(region: Rectangle) {
         let Some(app) = crate::overlay::linux::app_handle() else {
             return;
         };
-        *ON_STOP.lock().unwrap() = Some(on_stop);
 
         // arm the exclusion before the bar window exists so its windowAdded
         // handler catches the mapping and no frame ever shows the bar
@@ -923,7 +952,8 @@ pub mod linux_impl {
             };
 
         let monitors = crate::capture::list_monitors().unwrap_or_default();
-        let (bar_x, bar_y) = bar_position(region, &monitors, excluded);
+        let (bar_x, bar_y) =
+            bar_position(region, (BAR_W as i32, BAR_H as i32), &monitors, excluded);
         let (x, y) = (bar_x as f64, bar_y as f64);
 
         // the raw wayland frame carries its own connection; everything else
@@ -970,7 +1000,7 @@ pub mod linux_impl {
                         gtk_window.resize(BAR_W as i32, BAR_H as i32);
                         // the webview child's size request outvotes resize();
                         // a max-size geometry hint is the one clamp gtk always
-                        // honors, otherwise the bar balloons past 148x36
+                        // honors, otherwise the bar balloons past its size
                         let geometry = gtk::gdk::Geometry::new(
                             BAR_W as i32,
                             BAR_H as i32,
@@ -1050,7 +1080,6 @@ pub mod linux_impl {
     }
 
     pub fn stop() {
-        *ON_STOP.lock().unwrap() = None;
         *EXCLUSION.lock().unwrap() = None;
         if let Some(grant) = PLASMA_GRANT.lock().unwrap().take() {
             grant.plasma_surface.destroy();
@@ -1071,55 +1100,25 @@ pub mod linux_impl {
             }
         });
     }
-
-    // stop-button click from the bar UI
-    #[tauri::command]
-    pub fn recbar_stop() {
-        let cb = ON_STOP.lock().unwrap().take();
-        if let Some(cb) = cb {
-            cb();
-        }
-    }
-}
-
-#[cfg(not(any(windows, target_os = "linux")))]
-mod fallback_impl {
-    use super::*;
-
-    pub fn start(_region: Rectangle, _max_secs: u64, _on_stop: Box<dyn Fn() + Send>) {}
-    pub fn stop() {}
 }
 
 pub struct RecordingOverlay;
 
+// windows arms its frame through windows_impl directly; elsewhere the frame
+// and bar appear once recording starts
 impl RecordingOverlay {
-    #[cfg(windows)]
-    pub fn start(region: Rectangle, max_secs: u64, on_stop: Box<dyn Fn() + Send>) {
-        windows_impl::start(region, max_secs, on_stop);
-    }
-
     #[cfg(target_os = "linux")]
-    pub fn start(region: Rectangle, max_secs: u64, on_stop: Box<dyn Fn() + Send>) {
-        linux_impl::start(region, max_secs, on_stop);
+    pub fn start(region: Rectangle) {
+        linux_impl::start(region);
     }
 
     #[cfg(not(any(windows, target_os = "linux")))]
-    pub fn start(region: Rectangle, max_secs: u64, on_stop: Box<dyn Fn() + Send>) {
-        fallback_impl::start(region, max_secs, on_stop);
-    }
+    pub fn start(_region: Rectangle) {}
 
-    #[cfg(windows)]
     pub fn stop() {
+        #[cfg(windows)]
         windows_impl::stop();
-    }
-
-    #[cfg(target_os = "linux")]
-    pub fn stop() {
+        #[cfg(target_os = "linux")]
         linux_impl::stop();
-    }
-
-    #[cfg(not(any(windows, target_os = "linux")))]
-    pub fn stop() {
-        fallback_impl::stop();
     }
 }
