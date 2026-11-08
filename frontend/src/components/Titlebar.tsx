@@ -36,7 +36,15 @@ export function Titlebar(props: Props) {
   onCleanup(() => unlisten?.());
 
   const onDoubleClick = async (e: MouseEvent) => {
-    if ((e.target as HTMLElement).closest(".titlebar-btn")) return;
+    const target = e.target;
+    if (
+      target instanceof Element &&
+      target.closest(
+        "button, a, input, select, textarea, summary, label, [role='button'], [contenteditable]:not([contenteditable='false']), [tabindex]:not([tabindex='-1'])",
+      )
+    ) {
+      return;
+    }
     await win.toggleMaximize();
     setMaximized(await win.isMaximized());
   };

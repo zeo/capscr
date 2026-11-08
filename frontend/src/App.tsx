@@ -1,4 +1,4 @@
-import { createResource, createSignal, For, lazy, Match, onCleanup, onMount, Show, Suspense, Switch } from "solid-js";
+import { createEffect, createResource, createSignal, For, lazy, Match, onCleanup, onMount, Show, Suspense, Switch } from "solid-js";
 import { listen, TauriEvent, UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow, Window } from "@tauri-apps/api/window";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
@@ -16,6 +16,7 @@ import {
   config,
   discardFailedCaptureTaskSave,
   mutateConfig,
+  refetchConfig,
   saveCaptureTasks,
   waitForCaptureTaskSaves,
 } from "./store";
@@ -70,7 +71,14 @@ const TABS: Tab[] = [
 
 export function App() {
   const label = getCurrentWindow().label;
+  createEffect(() => {
+    const theme = config()?.ui.theme;
+    if (theme) document.documentElement.dataset.theme = theme.toLowerCase();
+  });
   if (label === "editor") {
+    const unlisten = listen("capscr://config-updated", () => void refetchConfig());
+    onCleanup(() => void unlisten.then((off) => off()));
+
     return (
       <Suspense fallback={<div class="editor-loading">loading editor…</div>}>
         <Editor />
@@ -489,8 +497,12 @@ function Hub() {
     );
 
   const quickRecord = () => {
+    if (recording()) {
+      void api.stopRecording().catch((e) => pushToast("recording", String(e)));
+      return;
+    }
     const task = recordTask();
-    if (!task || recording()) return;
+    if (!task) return;
     void api.fireTask(task.id).catch((e) => pushToast("recording", String(e)));
   };
 
@@ -554,17 +566,24 @@ function Hub() {
               class="qc"
               classList={{ "is-recording": recording() }}
               onClick={quickRecord}
-              disabled={recording() || !recordTask()}
+              disabled={!recording() && !recordTask()}
+              aria-label={
+                recording()
+                  ? `stop recording, ${recordingElapsed()} elapsed`
+                  : recordTask()
+                    ? `start a ${recordTask()!.capture_mode === "region-mp4" ? "video" : "gif"} recording`
+                    : "recording unavailable: add a gif or mp4 task"
+              }
               title={
                 recording()
-                  ? "recording: stop with the task hotkey or the recording bar"
+                  ? "stop and save recording"
                   : recordTask()
                     ? `start a ${recordTask()!.capture_mode === "region-mp4" ? "video" : "gif"} recording`
                     : "add a gif or mp4 task to record from here"
               }
             >
               <span class="qc-dot" aria-hidden="true">●</span>
-              {recording() ? recordingElapsed() : "record"}
+              {recording() ? `stop ${recordingElapsed()}` : "record"}
             </button>
           </div>
         }

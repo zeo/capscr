@@ -2,7 +2,7 @@ import { createResource, createSignal, For, Match, onCleanup, Show, Switch } fro
 import { listen } from "@tauri-apps/api/event";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { Section } from "../components/Section";
-import { api, AppConfig, HotkeyDiagnostics, SftpKnownHost } from "../api";
+import { api, AppConfig, HotkeyDiagnostics, SftpKnownHost, UiConfig } from "../api";
 import { configDirty, setConfigDirty } from "../dirty";
 import { FolderOpen, RotateCcw, Save } from "lucide-solid";
 import { config, mutateConfig } from "../store";
@@ -182,7 +182,24 @@ function GeneralPane(props: { c: AppConfig; patch: Patch }) {
   };
   return (
     <>
+    <Section title="appearance">
+      <div class="field">
+        <label class="field-label">theme</label>
+        <div class="field-control">
+          <select
+            value={c().ui.theme}
+            onChange={(e) =>
+              props.patch("ui", { ...c().ui, theme: e.currentTarget.value as UiConfig["theme"] })
+            }
+          >
+            <option value="Dark">dark</option>
+            <option value="Light">light</option>
+          </select>
+        </div>
+      </div>
+    </Section>
     <Section title="output">
+
       <div class="field">
         <label class="field-label">directory</label>
         <div class="field-control">

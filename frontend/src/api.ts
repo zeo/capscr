@@ -312,6 +312,7 @@ export const api = {
     config: AppConfig,
   ) => invoke<ConnectionTestReport>("test_upload_connection", { destination, config }),
   fireTask: (taskId: string) => invoke<void>("fire_task", { taskId }),
+  stopRecording: () => invoke<void>("stop_recording"),
   runOcr: (path: string) => invoke<string>("run_ocr", { path }),
   pinImage: (path: string) => invoke<void>("pin_image", { path }),
   getPinnedImagePath: (label: string) => invoke<string | null>("get_pinned_image_path", { label }),

@@ -263,7 +263,7 @@ export function Tasks() {
                               <span class="v">required</span>
                             </span>
                           </Show>
-                          <span>
+                          <span class="task-id">
                             <span class="k">id </span>
                             <span class="v">{task.id}</span>
                           </span>

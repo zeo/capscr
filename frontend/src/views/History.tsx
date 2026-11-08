@@ -305,7 +305,7 @@ export function History() {
         </span>
       </div>
 
-      <div class="row between" style="margin-bottom: 18px; gap: 10px;">
+      <div class="history-toolbar" style="margin-bottom: 18px;">
         <div class="history-controls">
           <label class="history-search">
             <Search size={11} stroke-width={1.5} />
@@ -326,6 +326,10 @@ export function History() {
               </button>
             </Show>
           </label>
+          <button class="btn" data-variant="ghost" onClick={() => refetch()}>
+            <RefreshCw size={12} stroke-width={1.5} />
+            reload
+          </button>
           <div class="history-filters">
             <For each={FILTER_PILLS()}>
               {(k) => (
@@ -341,10 +345,6 @@ export function History() {
             </For>
           </div>
         </div>
-        <button class="btn" data-variant="ghost" onClick={() => refetch()}>
-          <RefreshCw size={12} stroke-width={1.5} />
-          reload
-        </button>
       </div>
 
       <Show when={flash()}>
@@ -474,13 +474,15 @@ export function History() {
                       <Pin size={12} stroke-width={1.5} />
                     </button>
                   </Show>
-                  <button
-                    class="icon-btn"
-                    title="re-upload"
-                    onClick={() => doReupload(e.path)}
-                  >
-                    <UploadCloud size={12} stroke-width={1.5} />
-                  </button>
+                  <Show when={!e.is_gif && !e.is_mp4}>
+                    <button
+                      class="icon-btn"
+                      title="re-upload"
+                      onClick={() => doReupload(e.path)}
+                    >
+                      <UploadCloud size={12} stroke-width={1.5} />
+                    </button>
+                  </Show>
                   <button
                     class="icon-btn"
                     title="open in os viewer"
