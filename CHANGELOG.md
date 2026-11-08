@@ -4,6 +4,12 @@ format follows [keep-a-changelog](https://keepachangelog.com/en/1.1.0/) loosely.
 
 ## [Unreleased]
 
+### security
+- zip updated to 9.4, fixing RUSTSEC-2026-0367, -0368, -0369 and -0429 in the archive reader used by marketplace installs and the ffmpeg download
+- wasmtime updated to 50.0, clearing its open advisories including the critical RUSTSEC-2026-0327 and -0379; building from source now needs Rust 1.97+
+- rustls, rustls-webpki, quinn-proto, webpki-root-certs, zstd and crypto-bigint updated to patched releases, and the yanked async-executor, chacha20, clipboard-win and wnaf versions replaced
+- vite, solid-js, seroval and postcss updated in the frontend so `npm audit` comes back clean
+
 ## [0.5.57] - 2026-11-08
 
 ### added

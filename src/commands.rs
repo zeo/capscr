@@ -3322,7 +3322,7 @@ fn download_verified_ffmpeg(
     let mut archive = zip::ZipArchive::new(std::io::Cursor::new(zip_bytes.as_slice()))?;
     for i in 0..archive.len() {
         let mut file = archive.by_index(i)?;
-        let name = file.name();
+        let name = file.name()?.into_owned();
         if name.ends_with("bin/ffmpeg.exe")
             || name.ends_with("bin/ffmpeg")
             || name.ends_with("/ffmpeg")

@@ -221,7 +221,14 @@ pub fn install_plugin(plugins_dir: &Path, entry: &RegistryEntry) -> Result<bool>
 
     for i in 0..archive.len() {
         let mut file = archive.by_index(i)?;
-        if let Err(error) = validate_archive_name(file.name()) {
+        let name = match file.name() {
+            Ok(name) => name.into_owned(),
+            Err(error) => {
+                let _ = std::fs::remove_dir_all(&staging);
+                return Err(error.into());
+            }
+        };
+        if let Err(error) = validate_archive_name(&name) {
             let _ = std::fs::remove_dir_all(&staging);
             return Err(error);
         }
@@ -229,7 +236,7 @@ pub fn install_plugin(plugins_dir: &Path, entry: &RegistryEntry) -> Result<bool>
             Some(n) => n.to_path_buf(),
             None => {
                 let _ = std::fs::remove_dir_all(&staging);
-                bail!("zip entry has unsafe path: {}", file.name());
+                bail!("zip entry has unsafe path: {}", name);
             }
         };
         // defense-in-depth on top of enclosed_name (which already rejects
@@ -246,7 +253,7 @@ pub fn install_plugin(plugins_dir: &Path, entry: &RegistryEntry) -> Result<bool>
             bail!("zip entry escapes plugin folder: {:?}", raw_name);
         }
         let out_path = staging.join(&raw_name);
-        if file.name().ends_with('/') {
+        if name.ends_with('/') {
             std::fs::create_dir_all(&out_path)?;
             continue;
         }
