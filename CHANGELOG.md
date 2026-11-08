@@ -4,6 +4,26 @@ format follows [keep-a-changelog](https://keepachangelog.com/en/1.1.0/) loosely.
 
 ## [Unreleased]
 
+## [0.5.57] - 2026-11-08
+
+### added
+- region recording on windows works like a screen recorder: the selection stays up as an armed frame you can drag, resize (shift keeps the aspect), nudge with the arrow keys or snap to a size preset, then REC starts it from a toolbar that never shows up in the frames
+- recordings pause and resume from the toolbar or a new pause hotkey (unbound by default); paused time is cut from the gif or mp4 and doesn't count toward the max duration. linux gets the pause button on its rec bar
+- the frame can be moved and resized mid-recording; the output keeps its starting size and the new area is scaled to fill it
+- gif size presets (small, balanced, quality) plus advanced options: scale, max width, color count, dithering, per-frame palettes, changed-pixels-only frames, and an ffmpeg palettegen engine when ffmpeg is installed
+- mp4 recordings can use nvidia nvenc, intel quick sync or amd amf; auto picks the first one that passes a trial encode, and regions outside the gpu encoder's size limits fall back to libx264
+- a light theme next to the dark one, switched under settings > general > appearance
+- a free memory when hidden option closes the main window's web view while it sits in the tray
+
+### changed
+- new dark look across the app, the toolbar, the editor and pins, with source sans 3 replacing hanken grotesk
+- new app icon
+- gif saving and ffmpeg encodes run at below-normal priority so the rest of the desktop stays responsive
+- windows region recording reuses one gdi capture surface for the whole recording instead of rebuilding it every frame
+
+### fixed
+- a stop request sent while the recording overlay was still starting no longer gets lost
+
 ## [0.5.56] - 2026-09-09
 
 ### added
