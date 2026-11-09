@@ -24,6 +24,7 @@ format follows [keep-a-changelog](https://keepachangelog.com/en/1.1.0/) loosely.
 ### changed
 - new dark look across the app, the toolbar, the editor and pins, with source sans 3 replacing hanken grotesk
 - new app icon
+- setup uses the new look and icon, and follows the windows light or dark setting
 - gif saving and ffmpeg encodes run at below-normal priority so the rest of the desktop stays responsive
 - windows region recording reuses one gdi capture surface for the whole recording instead of rebuilding it every frame
 
