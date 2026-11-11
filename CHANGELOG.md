@@ -4,6 +4,27 @@ format follows [keep-a-changelog](https://keepachangelog.com/en/1.1.0/) loosely.
 
 ## [Unreleased]
 
+### fixed
+- the editor opens again: images load fitted to the window instead of hanging on "loading capture", and saving no longer fails with a tainted-canvas error
+- editor saves no longer bake the selection outline into the image, and transparent pngs no longer smear when shapes move
+- drags that leave the canvas keep going instead of committing early
+- opening the editor no longer hangs when it restores its saved size
+
+### added
+- editor shapes can be resized by their handles and restyled after drawing; text is re-edited by double-clicking it and can span several lines
+- a custom color picker next to the editor swatches
+- editor zoom: fit, 25% to 800%, ctrl+wheel at the cursor, ctrl+0 for fit and ctrl+1 for 100%
+- ctrl+s saves and ctrl+c copies the edited image; the last tool, color, stroke and text size are remembered
+
+### changed
+- the editor toolbar is two rows: tools and actions on top, colors and tool settings below
+- crop, rotate and flip undo and redo along with the shapes, in one history
+- saving keeps the editor open
+- editor save, copy and upload send the image as raw bytes and run off the main thread, so other windows stay responsive during an upload
+- the main window opens at 70% x 75% of the screen and the editor at 85% x 85%; existing windows grow once to that size, then keep whatever size you pick
+- wider form fields, and settings tabs with several sections use two columns on wide windows
+- right-clicking no longer shows the browser menu, except in text fields
+
 ## [0.5.57] - 2026-11-09
 
 ### security
