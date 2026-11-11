@@ -117,27 +117,28 @@ export function Settings() {
       >
         {(c) => (
           <>
-
-            <Switch>
-              <Match when={pane() === "general"}>
-                <GeneralPane c={c()} patch={patch} />
-              </Match>
-              <Match when={pane() === "capture"}>
-                <CapturePane c={c()} patch={patch} />
-              </Match>
-              <Match when={pane() === "hdr"}>
-                <HdrPane c={c()} patch={patch} />
-              </Match>
-              <Match when={pane() === "hotkeys"}>
-                <HotkeysPane c={c()} patch={patch} />
-              </Match>
-              <Match when={pane() === "ssh"}>
-                <SshPane />
-              </Match>
-              <Match when={pane() === "notify"}>
-                <NotifyPane c={c()} patch={patch} />
-              </Match>
-            </Switch>
+            <div class="settings-pane">
+              <Switch>
+                <Match when={pane() === "general"}>
+                  <GeneralPane c={c()} patch={patch} />
+                </Match>
+                <Match when={pane() === "capture"}>
+                  <CapturePane c={c()} patch={patch} />
+                </Match>
+                <Match when={pane() === "hdr"}>
+                  <HdrPane c={c()} patch={patch} />
+                </Match>
+                <Match when={pane() === "hotkeys"}>
+                  <HotkeysPane c={c()} patch={patch} />
+                </Match>
+                <Match when={pane() === "ssh"}>
+                  <SshPane />
+                </Match>
+                <Match when={pane() === "notify"}>
+                  <NotifyPane c={c()} patch={patch} />
+                </Match>
+              </Switch>
+            </div>
 
             <hr class="rule" />
             <div class="btn-row right">
