@@ -2483,7 +2483,45 @@ pub fn prewarm_hub_window(app: &tauri::App) -> tauri::Result<()> {
 fn restore_hub_state(window: &tauri::WebviewWindow) {
     let flags = WindowStateFlags::all() & !WindowStateFlags::VISIBLE;
     let _ = window.restore_state(flags);
+    grow_window_once(window, (0.70, 0.75), (840.0, 560.0));
     fit_window_to_work_area(window, HUB_MIN_WIDTH, HUB_MIN_HEIGHT);
+}
+
+// the first open of each window (including the first launch after this
+// shipped, over an older saved size) takes a share of its monitor's work
+// area; from then on the window-state plugin keeps whatever the user picks
+fn grow_window_once(window: &tauri::WebviewWindow, share: (f64, f64), floor: (f64, f64)) {
+    let app = window.app_handle();
+    let state = app.state::<AppState>();
+    let label = window.label().to_string();
+    if state.config.lock().unwrap().ui.grown_windows.contains(&label) {
+        return;
+    }
+    let (Ok(Some(monitor)), Ok(size)) = (window.current_monitor(), window.inner_size()) else {
+        return;
+    };
+    let scale = window.scale_factor().unwrap_or(1.0);
+    let floor = tauri::LogicalSize::new(floor.0, floor.1).to_physical::<u32>(scale);
+    let work_area = monitor.work_area().size;
+    let width = ((work_area.width as f64 * share.0) as u32).max(floor.width);
+    let height = ((work_area.height as f64 * share.1) as u32).max(floor.height);
+    if size.width < width || size.height < height {
+        let _ = window.set_size(tauri::PhysicalSize::new(
+            size.width.max(width),
+            size.height.max(height),
+        ));
+        let _ = window.center();
+    }
+    let Ok(_pending_mutation) = PendingFileMutation::begin(app) else {
+        return;
+    };
+    let mut stored = state.config.lock().unwrap();
+    let mut config = stored.clone();
+    config.ui.grown_windows.push(label);
+    match config.save_and_migrate_secrets() {
+        Ok(()) => *stored = config,
+        Err(error) => tracing::warn!("failed to record grown window: {error}"),
+    }
 }
 
 fn clamp_window_axis(current: u32, work_area: u32, minimum: u32) -> u32 {
@@ -2704,7 +2742,7 @@ pub fn open_hub_window(app: &AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
-const EDITOR_LABEL: &str = "editor";
+pub const EDITOR_LABEL: &str = "editor";
 
 pub fn open_editor_window(app: &AppHandle, image_path: &str) -> tauri::Result<()> {
     let state = app.state::<AppState>();
@@ -2728,7 +2766,7 @@ pub fn open_editor_window(app: &AppHandle, image_path: &str) -> tauri::Result<()
         .min_inner_size(420.0, 280.0)
         .resizable(true)
         .decorations(false)
-        .visible(true);
+        .visible(false);
 
     #[cfg(windows)]
     {
@@ -2740,7 +2778,17 @@ pub fn open_editor_window(app: &AppHandle, image_path: &str) -> tauri::Result<()
     }
 
     let window = builder.build()?;
-    fit_window_to_work_area(&window, 420.0, 280.0);
+    let sized = window.clone();
+    // window-state's restore holds its locks across calls the main thread has
+    // to answer, so off the main thread it hangs the command; the plugin skips
+    // this window's own restore (main.rs) so the growth below sees the saved size
+    app.run_on_main_thread(move || {
+        let _ = sized.restore_state(WindowStateFlags::all() & !WindowStateFlags::VISIBLE);
+        grow_window_once(&sized, (0.85, 0.85), (960.0, 640.0));
+        fit_window_to_work_area(&sized, 420.0, 280.0);
+        let _ = sized.show();
+        let _ = sized.set_focus();
+    })?;
     watch_editor_navigation(app, window);
     Ok(())
 }

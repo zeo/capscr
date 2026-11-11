@@ -141,6 +141,7 @@ fn main() {
                         & !tauri_plugin_window_state::StateFlags::VISIBLE,
                 )
                 .skip_initial_state(commands::HUB_LABEL)
+                .skip_initial_state(commands::EDITOR_LABEL)
                 .build(),
         )
         .manage(app_state)

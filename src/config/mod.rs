@@ -531,6 +531,9 @@ pub struct UiConfig {
     // destroy the hidden hub webview instead of keeping it warm; linux always does
     #[serde(default)]
     pub free_memory_when_hidden: bool,
+    // labels of windows already grown to their first-open share of the screen
+    #[serde(default)]
+    pub grown_windows: Vec<String>,
 }
 
 fn default_true() -> bool {
@@ -552,6 +555,7 @@ impl Default for UiConfig {
             save_clipboard_to_history: false,
             tray_hint_dismissed: false,
             free_memory_when_hidden: false,
+            grown_windows: Vec::new(),
         }
     }
 }
