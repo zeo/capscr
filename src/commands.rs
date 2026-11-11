@@ -167,6 +167,9 @@ pub fn set_config(
         config.hotkeys.disabled_globally = state
             .hotkeys_disabled
             .load(std::sync::atomic::Ordering::SeqCst);
+        // window growth is recorded by the backend after the hub loaded its copy,
+        // so a stale settings draft must not undo it and regrow resized windows
+        config.ui.grown_windows = stored.ui.grown_windows.clone();
         config.validate().map_err(|e| e.to_string())?;
         let _pending_mutation =
             PendingFileMutation::begin(&app).map_err(|error| error.to_string())?;
