@@ -1802,7 +1802,7 @@ kbd {
 .editor-row {
   display: flex;
   align-items: center;
-  gap: 16px;
+  gap: 6px 16px;
   flex-wrap: wrap;
   min-height: 24px;
 }
@@ -1840,7 +1840,8 @@ kbd {
   border-radius: 4px;
   box-shadow: var(--key-glow);
   color: var(--key-fg);
-  padding: 4px 7px;
+  height: 24px;
+  padding: 0 6px;
   cursor: pointer;
   display: inline-flex;
   align-items: center;
@@ -1874,10 +1875,15 @@ kbd {
 }
 
 .editor-colors .swatch-custom {
-  width: 22px;
-  height: 20px;
-  background: none;
+  margin-left: 4px;
+  background: conic-gradient(#f43f5e, #f59e0b, #22c55e, #06b6d4, #6366f1, #d946ef, #f43f5e);
   border-radius: 0;
+}
+
+/* until a custom color is in use the picker shows a spectrum, so it never
+   reads as a second copy of the active preset */
+.editor-colors .swatch-custom:not(.is-active)::-webkit-color-swatch {
+  opacity: 0;
 }
 
 .editor-colors .swatch-custom::-webkit-color-swatch-wrapper {
@@ -1913,13 +1919,30 @@ kbd {
 
 .editor-controls .ctrl-val {
   width: 24px;
-  text-align: right;
   font-family: var(--mono);
   color: var(--text-2);
 }
 
+/* space-between rather than an auto margin, so a wrapped action row starts
+   at the left edge under the tools instead of hanging off the right */
+.editor-row:first-child {
+  justify-content: space-between;
+}
+
 .editor-actions {
-  margin-left: auto;
+  flex-wrap: wrap;
+}
+
+/* one key shape for the whole top row; the app's pill buttons next to the
+   square tool keys read as two different toolbars */
+.editor-actions .btn {
+  height: 24px;
+  border-radius: 4px;
+}
+
+.editor-actions .btn[data-size="xs"] {
+  padding: 0 7px;
+  font-size: 11px;
 }
 
 .editor-canvas-wrap {

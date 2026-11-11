@@ -15,7 +15,6 @@ import {
   Save,
   Copy,
   Upload,
-  X,
   ZoomIn,
   ZoomOut,
   Maximize2,
@@ -1457,17 +1456,27 @@ export function Editor() {
               <Save size={12} stroke-width={1.5} />
               save
             </button>
-            <button class="btn" data-variant="ghost" onClick={onCopy} disabled={!idle()} title="copy image (ctrl+c)">
+            <button
+              class="btn"
+              data-variant="ghost"
+              data-size="xs"
+              onClick={onCopy}
+              disabled={!idle()}
+              title="copy image (ctrl+c)"
+              aria-label="copy image"
+            >
               <Copy size={12} stroke-width={1.5} />
-              copy
             </button>
-            <button class="btn" data-variant="ghost" onClick={onUpload} disabled={!idle()}>
+            <button
+              class="btn"
+              data-variant="ghost"
+              data-size="xs"
+              onClick={onUpload}
+              disabled={!idle()}
+              title="upload"
+              aria-label="upload"
+            >
               <Upload size={12} stroke-width={1.5} />
-              upload
-            </button>
-            <button class="btn" data-variant="ghost" onClick={() => void win.close()}>
-              <X size={12} stroke-width={1.5} />
-              close
             </button>
           </div>
         </div>
