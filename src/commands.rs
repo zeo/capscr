@@ -3221,23 +3221,30 @@ pub fn upload_file(
     })
 }
 
-#[tauri::command(async)]
-pub fn upload_edited_image(
+#[tauri::command]
+pub async fn upload_edited_image(
     request: tauri::ipc::Request<'_>,
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<UploadResponse, String> {
     let bytes = editor_image_bytes(request.body())?;
-    let img = image::load_from_memory(&bytes).map_err(|e| e.to_string())?;
-    let rgba = img.into_rgba8();
     let config = state.config.lock().unwrap().clone();
-    let uploader = crate::upload::shared_uploader().map_err(|e| e.to_string())?;
     let service = build_upload_service(&config);
-    let _pending_mutation =
+    let pending_mutation =
         PendingFileMutation::begin(&app).map_err(|error| error.to_string())?;
-    let result = uploader
-        .upload(&rgba, &service)
-        .map_err(|e| e.to_string())?;
+    // reqwest::blocking panics on a tokio worker, which would leave the
+    // editor's invoke pending forever
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let _pending_mutation = pending_mutation;
+        let rgba = image::load_from_memory(&bytes)
+            .map_err(|e| e.to_string())?
+            .into_rgba8();
+        crate::upload::shared_uploader()
+            .and_then(|uploader| uploader.upload(&rgba, &service))
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())??;
     state.record_upload(UploadRecord {
         url: result.url.clone(),
         delete_url: result.delete_url.clone(),
