@@ -12,6 +12,7 @@ A tray screen capture tool for Windows and Linux: screenshots, GIF and MP4 recor
 
 - tasks: each hotkey pairs a capture mode (region, last region, window, fullscreen, active monitor, GIF, MP4) with an action (save, copy, editor, annotate, upload, OCR). Defaults: region to save and copy (bound on first launch), `Ctrl+Shift+G` for GIF, `Ctrl+Shift+V` for MP4.
 - selection: drag a region, click a window or press Enter for the full screen. `Alt+click` copies a pixel's hex color.
+- editor: arrows, lines, boxes, ellipses, text, step numbers, freehand, highlighter and pixelate. Shapes stay editable after drawing: move them, drag their handles, change color or size. Crop, rotate and flip share one undo history; zoom from 25% to 800% or fit the window. Saving keeps the editor open.
 - recording: on Windows the region stays as a frame you can move, resize or snap to a preset size while recording, with pause and stop on a toolbar that stays out of the output. Linux gets the toolbar without the frame. GIF size and quality are adjustable; MP4 can use NVENC, Quick Sync or AMF.
 - HDR (Windows): tonemapped to SDR, or saved as HDR PNG. Linux compositors don't expose HDR pixels yet.
 - uploads: Imgur, custom HTTPS, SFTP (Ed25519 and ECDSA keys) or S3. Passwords live in the system credential store.
