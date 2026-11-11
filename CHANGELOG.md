@@ -4,11 +4,19 @@ format follows [keep-a-changelog](https://keepachangelog.com/en/1.1.0/) loosely.
 
 ## [Unreleased]
 
+## [0.5.60] - 2026-11-11
+
 ### fixed
 - the editor opens again: images load fitted to the window instead of hanging on "loading capture", and saving no longer fails with a tainted-canvas error
 - editor saves no longer bake the selection outline into the image, and transparent pngs no longer smear when shapes move
 - drags that leave the canvas keep going instead of committing early
 - opening the editor no longer hangs when it restores its saved size
+- uploading from the editor no longer hangs forever; a failed upload shows its error
+- crop and pixelate areas dragged past the image edge are clipped to the image
+- reopening a file in the editor right after saving it shows the saved pixels instead of a cached copy
+- saving settings no longer undoes the one-time window growth
+- number fields keep their right-click menu
+- history tile dates no longer wrap onto a line with a stray dot, and a short last row of tiles no longer shows a grey block
 
 ### added
 - editor shapes can be resized by their handles and restyled after drawing; text is re-edited by double-clicking it and can span several lines
@@ -17,7 +25,8 @@ format follows [keep-a-changelog](https://keepachangelog.com/en/1.1.0/) loosely.
 - ctrl+s saves and ctrl+c copies the edited image; the last tool, color, stroke and text size are remembered
 
 ### changed
-- the editor toolbar is two rows: tools and actions on top, colors and tool settings below
+- the editor toolbar is two rows: tools and actions on top, colors and tool settings below. every top-row button has the same shape, copy and upload are icon buttons, and the toolbar's close button is gone (use the titlebar or esc)
+- the custom color swatch shows a spectrum until a custom color is picked
 - crop, rotate and flip undo and redo along with the shapes, in one history
 - saving keeps the editor open
 - editor save, copy and upload send the image as raw bytes and run off the main thread, so other windows stay responsive during an upload
