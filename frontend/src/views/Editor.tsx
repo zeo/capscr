@@ -287,7 +287,9 @@ export function Editor() {
     const img = new Image();
     // without cors the asset-protocol image taints the canvas and export throws
     img.crossOrigin = "anonymous";
-    img.src = convertFileSrc(path);
+    // the query defeats the per-document image cache, which would otherwise
+    // hand back the pre-save pixels when a just-saved file is reopened
+    img.src = `${convertFileSrc(path)}?v=${Date.now()}`;
     try {
       await img.decode();
     } catch (e) {
