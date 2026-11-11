@@ -9,7 +9,8 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "vitest run"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",
@@ -25,6 +26,7 @@
     "esbuild": "^0.28.2",
     "typescript": "^7.0.2",
     "vite": "^8.2.2",
-    "vite-plugin-solid": "^2.11.14"
+    "vite-plugin-solid": "^2.11.14",
+    "vitest": "^5.1.0"
   }
 }

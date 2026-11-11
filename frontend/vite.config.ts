@@ -1,3 +1,4 @@
+/// <reference types="vitest/config" />
 import { defineConfig } from "vite";
 import solidPlugin from "vite-plugin-solid";
 import { readFileSync } from "node:fs";
@@ -21,6 +22,10 @@ export default defineConfig({
   envPrefix: ["VITE_", "TAURI_"],
   define: {
     __APP_VERSION__: JSON.stringify(tauriConf.version),
+  },
+  // the tested editor modules are pure, so skip the dom the solid plugin asks for
+  test: {
+    environment: "node",
   },
   build: {
     target: "esnext",

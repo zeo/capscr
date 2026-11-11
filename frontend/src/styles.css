@@ -1752,31 +1752,62 @@ kbd {
 /* ---------------- editor ---------------- */
 
 .editor {
-  display: grid;
-  grid-template-rows: var(--titlebar-h, 28px) auto 1fr auto;
+  display: flex;
+  flex-direction: column;
   height: 100vh;
   background: var(--bg-window);
   color: var(--text);
   font-family: var(--font);
 }
 
+.editor > .titlebar {
+  flex: none;
+  height: var(--titlebar-h);
+}
+
 .editor-toolbar {
   display: flex;
-  align-items: center;
-  gap: 16px;
+  flex-direction: column;
+  gap: 6px;
   padding: 6px 12px;
   background: var(--grad-tool);
   border-bottom: 1px solid var(--edge);
   box-shadow: inset 0 1px 0 var(--hi);
   font-size: 11px;
+}
+
+.editor-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
   flex-wrap: wrap;
+  min-height: 24px;
 }
 
 .editor-tools,
-.editor-actions {
+.editor-actions,
+.editor-group,
+.editor-selection {
   display: flex;
   align-items: center;
   gap: 4px;
+}
+
+.editor-group {
+  gap: 2px;
+  padding-right: 8px;
+  border-right: 1px solid var(--rule-2);
+}
+
+.editor-zoom-label {
+  min-width: 78px;
+  justify-content: center;
+  font-family: var(--mono);
+}
+
+.editor-selection {
+  margin-left: auto;
+  gap: 10px;
 }
 
 .editor-tools .tool {
@@ -1819,6 +1850,21 @@ kbd {
   padding: 0;
 }
 
+.editor-colors .swatch-custom {
+  width: 22px;
+  height: 20px;
+  background: none;
+  border-radius: 0;
+}
+
+.editor-colors .swatch-custom::-webkit-color-swatch-wrapper {
+  padding: 0;
+}
+
+.editor-colors .swatch-custom::-webkit-color-swatch {
+  border: 0;
+}
+
 .editor-colors .swatch.is-active {
   outline: 2px solid var(--focus);
   outline-offset: 2px;
@@ -1855,6 +1901,9 @@ kbd {
 
 .editor-canvas-wrap {
   position: relative;
+  display: flex;
+  flex: 1;
+  min-height: 0;
   overflow: auto;
   background: var(--ink-0);
   padding: 12px;
@@ -1865,29 +1914,20 @@ kbd {
 }
 
 
+/* auto margins center the image and collapse to zero once it overflows,
+   so the scrolled edges stay reachable */
 .editor-canvas-scroll {
   position: relative;
-  display: inline-block;
+  flex: none;
+  margin: auto;
 }
 
 .editor-canvas {
   display: block;
-  max-width: 100%;
-  height: auto;
+  touch-action: none;
   background: var(--ink-1);
   box-shadow: 0 0 0 1px var(--rule);
   cursor: crosshair;
-  image-rendering: pixelated;
-}
-
-.editor-zoom-group {
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-  padding: 0 6px;
-  border-left: 1px solid var(--rule-2);
-  border-right: 1px solid var(--rule-2);
-  margin: 0 4px;
 }
 
 .editor-canvas[data-tool="text"] {
@@ -1895,27 +1935,30 @@ kbd {
 }
 
 .editor-loading {
+  position: absolute;
+  inset: 0;
   display: flex;
   align-items: center;
   justify-content: center;
-  height: 100%;
+  padding: 24px;
+  text-align: center;
   color: var(--mute);
 }
 
-.editor-text-input-wrap {
-  position: absolute;
-  transform: translate(-2px, -2px);
-  z-index: 10;
-}
-
+/* matches the canvas text render: same font, line height and top-left
+   origin, with an outline instead of a border so nothing shifts */
 .editor-text-input {
-  background: var(--ink-1);
-  border: 1px solid var(--paper);
-  color: var(--paper);
-  padding: 2px 4px;
-  font-family: var(--font);
-  font-size: 13px;
-  min-width: 140px;
+  position: absolute;
+  z-index: 10;
+  margin: -0.125em 0 0;
+  padding: 0;
+  border: 0;
+  outline: 1px dashed rgba(255, 255, 255, 0.8);
+  background: rgba(0, 0, 0, 0.25);
+  text-shadow: 0 0 4px rgba(0, 0, 0, 0.85);
+  white-space: pre;
+  overflow: hidden;
+  resize: none;
 }
 
 .editor-foot {
@@ -2768,14 +2811,6 @@ kbd {
   cursor: nwse-resize;
 }
 
-.editor-transform-group {
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-  padding: 0 6px;
-  border-left: 1px solid var(--rule-2);
-  margin-left: 2px;
-}
 
 .editor-controls .ctrl input[type="checkbox"] {
   accent-color: var(--aqua-500);

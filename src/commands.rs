@@ -2956,13 +2956,83 @@ pub fn cleanup_annotate_stage(app: &AppHandle) {
     let _ = std::fs::remove_dir(&stage);
 }
 
-#[tauri::command]
+const EDITOR_TARGET_HEADER: &str = "x-capscr-target";
+
+// the custom-protocol ipc delivers the editor's Uint8Array untouched; tauri's
+// postMessage fallback turns the same body into a json number array
+fn editor_image_bytes(body: &tauri::ipc::InvokeBody) -> Result<Vec<u8>, String> {
+    match body {
+        tauri::ipc::InvokeBody::Raw(bytes) => Ok(bytes.clone()),
+        tauri::ipc::InvokeBody::Json(value) => serde_json::from_value(value.clone())
+            .map_err(|_| "expected the image bytes as the request body".to_string()),
+    }
+}
+
+// header values are ascii-only, so the editor percent-encodes the path with
+// encodeURIComponent, which also escapes '+', '&' and '=' and leaves one key
+fn editor_target_path(headers: &tauri::http::HeaderMap) -> Result<String, String> {
+    let raw = headers
+        .get(EDITOR_TARGET_HEADER)
+        .ok_or_else(|| "missing target path".to_string())?
+        .to_str()
+        .map_err(|_| "target path header is not ascii".to_string())?;
+    let path = url::form_urlencoded::parse(raw.as_bytes())
+        .next()
+        .map(|(key, _)| key.into_owned())
+        .unwrap_or_default();
+    if path.is_empty() || path.contains('\u{FFFD}') {
+        return Err("target path is not valid percent-encoded utf-8".into());
+    }
+    Ok(path)
+}
+
+#[cfg(test)]
+mod editor_ipc_tests {
+    use super::*;
+    use tauri::http::{HeaderMap, HeaderValue};
+
+    fn headers(value: &str) -> HeaderMap {
+        let mut map = HeaderMap::new();
+        map.insert(EDITOR_TARGET_HEADER, HeaderValue::from_str(value).unwrap());
+        map
+    }
+
+    #[test]
+    fn target_path_round_trips_encode_uri_component() {
+        // encodeURIComponent("C:\\Users\\müller\\shot +1 &=.png")
+        let encoded = "C%3A%5CUsers%5Cm%C3%BCller%5Cshot%20%2B1%20%26%3D.png";
+        assert_eq!(
+            editor_target_path(&headers(encoded)).unwrap(),
+            "C:\\Users\\müller\\shot +1 &=.png"
+        );
+    }
+
+    #[test]
+    fn target_path_rejects_missing_empty_and_invalid_utf8() {
+        assert!(editor_target_path(&HeaderMap::new()).is_err());
+        assert!(editor_target_path(&headers("")).is_err());
+        assert!(editor_target_path(&headers("%FF%FE.png")).is_err());
+    }
+
+    #[test]
+    fn image_bytes_accept_raw_and_postmessage_fallback() {
+        let raw = tauri::ipc::InvokeBody::Raw(vec![137, 80, 78, 71]);
+        assert_eq!(editor_image_bytes(&raw).unwrap(), vec![137, 80, 78, 71]);
+        let json = tauri::ipc::InvokeBody::Json(serde_json::json!([137, 80, 78, 71]));
+        assert_eq!(editor_image_bytes(&json).unwrap(), vec![137, 80, 78, 71]);
+        let wrong = tauri::ipc::InvokeBody::Json(serde_json::json!({ "bytes": [1] }));
+        assert!(editor_image_bytes(&wrong).is_err());
+    }
+}
+
+#[tauri::command(async)]
 pub fn save_edited_image(
-    bytes: Vec<u8>,
-    target_path: String,
+    request: tauri::ipc::Request<'_>,
     app: AppHandle,
-    state: State<AppState>,
+    state: State<'_, AppState>,
 ) -> Result<String, String> {
+    let target_path = editor_target_path(request.headers())?;
+    let bytes = editor_image_bytes(request.body())?;
     let buf = PathBuf::from(&target_path);
     // staged pre-save annotations live under the app cache; saving one mints
     // the real capture in the output dir instead of overwriting the stage.
@@ -3024,8 +3094,9 @@ pub fn save_edited_image(
     Ok(target_path)
 }
 
-#[tauri::command]
-pub fn copy_edited_image_to_clipboard(bytes: Vec<u8>) -> Result<(), String> {
+#[tauri::command(async)]
+pub fn copy_edited_image_to_clipboard(request: tauri::ipc::Request<'_>) -> Result<(), String> {
+    let bytes = editor_image_bytes(request.body())?;
     let img = image::load_from_memory(&bytes).map_err(|e| e.to_string())?;
     let rgba = img.into_rgba8();
     let mut cb = ClipboardManager::new().map_err(|e| e.to_string())?;
@@ -3102,12 +3173,13 @@ pub fn upload_file(
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn upload_edited_image(
-    bytes: Vec<u8>,
+    request: tauri::ipc::Request<'_>,
     app: AppHandle,
-    state: State<AppState>,
+    state: State<'_, AppState>,
 ) -> Result<UploadResponse, String> {
+    let bytes = editor_image_bytes(request.body())?;
     let img = image::load_from_memory(&bytes).map_err(|e| e.to_string())?;
     let rgba = img.into_rgba8();
     let config = state.config.lock().unwrap().clone();
