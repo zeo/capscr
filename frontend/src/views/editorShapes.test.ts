@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   bboxOf,
+  clipBox,
   handleAt,
   handlesOf,
   hitTest,
@@ -111,5 +112,20 @@ describe("restyleOp", () => {
 
   it("returns the same object when nothing changes", () => {
     expect(restyleOp(rect, { color: rect.color, fontSize: 30 })).toBe(rect);
+  });
+});
+
+describe("clipBox", () => {
+  it("trims both edges of a box hanging off the image", () => {
+    expect(clipBox({ x: -60, y: 10, w: 160, h: 50 }, 300, 200)).toEqual({ x: 0, y: 10, w: 100, h: 50 });
+    expect(clipBox({ x: 250, y: 180, w: 100, h: 100 }, 300, 200)).toEqual({ x: 250, y: 180, w: 50, h: 20 });
+  });
+
+  it("covers every pixel a fractional box touches", () => {
+    expect(clipBox({ x: 1.5, y: 2.5, w: 3, h: 3 }, 300, 200)).toEqual({ x: 1, y: 2, w: 4, h: 4 });
+  });
+
+  it("comes back empty for a box outside the image", () => {
+    expect(clipBox({ x: -50, y: 0, w: 20, h: 20 }, 300, 200).w).toBeLessThanOrEqual(0);
   });
 });

@@ -35,6 +35,7 @@ import {
   bboxOf,
   handleAt,
   handlesOf,
+  clipBox,
   hitTestTop,
   markerWidth,
   moveOp,
@@ -830,14 +831,10 @@ export function Editor() {
   }
 
   function applyBlur(ctx: CanvasRenderingContext2D, op: BlurOp) {
-    const canvasW = ctx.canvas.width;
-    const canvasH = ctx.canvas.height;
-    // clamp to canvas bounds so getImageData never reads outside; reads
+    // clip to the canvas so getImageData never reads outside; reads
     // outside return transparent black and corrupt the average at edges
-    const x = Math.max(0, Math.min(Math.floor(op.origin.x), canvasW - 1));
-    const y = Math.max(0, Math.min(Math.floor(op.origin.y), canvasH - 1));
-    const w = Math.max(1, Math.min(Math.floor(op.size.w), canvasW - x));
-    const h = Math.max(1, Math.min(Math.floor(op.size.h), canvasH - y));
+    const { x, y, w, h } = clipBox({ ...op.origin, ...op.size }, ctx.canvas.width, ctx.canvas.height);
+    if (w <= 0 || h <= 0) return;
 
     // a pixelate mosaic is faster and more privacy-safe than a true blur.
     // single read-modify-write: per-cell getImageData calls stall for
@@ -979,11 +976,7 @@ export function Editor() {
   }
 
   function applyCrop(origin: Point, cropSize: { w: number; h: number }) {
-    const { w: cw, h: ch } = size();
-    const x = Math.max(0, Math.min(Math.round(origin.x), cw - 1));
-    const y = Math.max(0, Math.min(Math.round(origin.y), ch - 1));
-    const w = Math.max(1, Math.min(Math.round(cropSize.w), cw - x));
-    const h = Math.max(1, Math.min(Math.round(cropSize.h), ch - y));
+    const { x, y, w, h } = clipBox({ ...origin, ...cropSize }, size().w, size().h);
     if (w < 10 || h < 10) {
       setStatus({ tone: "", msg: "crop region too small. drag a larger area." });
       return;

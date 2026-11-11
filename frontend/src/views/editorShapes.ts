@@ -124,6 +124,13 @@ function normalized(origin: Point, size: { w: number; h: number }): Box {
   };
 }
 
+// whole pixels of a box that fall inside a w x h image; empty boxes come back with w or h <= 0
+export function clipBox(b: Box, w: number, h: number): Box {
+  const x = Math.max(0, Math.floor(b.x));
+  const y = Math.max(0, Math.floor(b.y));
+  return { x, y, w: Math.min(w, Math.ceil(b.x + b.w)) - x, h: Math.min(h, Math.ceil(b.y + b.h)) - y };
+}
+
 const inside = (p: Point, b: Box) => p.x >= b.x && p.x <= b.x + b.w && p.y >= b.y && p.y <= b.y + b.h;
 
 export function bboxOf(op: Op, measure: MeasureText): Box {
