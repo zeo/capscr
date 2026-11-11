@@ -428,7 +428,7 @@ export function History() {
                     <div class="stats">
                       <span>{formatBytes(e.size_bytes)}</span>
                       <span>·</span>
-                      <span>{formatDate(e.modified_unix)}</span>
+                      <span class="date" title={formatDate(e.modified_unix)}>{formatDate(e.modified_unix)}</span>
                       <Show when={e.has_hdr}>
                         <span>·</span>
                         <span
