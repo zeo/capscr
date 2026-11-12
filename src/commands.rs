@@ -996,12 +996,18 @@ fn run_capture_pipeline_inner(
             tracing::warn!("failed to create output dir: {e}");
         }
         let path = get_unique_filepath(&config.output_path());
+        let t0 = std::time::Instant::now();
         if let Err(e) =
             crate::clipboard::save_image(&image, &path, config.output.format, config.output.quality)
         {
             let _ = std::fs::remove_file(&path);
             return Err(e);
         }
+        tracing::info!(
+            "editor save {}ms {:?}",
+            t0.elapsed().as_millis(),
+            config.output.format
+        );
         maybe_write_hdr_sidecar(&path, &hdr_bitmap, &config);
         *state.last_save.lock().unwrap() = Some(path.clone());
         notify_capture_saved(app, &path);
@@ -1494,8 +1500,9 @@ fn run_post_action(
             }
             Ok(history_path)
         }
-        PostCaptureAction::SaveAndClipboard => {
-            let clipboard_ok = do_clipboard().is_ok();
+        PostCaptureAction::SaveAndClipboard | PostCaptureAction::Prompt => {
+            // the encode and the clipboard copy overlap; the toast waits for both
+            let (clip_tx, clip_rx) = std::sync::mpsc::channel::<bool>();
             let play = config.post_capture.play_sound;
             let show = config.ui.show_notifications;
             let path = do_save_async(
@@ -1503,6 +1510,7 @@ fn run_post_action(
                 hdr_bitmap.clone(),
                 app.clone(),
                 Box::new(move |path| {
+                    let clipboard_ok = clip_rx.recv().unwrap_or(false);
                     Sound::Screenshot.play_if_enabled(play);
                     if show {
                         let title = if clipboard_ok {
@@ -1513,8 +1521,9 @@ fn run_post_action(
                         let _ = show_notification(title, &path.to_string_lossy());
                     }
                 }),
-            )?;
-            Ok(Some(path))
+            );
+            let _ = clip_tx.send(do_clipboard().is_ok());
+            Ok(Some(path?))
         }
         PostCaptureAction::Upload => {
             let history_path =
@@ -1526,28 +1535,6 @@ fn run_post_action(
                 let _ = show_notification("Uploaded", &result.url);
             }
             Ok(history_path)
-        }
-        PostCaptureAction::Prompt => {
-            let clipboard_ok = do_clipboard().is_ok();
-            let play = config.post_capture.play_sound;
-            let show = config.ui.show_notifications;
-            let path = do_save_async(
-                image.clone(),
-                hdr_bitmap.clone(),
-                app.clone(),
-                Box::new(move |path| {
-                    Sound::Screenshot.play_if_enabled(play);
-                    if show {
-                        let title = if clipboard_ok {
-                            "Capture saved + copied"
-                        } else {
-                            "Capture saved (clipboard busy)"
-                        };
-                        let _ = show_notification(title, &path.to_string_lossy());
-                    }
-                }),
-            )?;
-            Ok(Some(path))
         }
         PostCaptureAction::DoNothing => {
             Sound::Screenshot.play_if_enabled(config.post_capture.play_sound);
