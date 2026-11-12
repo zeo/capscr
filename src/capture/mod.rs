@@ -311,15 +311,15 @@ pub fn orient_captured_image(
     img
 }
 
-#[cfg(not(windows))]
-pub fn orient_captured_image(
-    img: RgbaImage,
-    _expected_w: u32,
-    _expected_h: u32,
-    _monitor_x: i32,
-    _monitor_y: i32,
-) -> RgbaImage {
-    img
+// wayland grabs come back at physical or logical scale depending on the source,
+// and every caller stitches and crops in the monitor's logical pixels
+#[cfg(any(not(windows), test))]
+fn to_logical_size(img: RgbaImage, width: u32, height: u32) -> RgbaImage {
+    if img.dimensions() == (width, height) || width == 0 || height == 0 {
+        img
+    } else {
+        image::imageops::resize(&img, width, height, image::imageops::FilterType::CatmullRom)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1014,8 +1014,8 @@ pub fn capture_one_monitor(monitor: &MonitorInfo) -> Result<RgbaImage> {
     // screencopy, then portal) directly so we get real pixels the first time
     #[cfg(target_os = "linux")]
     if portal::is_wayland_session() {
-        let mut img = wayland_grab_monitor(monitor)?;
-        img = orient_captured_image(img, monitor.width, monitor.height, monitor.x, monitor.y);
+        let grab = wayland_grab_monitor(monitor)?;
+        let mut img = to_logical_size(grab, monitor.width, monitor.height);
         ensure_opaque_if_fully_transparent(&mut img);
         return Ok(img);
     }
@@ -1050,7 +1050,7 @@ pub fn capture_one_monitor(monitor: &MonitorInfo) -> Result<RgbaImage> {
     #[cfg(not(any(windows, target_os = "linux")))]
     let raw = find_xcap_monitor(monitor.id)?.capture_image()?;
 
-    let mut img = orient_captured_image(raw, monitor.width, monitor.height, monitor.x, monitor.y);
+    let mut img = to_logical_size(raw, monitor.width, monitor.height);
     ensure_opaque_if_fully_transparent(&mut img);
     Ok(img)
 }
@@ -1058,6 +1058,16 @@ pub fn capture_one_monitor(monitor: &MonitorInfo) -> Result<RgbaImage> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hidpi_grab_is_scaled_to_the_logical_monitor_size() {
+        let grab = RgbaImage::from_pixel(300, 150, image::Rgba([0, 0, 255, 255]));
+        let logical = to_logical_size(grab, 200, 100);
+        assert_eq!(logical.dimensions(), (200, 100));
+        assert_eq!(*logical.get_pixel(150, 50), image::Rgba([0, 0, 255, 255]));
+        let exact = RgbaImage::from_fn(4, 2, |x, y| image::Rgba([x as u8, y as u8, 7, 255]));
+        assert_eq!(to_logical_size(exact.clone(), 4, 2), exact);
+    }
 
     #[test]
     fn test_rectangle_normalize() {
