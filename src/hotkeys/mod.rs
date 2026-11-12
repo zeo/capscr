@@ -920,6 +920,16 @@ pub fn format_code(code: Code) -> &'static str {
         Code::F10 => "F10",
         Code::F11 => "F11",
         Code::F12 => "F12",
+        Code::F13 => "F13",
+        Code::F14 => "F14",
+        Code::F15 => "F15",
+        Code::F16 => "F16",
+        Code::F17 => "F17",
+        Code::F18 => "F18",
+        Code::F19 => "F19",
+        Code::F20 => "F20",
+        Code::F21 => "F21",
+        Code::F22 => "F22",
         Code::F23 => "Mouse4",
         Code::F24 => "Mouse5",
         Code::Space => "Space",
@@ -1053,6 +1063,19 @@ mod tests {
             let hk2 = parse_hotkey(&formatted)
                 .unwrap_or_else(|e| panic!("re-parse '{formatted}' failed: {e}"));
             assert_eq!(hk.id(), hk2.id(), "roundtrip mismatch for '{s}'");
+        }
+    }
+
+    #[test]
+    fn every_frontend_hotkey_string_parses() {
+        for s in include_str!("fixtures/hotkeys.txt").lines() {
+            let hk = parse_hotkey(s).unwrap_or_else(|e| panic!("parse '{s}' failed: {e}"));
+            let expected = match s {
+                "F23" => "Mouse4",
+                "F24" => "Mouse5",
+                _ => s,
+            };
+            assert_eq!(format_hotkey(hk.mods, hk.key), expected);
         }
     }
 }
