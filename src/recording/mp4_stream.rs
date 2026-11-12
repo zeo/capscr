@@ -246,7 +246,7 @@ fn encoder_args(encoder: VideoEncoder, crf: u8) -> Vec<String> {
 // a listed hardware encoder can still fail on a machine without that gpu or
 // driver, so each one gets a one-frame trial encode
 fn encoder_works(encoder: VideoEncoder) -> bool {
-    ffmpeg_command()
+    let child = ffmpeg_command()
         .args([
             "-hide_banner",
             "-loglevel",
@@ -263,8 +263,27 @@ fn encoder_works(encoder: VideoEncoder) -> bool {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|status| status.success())
+        .spawn();
+    let Ok(mut child) = child else {
+        return false;
+    };
+    // a wedged gpu driver can stall the trial encode forever, and every
+    // mp4 recording start waits on this probe
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return status.success(),
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(50))
+            }
+            _ => {
+                tracing::warn!("{encoder:?} trial encode did not finish, skipping it");
+                let _ = child.kill();
+                let _ = child.wait();
+                return false;
+            }
+        }
+    }
 }
 
 /// hardware h264 encoders that passed a trial encode, probed once per run;
