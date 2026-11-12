@@ -1046,8 +1046,10 @@ fn run_capture_pipeline_inner(
         PostActionArg::SaveFile => PostCaptureAction::SaveFile,
         PostActionArg::Upload => PostCaptureAction::Upload,
         PostActionArg::SaveAndClipboard => PostCaptureAction::SaveAndClipboard,
-        PostActionArg::OpenEditor | PostActionArg::Annotate | PostActionArg::CopyText => unreachable!(),
-        PostActionArg::Prompt => PostCaptureAction::Prompt,
+        PostActionArg::OpenEditor
+        | PostActionArg::Annotate
+        | PostActionArg::Prompt
+        | PostActionArg::CopyText => unreachable!(),
         PostActionArg::DoNothing => PostCaptureAction::DoNothing,
     };
 
@@ -1535,7 +1537,7 @@ fn run_post_action(
             }
             Ok(history_path)
         }
-        PostCaptureAction::SaveAndClipboard | PostCaptureAction::Prompt => {
+        PostCaptureAction::SaveAndClipboard => {
             // the encode and the clipboard copy overlap; the toast waits for both
             let (clip_tx, clip_rx) = std::sync::mpsc::channel::<bool>();
             let play = config.post_capture.play_sound;
@@ -1578,6 +1580,8 @@ fn run_post_action(
             }
             Ok(None)
         }
+        // take_screenshot opens the editor for prompt before it gets here
+        PostCaptureAction::Prompt => unreachable!(),
     }
 }
 
@@ -4121,8 +4125,8 @@ fn apply_gif_post_action(
                 }
             }
         }
-        TaskPostAction::OpenEditor | TaskPostAction::Annotate => {
-            // recordings can't be annotated without flattening their frames —
+        TaskPostAction::OpenEditor | TaskPostAction::Annotate | TaskPostAction::Prompt => {
+            // recordings can't be annotated without flattening their frames, so
             // reveal the saved file in the file manager instead of opening the editor
             reveal_in_file_manager(app, path);
         }
@@ -4173,10 +4177,7 @@ fn apply_gif_post_action(
         // CopyText (OCR) is a still-only action, filtered out of the recording
         // post-action list in the UI; if one reaches here the file is saved and
         // there's nothing sensible to OCR from a recording
-        TaskPostAction::SaveFile
-        | TaskPostAction::Prompt
-        | TaskPostAction::DoNothing
-        | TaskPostAction::CopyText => {
+        TaskPostAction::SaveFile | TaskPostAction::DoNothing | TaskPostAction::CopyText => {
             // already saved to disk; nothing further
         }
     }
