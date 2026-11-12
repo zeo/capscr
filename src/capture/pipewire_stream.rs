@@ -564,13 +564,9 @@ fn run_stream(
 
 #[cfg(test)]
 mod tests {
-    // needs a live portal with a screencast backend and a user (or rig) to
-    // approve the source picker on first run; opt in via env
     #[test]
+    #[ignore = "needs a screencast portal and an approved source picker"]
     fn screencast_delivers_frames() {
-        if std::env::var("CAPSCR_TEST_SCREENCAST").is_err() {
-            return;
-        }
         let mut stream = super::PipeWireFrameStream::open(false).expect("screencast session");
         let img = stream.grab(0, 0, 64, 64).expect("screencast frame");
         eprintln!("screencast returned {}x{}", img.width(), img.height());

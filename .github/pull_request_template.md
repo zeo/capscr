@@ -14,6 +14,7 @@
 - [ ] `cargo clippy --bin capscr --all-targets -- -D warnings` clean
 - [ ] `cargo test --bin capscr` passes
 - [ ] `npm --prefix frontend run build` clean
+- [ ] `npm --prefix frontend test` passes
 - [ ] `cargo tauri dev` — manually exercised the affected path
 
 ## screenshots (UI changes only)

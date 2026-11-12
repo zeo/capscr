@@ -635,13 +635,9 @@ wayland_client::delegate_noop!(State: ignore ext_image_copy_capture_manager_v1::
 
 #[cfg(test)]
 mod tests {
-    // needs a compositor that advertises ext-image-copy-capture (a granted
-    // kwin session or the sway rig); opt in via env like the portal test
     #[test]
+    #[ignore = "needs a compositor with ext-image-copy-capture (granted kwin or the sway rig)"]
     fn ext_copy_grabs_pixels() {
-        if std::env::var("CAPSCR_TEST_EXT_COPY").is_err() {
-            return;
-        }
         let mut session = super::ExtCopySession::new().expect("ext-copy session");
         let monitors = crate::capture::list_monitors().expect("monitors");
         let monitor = monitors.first().expect("at least one output");

@@ -2057,7 +2057,7 @@ mod tests {
 
     #[test]
     fn ffmpeg_engine_matches_builtin_timing() {
-        if !is_ffmpeg_available() {
+        if !crate::recording::ffmpeg_or_skip("ffmpeg_engine_matches_builtin_timing") {
             return;
         }
         let frames: Vec<_> = (0..12).map(|i| moving_square(i, 32, 24)).collect();
@@ -2099,18 +2099,25 @@ mod tests {
 
     #[test]
     fn test_find_best_monitor_overlap() {
-        if let Ok(monitors) = crate::capture::list_monitors() {
-            if let Some(m) = monitors.first() {
-                let rect = Rectangle {
-                    x: m.x + 10,
-                    y: m.y + 10,
-                    width: 100,
-                    height: 100,
-                };
-                let best = find_best_monitor(rect);
-                assert!(best.is_some());
-                assert_eq!(best.unwrap().id, m.id);
+        let required = std::env::var_os("CAPSCR_REQUIRE_CAPTURE").is_some();
+        let monitors = match crate::capture::list_monitors() {
+            Ok(m) => m,
+            Err(e) => {
+                assert!(!required, "monitor enumeration failed in capture CI: {e:#}");
+                eprintln!("skipped test_find_best_monitor_overlap: {e:#}");
+                return;
             }
-        }
+        };
+        let Some(m) = monitors.first() else {
+            assert!(!required, "capture CI found no monitors");
+            return;
+        };
+        let rect = Rectangle {
+            x: m.x + 10,
+            y: m.y + 10,
+            width: 100,
+            height: 100,
+        };
+        assert_eq!(find_best_monitor(rect).map(|b| b.id), Some(m.id));
     }
 }

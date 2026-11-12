@@ -10,6 +10,21 @@ pub use mp4_stream::{ffmpeg_command, hardware_encoders};
 
 use std::time::Duration;
 
+// tests that need ffmpeg skip visibly without it, and fail under
+// CAPSCR_REQUIRE_FFMPEG so ci can't pass them by skipping
+#[cfg(test)]
+pub(crate) fn ffmpeg_or_skip(name: &str) -> bool {
+    if is_ffmpeg_available() {
+        return true;
+    }
+    assert!(
+        std::env::var_os("CAPSCR_REQUIRE_FFMPEG").is_none(),
+        "{name} needs ffmpeg and CAPSCR_REQUIRE_FFMPEG is set"
+    );
+    eprintln!("skipped {name}: no ffmpeg");
+    false
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RecordingState {
     Idle,

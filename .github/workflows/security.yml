@@ -20,7 +20,6 @@ env:
 
 jobs:
   audit:
-    if: github.event_name == 'schedule' || github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -43,7 +42,6 @@ jobs:
         run: cargo audit
 
   lint-and-test-linux:
-    if: github.event_name == 'schedule' || github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -58,7 +56,7 @@ jobs:
             libayatana-appindicator3-dev librsvg2-dev libxdo-dev \
             libclang-dev libxcb1-dev libxcb-shm0-dev libxcb-randr0-dev \
             libxrandr-dev libdbus-1-dev libpipewire-0.3-dev \
-            libwayland-dev libegl-dev libgbm-dev libdrm-dev xvfb
+            libwayland-dev libegl-dev libgbm-dev libdrm-dev xvfb ffmpeg
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0
@@ -83,10 +81,15 @@ jobs:
         working-directory: frontend
         run: npm run build
 
+      - name: Run frontend tests
+        working-directory: frontend
+        run: npm test
+
       # xvfb gives the capture tests a real X display to grab from
       - name: Run tests
         env:
           CAPSCR_REQUIRE_CAPTURE: "1"
+          CAPSCR_REQUIRE_FFMPEG: "1"
         run: xvfb-run -a -s "-screen 0 1600x1000x24" cargo test --bin capscr --all-targets --locked
 
       - name: Run clippy
@@ -226,8 +229,9 @@ jobs:
         if: steps.probe.outputs.usable == 'true'
         run: bash ci/compositors/kde-diag.sh target/debug/capscr
 
+  # clippy on every pull request; the full windows test run only on pushes,
+  # the weekly schedule and manual dispatch, where its runtime is affordable
   lint-and-test:
-    if: github.actor == 'zeo' && (startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch')
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -257,7 +261,13 @@ jobs:
         working-directory: frontend
         run: npm run build
 
+      - name: Run frontend tests
+        if: github.event_name != 'pull_request'
+        working-directory: frontend
+        run: npm test
+
       - name: Run tests
+        if: github.event_name != 'pull_request'
         run: cargo test --bin capscr --all-targets --locked
 
       - name: Run clippy

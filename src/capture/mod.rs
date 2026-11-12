@@ -1104,8 +1104,7 @@ mod tests {
 
     #[test]
     fn test_screen_capture_with_monitor() {
-        let capture = ScreenCapture::with_monitor(1);
-        assert!(capture.get_monitor_info().is_err() || capture.get_monitor_info().is_ok());
+        let _ = ScreenCapture::with_monitor(1).get_monitor_info();
     }
 
     #[test]
@@ -1167,8 +1166,7 @@ mod tests {
     fn test_window_capture_methods() {
         let _ = WindowCapture::focused();
         let _ = WindowCapture::from_title("nonexistent");
-        let windows = WindowCapture::list_application_windows().unwrap_or_default();
-        assert!(windows.is_empty() || !windows.is_empty());
+        let _ = WindowCapture::list_application_windows();
     }
 
     #[test]

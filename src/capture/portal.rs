@@ -132,13 +132,9 @@ fn screenshot_request(interactive: bool) -> Result<RgbaImage> {
 
 #[cfg(test)]
 mod tests {
-    // needs a live portal (real desktop or a compositor test rig), so it only
-    // runs when the environment opts in
     #[test]
+    #[ignore = "needs a live screenshot portal (real desktop or a compositor rig)"]
     fn portal_screenshot_returns_pixels() {
-        if std::env::var("CAPSCR_TEST_PORTAL").is_err() {
-            return;
-        }
         let img = super::portal_screenshot().expect("portal screenshot");
         eprintln!("portal returned {}x{}", img.width(), img.height());
         assert!(img.width() > 0 && img.height() > 0);

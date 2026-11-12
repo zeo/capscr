@@ -165,6 +165,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "frontend dependency audit failed" }
           npm --prefix frontend run build
           if ($LASTEXITCODE -ne 0) { throw "frontend build failed" }
+          npm --prefix frontend test
+          if ($LASTEXITCODE -ne 0) { throw "frontend tests failed" }
           cargo test --bin capscr --all-targets --all-features --locked
           if ($LASTEXITCODE -ne 0) { throw "tests failed" }
           cargo clippy --bin capscr --all-targets --all-features --locked -- -D warnings

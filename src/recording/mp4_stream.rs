@@ -378,7 +378,7 @@ mod tests {
 
     #[test]
     fn stream_preserves_wall_clock_duration() {
-        if !super::super::is_ffmpeg_available() {
+        if !crate::recording::ffmpeg_or_skip("stream_preserves_wall_clock_duration") {
             return;
         }
         // 40 frames every 100ms: per-frame rounding at 15fps used to stretch
@@ -422,7 +422,7 @@ mod tests {
     fn small_region_falls_back_to_software() {
         let mut streamer = Mp4Streamer::new(15, 23, VideoEncoder::Software);
         streamer.encoder = VideoEncoder::Nvenc;
-        if !super::super::is_ffmpeg_available() {
+        if !crate::recording::ffmpeg_or_skip("small_region_falls_back_to_software") {
             return;
         }
         let img = RgbaImage::from_pixel(64, 48, image::Rgba([0, 0, 0, 255]));
@@ -435,7 +435,7 @@ mod tests {
     #[test]
     fn static_stream_uses_capture_end() {
 
-        if !super::super::is_ffmpeg_available() {
+        if !crate::recording::ffmpeg_or_skip("static_stream_uses_capture_end") {
             return;
         }
         let mut streamer = Mp4Streamer::new(15, 23, VideoEncoder::Software);
