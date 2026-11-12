@@ -774,43 +774,53 @@ pub fn mime_for(ext: &str) -> Option<&'static str> {
 }
 
 #[cfg(feature = "sftp")]
+#[derive(Debug, Clone, PartialEq)]
+enum HostKeyRefusal {
+    Unknown { fingerprint: String },
+    Rejected(String),
+}
+
+#[cfg(feature = "sftp")]
 fn accept_sftp_host_key(
     path: &std::path::Path,
     host_port: &str,
     fingerprint: &str,
-    rejection: &Arc<std::sync::Mutex<Option<String>>>,
+    refusal: &Arc<std::sync::Mutex<Option<HostKeyRefusal>>>,
 ) -> bool {
+    let reject = |why: HostKeyRefusal| {
+        *refusal.lock().unwrap() = Some(why);
+        false
+    };
     if fingerprint.is_empty() {
-        *rejection.lock().unwrap() = Some(format!(
+        return reject(HostKeyRefusal::Rejected(format!(
             "SSH server {host_port} offered an empty host fingerprint"
-        ));
-        return false;
+        )));
     }
-    match known_hosts::verify_or_trust(path, host_port, fingerprint) {
+    match known_hosts::verify(path, host_port, fingerprint) {
         Ok(known_hosts::TrustDecision::Trusted) => true,
-        Ok(known_hosts::TrustDecision::FirstSeen) => {
-            tracing::info!("ssh host trust-on-first-use: {host_port} -> {fingerprint}");
-            true
-        }
+        Ok(known_hosts::TrustDecision::Unknown) => reject(HostKeyRefusal::Unknown {
+            fingerprint: fingerprint.to_string(),
+        }),
         Ok(known_hosts::TrustDecision::Mismatch { stored }) => {
-            *rejection.lock().unwrap() = Some(format!(
+            reject(HostKeyRefusal::Rejected(format!(
                 "SSH host key mismatch for {host_port}: stored {stored}, server now offers \
                  {fingerprint}. If this is intentional, forget the host in Settings > SSH \
                  known hosts and reconnect."
-            ));
-            false
+            )))
         }
-        Err(error) => {
-            *rejection.lock().unwrap() = Some(format!(
-                "SSH host trust check failed for {host_port}: {error:#}"
-            ));
-            false
-        }
+        Err(error) => reject(HostKeyRefusal::Rejected(format!(
+            "SSH host trust check failed for {host_port}: {error:#}"
+        ))),
     }
 }
 
+// confirm_new_key(host_port, fingerprint) decides whether an unseen server key gets
+// pinned; the test then reruns once against the pinned key
 #[cfg(feature = "sftp")]
-pub fn test_connection_sftp(target: &SftpTarget) -> Result<Vec<TestStep>> {
+pub fn test_connection_sftp(
+    target: &SftpTarget,
+    confirm_new_key: &dyn Fn(&str, &str) -> bool,
+) -> Result<Vec<TestStep>> {
     use russh::client;
     use russh::keys::HashAlg;
     use russh_sftp::client::SftpSession;
@@ -860,13 +870,14 @@ pub fn test_connection_sftp(target: &SftpTarget) -> Result<Vec<TestStep>> {
     let key_pass = target.private_key_passphrase.clone();
     let remote_dir = target.remote_dir.clone();
     let host_port = known_hosts::host_key(&host, port);
-    let mismatch_error: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+    let mismatch_error: Arc<Mutex<Option<HostKeyRefusal>>> = Arc::new(Mutex::new(None));
     let mismatch_for_handler = Arc::clone(&mismatch_error);
+    let (pin_host_port, pin_path) = (host_port.clone(), known_hosts_path.clone());
 
     struct VerifyHostKey {
         host_port: String,
         known_hosts_path: std::path::PathBuf,
-        mismatch_error: Arc<Mutex<Option<String>>>,
+        mismatch_error: Arc<Mutex<Option<HostKeyRefusal>>>,
     }
 
     impl client::Handler for VerifyHostKey {
@@ -982,8 +993,22 @@ pub fn test_connection_sftp(target: &SftpTarget) -> Result<Vec<TestStep>> {
         Ok::<Vec<TestStep>, String>(steps)
     });
 
-    if let Some(msg) = mismatch_error.lock().unwrap().take() {
-        return Ok(vec![TestStep::fail("host-key", msg)]);
+    let refusal = mismatch_error.lock().unwrap().take();
+    match refusal {
+        Some(HostKeyRefusal::Unknown { fingerprint }) => {
+            if !confirm_new_key(&pin_host_port, &fingerprint) {
+                return Ok(vec![TestStep::fail(
+                    "host-key",
+                    format!("{pin_host_port} offered {fingerprint}, which was not trusted"),
+                )]);
+            }
+            if let Err(error) = known_hosts::trust(&pin_path, &pin_host_port, &fingerprint) {
+                return Ok(vec![TestStep::fail("host-key", format!("{error:#}"))]);
+            }
+            return test_connection_sftp(target, &|_, _| false);
+        }
+        Some(HostKeyRefusal::Rejected(msg)) => return Ok(vec![TestStep::fail("host-key", msg)]),
+        None => {}
     }
 
     match result {
@@ -993,7 +1018,10 @@ pub fn test_connection_sftp(target: &SftpTarget) -> Result<Vec<TestStep>> {
 }
 
 #[cfg(not(feature = "sftp"))]
-pub fn test_connection_sftp(_target: &SftpTarget) -> Result<Vec<TestStep>> {
+pub fn test_connection_sftp(
+    _target: &SftpTarget,
+    _confirm_new_key: &dyn Fn(&str, &str) -> bool,
+) -> Result<Vec<TestStep>> {
     Err(anyhow!(
         "SFTP support not compiled in — rebuild with --features sftp"
     ))
@@ -1187,21 +1215,19 @@ pub fn upload_sftp(data: &[u8], file_name: &str, target: &SftpTarget) -> Result<
     let target_key_passphrase = target.private_key_passphrase.clone();
     let data_owned = data.to_vec();
 
-    // host-key TOFU. First connect to a host:port stores the SHA256 fingerprint;
-    // subsequent connects compare against the store. Mismatch aborts the
-    // upload — the user must explicitly forget the stored fingerprint via the
-    // hub UI before capscr will re-trust a new key (legitimate rotation or MITM
-    // both look the same at the wire level).
+    // uploads only talk to pinned host keys: an unseen key is refused because no
+    // one may be watching (hotkey capture), and a changed key aborts until the
+    // user forgets the stored one, since rotation and mitm look the same here
     let known_hosts_path = known_hosts::KnownHosts::default_path()
         .ok_or_else(|| anyhow!("can't resolve config dir for ssh_known_hosts.toml"))?;
     // mismatch_error captures the structured rejection reason inside the
     // async handler so we can surface a friendly message after block_on returns
-    let mismatch_error: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+    let mismatch_error: Arc<Mutex<Option<HostKeyRefusal>>> = Arc::new(Mutex::new(None));
 
     struct VerifyHostKey {
         host_port: String,
         known_hosts_path: std::path::PathBuf,
-        mismatch_error: Arc<Mutex<Option<String>>>,
+        mismatch_error: Arc<Mutex<Option<HostKeyRefusal>>>,
     }
 
     impl client::Handler for VerifyHostKey {
@@ -1328,8 +1354,17 @@ pub fn upload_sftp(data: &[u8], file_name: &str, target: &SftpTarget) -> Result<
     // host-key mismatch surfaces as a connection-aborted-by-handler russh
     // error; prefer the structured message captured by VerifyHostKey so the
     // user knows it's a fingerprint problem and not a network blip.
-    if let Some(msg) = mismatch_error.lock().unwrap().take() {
-        return Err(anyhow!("{}", msg));
+    let refusal = mismatch_error.lock().unwrap().take();
+    match refusal {
+        Some(HostKeyRefusal::Unknown { fingerprint }) => {
+            return Err(anyhow!(
+                "unknown SFTP host key {fingerprint} for {}; run Test connection in \
+                 Destinations to review and trust it",
+                known_hosts::host_key(&target.host, target.port.max(1))
+            ))
+        }
+        Some(HostKeyRefusal::Rejected(msg)) => return Err(anyhow!("{msg}")),
+        None => {}
     }
     connect_result?;
 
@@ -1666,17 +1701,40 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("ssh_known_hosts.toml");
         let rejection = Arc::new(std::sync::Mutex::new(None));
+        known_hosts::trust(&path, "host:22", "SHA256:first").unwrap();
 
         let check = |fingerprint| accept_sftp_host_key(&path, "host:22", fingerprint, &rejection);
 
         assert!(check("SHA256:first"));
-        assert!(check("SHA256:first"));
         assert!(rejection.lock().unwrap().is_none());
 
         assert!(!check("SHA256:changed"));
-        let message = rejection.lock().unwrap().clone().unwrap();
+        let Some(HostKeyRefusal::Rejected(message)) = rejection.lock().unwrap().clone() else {
+            panic!("expected a rejection");
+        };
         assert!(message.contains("mismatch"), "{message}");
         assert!(message.contains("SHA256:first"), "{message}");
+    }
+
+    #[cfg(feature = "sftp")]
+    #[test]
+    fn sftp_host_key_check_refuses_an_unseen_key_without_storing_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ssh_known_hosts.toml");
+        let rejection = Arc::new(std::sync::Mutex::new(None));
+        assert!(!accept_sftp_host_key(
+            &path,
+            "host:22",
+            "SHA256:new",
+            &rejection
+        ));
+        assert_eq!(
+            rejection.lock().unwrap().clone(),
+            Some(HostKeyRefusal::Unknown {
+                fingerprint: "SHA256:new".into()
+            })
+        );
+        assert!(!path.exists());
     }
 
     #[cfg(feature = "sftp")]

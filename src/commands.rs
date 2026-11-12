@@ -5124,6 +5124,7 @@ pub async fn test_upload_connection(
     destination: String,
     config: Config,
     app: AppHandle,
+    window: tauri::WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<ConnectionTestReport, String> {
     let mut cfg = {
@@ -5146,7 +5147,25 @@ pub async fn test_upload_connection(
     let steps = tauri::async_runtime::spawn_blocking(move || {
         let _pending_sftp_trust = pending_sftp_trust;
         match &service {
-            UploadService::Sftp(target) => crate::upload::test_connection_sftp(target),
+            UploadService::Sftp(target) => {
+                crate::upload::test_connection_sftp(target, &|host_port, fingerprint| {
+                    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+                    app.dialog()
+                        .message(format!(
+                            "{host_port} presented the host key\n\n{fingerprint}\n\nCompare it \
+                             with the server's own fingerprint (ssh-keygen -lf on its host key) \
+                             before trusting it. Uploads only connect to trusted keys."
+                        ))
+                        .title("trust this sftp server?")
+                        .kind(MessageDialogKind::Warning)
+                        .buttons(MessageDialogButtons::OkCancelCustom(
+                            "trust key".into(),
+                            "cancel".into(),
+                        ))
+                        .parent(&window)
+                        .blocking_show()
+                })
+            }
             UploadService::Imgur | UploadService::ImgurWithClientId(_) => {
                 crate::upload::test_connection_imgur(&cfg.upload.imgur_client_id)
             }

@@ -1,4 +1,4 @@
-// trust-on-first-use store for sftp server fingerprints
+// pinned sftp server fingerprints; only an explicit trust adds a host
 // corrupt state and failed persistence reject the connection
 // the process lock covers each complete load-check-save cycle
 
@@ -14,7 +14,7 @@ static STORE_LOCK: Mutex<()> = Mutex::new(());
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TrustDecision {
     Trusted,
-    FirstSeen,
+    Unknown,
     Mismatch { stored: String },
 }
 
@@ -99,20 +99,32 @@ pub fn load_locked(path: &Path) -> Result<KnownHosts> {
 }
 
 #[cfg(feature = "sftp")]
-pub fn verify_or_trust(path: &Path, host_port: &str, fingerprint: &str) -> Result<TrustDecision> {
+pub fn verify(path: &Path, host_port: &str, fingerprint: &str) -> Result<TrustDecision> {
+    Ok(match load_locked(path)?.lookup(host_port) {
+        Some(entry) if entry.fingerprint == fingerprint => TrustDecision::Trusted,
+        Some(entry) => TrustDecision::Mismatch {
+            stored: entry.fingerprint.clone(),
+        },
+        None => TrustDecision::Unknown,
+    })
+}
+
+// never replaces a pinned key; a changed key has to be forgotten first
+#[cfg(feature = "sftp")]
+pub fn trust(path: &Path, host_port: &str, fingerprint: &str) -> Result<()> {
     let _guard = STORE_LOCK
         .lock()
         .map_err(|_| anyhow!("ssh_known_hosts lock poisoned"))?;
     let mut store = KnownHosts::load(path)?;
     match store.lookup(host_port) {
-        Some(entry) if entry.fingerprint == fingerprint => Ok(TrustDecision::Trusted),
-        Some(entry) => Ok(TrustDecision::Mismatch {
-            stored: entry.fingerprint.clone(),
-        }),
+        Some(entry) if entry.fingerprint == fingerprint => Ok(()),
+        Some(entry) => Err(anyhow!(
+            "{host_port} is already pinned to {}",
+            entry.fingerprint
+        )),
         None => {
             store.insert(host_port.to_string(), fingerprint.to_string());
-            store.save(path)?;
-            Ok(TrustDecision::FirstSeen)
+            store.save(path)
         }
     }
 }
@@ -165,22 +177,33 @@ mod tests {
     }
 
     #[test]
-    fn first_key_is_stored_and_later_checked() {
+    fn unknown_key_is_not_stored_until_trusted() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("ssh_known_hosts.toml");
 
-        assert!(matches!(
-            verify_or_trust(&path, "host:22", "SHA256:first").unwrap(),
-            TrustDecision::FirstSeen
-        ));
-        assert!(matches!(
-            verify_or_trust(&path, "host:22", "SHA256:first").unwrap(),
+        assert_eq!(
+            verify(&path, "host:22", "SHA256:first").unwrap(),
+            TrustDecision::Unknown
+        );
+        assert!(!path.exists());
+        trust(&path, "host:22", "SHA256:first").unwrap();
+        assert_eq!(
+            verify(&path, "host:22", "SHA256:first").unwrap(),
             TrustDecision::Trusted
-        ));
-        match verify_or_trust(&path, "host:22", "SHA256:changed").unwrap() {
+        );
+        match verify(&path, "host:22", "SHA256:changed").unwrap() {
             TrustDecision::Mismatch { stored } => assert_eq!(stored, "SHA256:first"),
             other => panic!("expected a mismatch, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn trust_refuses_to_replace_a_pinned_key() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("ssh_known_hosts.toml");
+        trust(&path, "host:22", "SHA256:first").unwrap();
+        trust(&path, "host:22", "SHA256:first").unwrap();
+        assert!(trust(&path, "host:22", "SHA256:changed").is_err());
         assert_eq!(
             load_locked(&path)
                 .unwrap()
@@ -213,16 +236,17 @@ mod tests {
         let path = dir.path().join("ssh_known_hosts.toml");
         std::fs::write(&path, "this is not valid toml }}}").unwrap();
         assert!(load_locked(&path).is_err());
-        assert!(verify_or_trust(&path, "host:22", "SHA256:new").is_err());
+        assert!(verify(&path, "host:22", "SHA256:new").is_err());
+        assert!(trust(&path, "host:22", "SHA256:new").is_err());
     }
 
     #[test]
-    fn first_seen_requires_persistence() {
+    fn trust_requires_persistence() {
         let dir = tempfile::tempdir().expect("tempdir");
         let blocked_parent = dir.path().join("not-a-directory");
         std::fs::write(&blocked_parent, b"file").expect("write blocker");
         let path = blocked_parent.join("ssh_known_hosts.toml");
-        assert!(verify_or_trust(&path, "host:22", "SHA256:new").is_err());
+        assert!(trust(&path, "host:22", "SHA256:new").is_err());
     }
 
     #[test]
@@ -239,15 +263,12 @@ mod tests {
             let barrier = barrier.clone();
             threads.push(std::thread::spawn(move || {
                 barrier.wait();
-                verify_or_trust(&path, host, fingerprint)
+                trust(&path, host, fingerprint)
             }));
         }
         barrier.wait();
         for thread in threads {
-            assert_eq!(
-                thread.join().expect("thread").expect("trust"),
-                TrustDecision::FirstSeen
-            );
+            thread.join().expect("thread").expect("trust");
         }
         let stored = load_locked(&path).expect("load");
         assert_eq!(stored.hosts.len(), 2);
@@ -264,27 +285,15 @@ mod tests {
             let barrier = barrier.clone();
             threads.push(std::thread::spawn(move || {
                 barrier.wait();
-                verify_or_trust(&path, "same.example:22", fingerprint)
+                trust(&path, "same.example:22", fingerprint)
             }));
         }
         barrier.wait();
-        let decisions: Vec<TrustDecision> = threads
+        let admitted = threads
             .into_iter()
-            .map(|thread| thread.join().expect("thread").expect("decision"))
-            .collect();
-        assert_eq!(
-            decisions
-                .iter()
-                .filter(|decision| matches!(decision, TrustDecision::FirstSeen))
-                .count(),
-            1
-        );
-        assert_eq!(
-            decisions
-                .iter()
-                .filter(|decision| matches!(decision, TrustDecision::Mismatch { .. }))
-                .count(),
-            1
-        );
+            .map(|thread| thread.join().expect("thread"))
+            .filter(Result::is_ok)
+            .count();
+        assert_eq!(admitted, 1);
     }
 }
