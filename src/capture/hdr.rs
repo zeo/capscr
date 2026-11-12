@@ -1062,6 +1062,9 @@ mod windows_hdr {
                     }
                     adapter_idx += 1;
                 }
+                // output 0 would capture or report a different monitor; the
+                // callers drop to gdi on this error
+                return Err(anyhow!("no display output contains ({tx}, {ty})"));
             }
             let adapter = factory.EnumAdapters1(0)?;
             let output = adapter.EnumOutputs(0)?;
