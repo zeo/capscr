@@ -609,6 +609,18 @@ impl GifRecorder {
         self.settings.format
     }
 
+    /// capture length without pauses and the encoded mp4 size, read after a save
+    pub fn saved_details(&self) -> (Option<Duration>, Option<(u32, u32)>) {
+        match self.sink.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+            Some(FrameSink::Gif { capture_end, .. }) => (*capture_end, None),
+            Some(FrameSink::Mp4 {
+                streamer,
+                capture_end,
+            }) => (*capture_end, streamer.size()),
+            None => (None, None),
+        }
+    }
+
     pub fn start(&mut self) -> Result<()> {
         {
             let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());

@@ -85,6 +85,17 @@ pub struct PluginMeta {
     pub author: Option<String>,
     #[serde(default)]
     pub description: Option<String>,
+    #[serde(default)]
+    pub payload: PayloadFormat,
+}
+
+// what the notify hooks receive: the bare path or url, or a json object
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PayloadFormat {
+    #[default]
+    Text,
+    Json,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -261,6 +272,7 @@ mod tests {
                 version: "1.0.0".into(),
                 author: None,
                 description: None,
+                payload: PayloadFormat::Text,
             },
             runtime: Some(RuntimeSpec {
                 runtime_type: "wasm".into(),
@@ -329,6 +341,17 @@ default = "large"
                 .collect::<String>()
         )
         .is_err());
+    }
+
+    #[test]
+    fn payload_format_defaults_to_text_and_refuses_unknown_modes() {
+        let parse = |line: &str| {
+            let body = format!("[plugin]\nid=\"x\"\nname=\"X\"\nversion=\"1.0.0\"\n{line}");
+            toml::from_str::<PluginManifest>(&body).map(|manifest| manifest.plugin.payload)
+        };
+        assert_eq!(parse("").unwrap(), PayloadFormat::Text);
+        assert_eq!(parse("payload = \"json\"").unwrap(), PayloadFormat::Json);
+        assert!(parse("payload = \"xml\"").is_err());
     }
 
     #[test]

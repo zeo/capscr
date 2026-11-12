@@ -980,7 +980,7 @@ fn run_capture_pipeline_inner(
         );
         maybe_write_hdr_sidecar(&path, &hdr_bitmap, &config);
         *state.last_save.lock().unwrap() = Some(path.clone());
-        notify_capture_saved(app, &path);
+        notify_capture_saved(app, sized_save(&path, Some(image.dimensions())));
         open_editor_window(app, &path.to_string_lossy()).map_err(|e| anyhow::anyhow!(e))?;
         Sound::Screenshot.play_if_enabled(config.post_capture.play_sound);
         if config.ui.show_notifications {
@@ -1426,7 +1426,10 @@ fn run_post_action(
                         "Background save completed in {}ms",
                         t0.elapsed().as_millis()
                     );
-                    notify_capture_saved(&app_handle, &path_clone);
+                    notify_capture_saved(
+                        &app_handle,
+                        sized_save(&path_clone, Some(img.dimensions())),
+                    );
                     on_saved(&path_clone);
                 }
                 Err(e) => {
@@ -1482,7 +1485,10 @@ fn run_post_action(
                     "Background save to history completed in {}ms",
                     t0.elapsed().as_millis()
                 );
-                notify_capture_saved(&app_handle, &path_clone);
+                notify_capture_saved(
+                    &app_handle,
+                    sized_save(&path_clone, Some(img.dimensions())),
+                );
             }
         });
         Some(path)
@@ -1494,10 +1500,10 @@ fn run_post_action(
         Ok(())
     };
 
-    let do_upload = || -> anyhow::Result<crate::upload::UploadResult> {
+    let do_upload = || -> anyhow::Result<(crate::upload::UploadResult, &'static str)> {
         let uploader = crate::upload::shared_uploader()?;
         let service = build_upload_service_for_target(&config, upload_target);
-        uploader.upload(&image, &service)
+        Ok((uploader.upload(&image, &service)?, service.label()))
     };
 
     match action {
@@ -1565,8 +1571,8 @@ fn run_post_action(
         PostCaptureAction::Upload => {
             let history_path =
                 do_save_to_history_async(image.clone(), hdr_bitmap.clone(), app.clone());
-            let result = do_upload()?;
-            finish_upload(app, &config, &result);
+            let (result, destination) = do_upload()?;
+            finish_upload(app, &config, &result, destination, history_path.as_deref());
             Sound::Upload.play_if_enabled(config.post_capture.play_sound);
             if config.ui.show_notifications {
                 let _ = show_notification("Uploaded", &result.url);
@@ -1844,25 +1850,33 @@ async fn upload_path(
     path: PathBuf,
 ) -> Result<UploadResponse, String> {
     let service = build_upload_service(&config);
+    let destination = service.label();
     let pending_mutation =
         PendingFileMutation::begin(&app).map_err(|error| error.to_string())?;
+    let source = path.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
         let _pending_mutation = pending_mutation;
-        let (bytes, mime, file_name) = read_upload_file(&path)?;
+        let (bytes, mime, file_name) = read_upload_file(&source)?;
         crate::upload::shared_uploader()
             .and_then(|uploader| uploader.upload_raw(&bytes, mime, &file_name, &service))
             .map_err(|e| e.to_string())
     })
     .await
     .map_err(|e| e.to_string())??;
-    finish_upload(&app, &config, &result);
+    finish_upload(&app, &config, &result, destination, Some(&path));
     Ok(UploadResponse {
         url: result.url,
         delete_url: result.delete_url,
     })
 }
 
-fn finish_upload(app: &AppHandle, config: &Config, result: &crate::upload::UploadResult) {
+fn finish_upload(
+    app: &AppHandle,
+    config: &Config,
+    result: &crate::upload::UploadResult,
+    destination: &str,
+    path: Option<&std::path::Path>,
+) {
     app.state::<AppState>().record_upload(UploadRecord {
         url: result.url.clone(),
     });
@@ -1870,7 +1884,15 @@ fn finish_upload(app: &AppHandle, config: &Config, result: &crate::upload::Uploa
     if config.upload.copy_url_to_clipboard {
         let _ = crate::upload::copy_url_to_clipboard(&result.url);
     }
-    emit_upload_success(app, result);
+    emit_upload_success(
+        app,
+        crate::plugin::UploadInfo {
+            url: result.url.clone(),
+            path: path.map(std::path::Path::to_path_buf),
+            destination: destination.to_string(),
+            delete_url: result.delete_url.clone(),
+        },
+    );
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2091,11 +2113,11 @@ fn run_exit_worker(app: AppHandle, exit_guard: ExitWorkerGuard) {
             emit_error(&app, err_type, &error.to_string());
             return;
         }
-        saved_recording = Some((is_mp4, path));
+        saved_recording = Some((is_mp4, path.clone(), recording_save(&recorder, &path, None)));
     }
     drop(recorder_slot);
-    if let Some((is_mp4, path)) = saved_recording {
-        notify_capture_saved(&app, &path);
+    if let Some((is_mp4, path, save)) = saved_recording {
+        notify_capture_saved(&app, save);
         if cfg.ui.show_notifications {
             let title = if is_mp4 { "Video saved" } else { "GIF saved" };
             let _ = show_notification(title, &path.to_string_lossy());
@@ -3043,26 +3065,26 @@ fn save_staged_annotation(
         ".{stem}.{}.capture.tmp",
         uuid::Uuid::new_v4().as_simple()
     ));
-    let encode_result: Result<(), String> = (|| {
-        let img = image::load_from_memory(&bytes).map_err(|e| e.to_string())?;
-        crate::clipboard::save_image(
-            &img.into_rgba8(),
-            &tmp,
-            config.output.format,
-            config.output.quality,
-        )
-        .map_err(|e| format!("{e:#}"))
+    let encode_result: Result<(u32, u32), String> = (|| {
+        let img = image::load_from_memory(&bytes)
+            .map_err(|e| e.to_string())?
+            .into_rgba8();
+        crate::clipboard::save_image(&img, &tmp, config.output.format, config.output.quality)
+            .map_err(|e| format!("{e:#}"))?;
+        std::fs::rename(&tmp, &dest).map_err(|e| format!("rename failed: {e}"))?;
+        Ok(img.dimensions())
     })();
-    if let Err(e) = encode_result.and_then(|()| {
-        std::fs::rename(&tmp, &dest).map_err(|e| format!("rename failed: {e}"))
-    }) {
-        let _ = std::fs::remove_file(&tmp);
-        let _ = std::fs::remove_file(&dest);
-        return Err(format!("save failed: {e}"));
-    }
+    let size = match encode_result {
+        Ok(size) => size,
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp);
+            let _ = std::fs::remove_file(&dest);
+            return Err(format!("save failed: {e}"));
+        }
+    };
     let _ = std::fs::remove_file(staged);
     *state.last_save.lock().unwrap() = Some(dest.clone());
-    notify_capture_saved(app, &dest);
+    notify_capture_saved(app, sized_save(&dest, Some(size)));
     Sound::Screenshot.play_if_enabled(config.post_capture.play_sound);
     if config.ui.show_notifications {
         let _ = show_notification("Capture saved", &dest.to_string_lossy());
@@ -3228,7 +3250,11 @@ pub fn save_edited_image(
         return Err(format!("rename failed: {e}"));
     }
     // surface the edit to the History tab so its tile picks up the new mtime
-    notify_capture_saved(&app, &buf);
+    let size = image::ImageReader::new(std::io::Cursor::new(&bytes))
+        .with_guessed_format()
+        .ok()
+        .and_then(|reader| reader.into_dimensions().ok());
+    notify_capture_saved(&app, sized_save(&buf, size));
     Ok(target_path)
 }
 
@@ -3269,6 +3295,7 @@ pub async fn upload_edited_image(
     let bytes = editor_image_bytes(request.body())?;
     let config = state.config.lock().unwrap().clone();
     let service = build_upload_service(&config);
+    let destination = service.label();
     let pending_mutation =
         PendingFileMutation::begin(&app).map_err(|error| error.to_string())?;
     // reqwest::blocking panics on a tokio worker, which would leave the
@@ -3284,7 +3311,7 @@ pub async fn upload_edited_image(
     })
     .await
     .map_err(|e| e.to_string())??;
-    finish_upload(&app, &config, &result);
+    finish_upload(&app, &config, &result, destination, None);
     Ok(UploadResponse {
         url: result.url,
         delete_url: result.delete_url,
@@ -3956,7 +3983,7 @@ fn finalize_gif_recording(task: &CaptureTask, app: &AppHandle) {
                 if let Some(note) = early_stop_note {
                     emit_error(app, "recording", &note);
                 }
-                notify_capture_saved(app, &path);
+                notify_capture_saved(app, recording_save(rec, &path, Some(&task.id)));
                 apply_gif_post_action(task, app, &path, &cfg);
             }
             Err(e) => {
@@ -4171,7 +4198,7 @@ fn apply_gif_post_action(
                     .unwrap_or("capture.gif");
                 match uploader.upload_raw(&bytes, mime, file_name, &service) {
                     Ok(result) => {
-                        finish_upload(&app2, &cfg, &result);
+                        finish_upload(&app2, &cfg, &result, service.label(), Some(&path));
                         Sound::Upload.play_if_enabled(cfg.post_capture.play_sound);
                     }
                     Err(e) => emit_error(&app2, "upload", &e.to_string()),
@@ -4284,13 +4311,37 @@ pub fn emit_error(app: &AppHandle, kind: &str, msg: &str) {
 // single funnel for "a capture file was written": notifies the History tab and
 // fires the plugin on_capture_saved hook. every save path routes through here so
 // the hook can't silently miss a save site
-pub fn notify_capture_saved(app: &AppHandle, path: &std::path::Path) {
-    let _ = app.emit("capscr://capture-saved", path.to_string_lossy().to_string());
+pub fn notify_capture_saved(app: &AppHandle, save: crate::plugin::SaveInfo) {
+    let _ = app.emit(
+        "capscr://capture-saved",
+        save.path.to_string_lossy().to_string(),
+    );
     let state = app.state::<AppState>();
     let pm = state.plugin_manager.read().unwrap();
-    let _ = pm.dispatch(&PluginEvent::PostSave {
-        path: path.to_path_buf(),
-    });
+    let _ = pm.dispatch(&PluginEvent::PostSave(save));
+}
+
+fn sized_save(path: &std::path::Path, size: Option<(u32, u32)>) -> crate::plugin::SaveInfo {
+    crate::plugin::SaveInfo {
+        width: size.map(|(width, _)| width),
+        height: size.map(|(_, height)| height),
+        ..crate::plugin::SaveInfo::new(path)
+    }
+}
+
+// gifs are scaled on save, so their size comes from the written header
+fn recording_save(
+    recorder: &crate::recording::GifRecorder,
+    path: &std::path::Path,
+    task: Option<&str>,
+) -> crate::plugin::SaveInfo {
+    let (duration, mp4_size) = recorder.saved_details();
+    let size = mp4_size.or_else(|| image::image_dimensions(path).ok());
+    crate::plugin::SaveInfo {
+        task: task.map(str::to_string),
+        duration_ms: duration.map(|duration| duration.as_millis() as u64),
+        ..sized_save(path, size)
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -4299,19 +4350,17 @@ pub struct UploadSuccessPayload {
     pub delete_url: Option<String>,
 }
 
-pub fn emit_upload_success(app: &AppHandle, result: &crate::upload::UploadResult) {
+pub fn emit_upload_success(app: &AppHandle, upload: crate::plugin::UploadInfo) {
     let _ = app.emit(
         "capscr://upload-success",
         UploadSuccessPayload {
-            url: result.url.clone(),
-            delete_url: result.delete_url.clone(),
+            url: upload.url.clone(),
+            delete_url: upload.delete_url.clone(),
         },
     );
     let state = app.state::<AppState>();
     let pm = state.plugin_manager.read().unwrap();
-    let _ = pm.dispatch(&PluginEvent::PostUpload {
-        url: result.url.clone(),
-    });
+    let _ = pm.dispatch(&PluginEvent::PostUpload(upload));
 }
 
 #[tauri::command]

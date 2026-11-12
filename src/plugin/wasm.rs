@@ -16,7 +16,7 @@
 // via the exported `capscr_alloc(size: i32) -> i32` function — plugins that
 // don't export `capscr_alloc` are skipped for hooks that need a payload.
 
-use super::manifest::{PluginManifest, RuntimeSpec};
+use super::manifest::{PayloadFormat, PluginManifest, RuntimeSpec};
 use super::MAX_CONFIG_BYTES;
 use anyhow::{anyhow, Result};
 use image::RgbaImage;
@@ -42,6 +42,9 @@ pub struct WasmPlugin {
     /// locking the store: read = receive pixels, modify = honour cancel/replace
     image_read: bool,
     image_modify: bool,
+    pub payload: PayloadFormat,
+    /// upload:delete_url, which lets json upload payloads carry the delete link
+    pub upload_delete_url: bool,
 }
 
 /// outcome of an on_capture hook, consumed by PluginManager::dispatch
@@ -549,6 +552,11 @@ impl WasmHost {
             capture_hook,
             image_read,
             image_modify,
+            payload: manifest.plugin.payload,
+            upload_delete_url: manifest
+                .capabilities
+                .get("upload")
+                .is_some_and(|grants| grants.iter().any(|grant| grant == "delete_url")),
         })
     }
 }
@@ -1058,6 +1066,7 @@ mod tests {
                 version: "1.0.0".into(),
                 author: None,
                 description: None,
+                payload: PayloadFormat::Text,
             },
             runtime: Some(RuntimeSpec {
                 runtime_type: "wasm".into(),
@@ -1261,6 +1270,7 @@ mod tests {
                 version: "1.0.0".into(),
                 author: None,
                 description: None,
+                payload: PayloadFormat::Text,
             },
             runtime: Some(RuntimeSpec {
                 runtime_type: "wasm".into(),
@@ -1421,6 +1431,7 @@ mod tests {
                 version: "1.0.0".into(),
                 author: None,
                 description: None,
+                payload: PayloadFormat::Text,
             },
             runtime: Some(RuntimeSpec {
                 runtime_type: "wasm".into(),
@@ -1473,6 +1484,7 @@ mod tests {
                 version: "1.0.0".into(),
                 author: None,
                 description: None,
+                payload: PayloadFormat::Text,
             },
             runtime: Some(RuntimeSpec {
                 runtime_type: "wasm".into(),

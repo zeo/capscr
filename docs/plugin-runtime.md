@@ -28,6 +28,7 @@ name        = "My Plugin"
 version     = "0.1.0"
 author      = "Someone"             # optional
 description = "Does something."     # optional
+payload     = "json"                # optional, "text" (default) or "json"
 
 [runtime]
 type             = "wasm"           # only "wasm" today
@@ -40,13 +41,14 @@ time_slice_ms    = 200              # optional, tunes the per-hook epoch budget 
 on_capture_saved   = "capscr_on_capture_saved"
 on_upload_success  = "capscr_on_upload_success"
 
-# declared capabilities. clipboard/notifications/fetch/image are enforced;
-# other keys are still informational
+# declared capabilities. clipboard/notifications/fetch/image/upload are
+# enforced; other keys are still informational
 [capabilities]
 clipboard      = ["read", "write"]
 notifications  = ["show"]
 fetch          = ["https://api.example.com/*"]
 image          = ["read", "modify"]   # gates the on_capture hook
+upload         = ["delete_url"]       # adds delete_url to json upload payloads
 ```
 
 Plugins without a `[runtime]` section stay metadata-only — they appear in
@@ -66,6 +68,50 @@ linear memory at a region allocated via the exported
 `capscr_alloc(size: i32) -> i32`, then calls the hook with `(ptr, len)`. The
 return value is ignored. Plugins that don't export `capscr_alloc` are skipped
 for any hook that needs a payload.
+
+### json payloads
+
+With `payload = "json"` under `[plugin]`, the two notify hooks get a JSON
+object instead of the bare path or URL. Plugins that leave the field out keep
+the text payloads above.
+
+`on_capture_saved`:
+
+```json
+{
+  "path": "C:\\Users\\me\\Pictures\\capscr\\capture.gif",
+  "kind": "gif",
+  "width": 1920,
+  "height": 1080,
+  "task": "gif-save",
+  "duration_ms": 4200
+}
+```
+
+`kind` is the lowercased file extension. `width` and `height` are the saved
+file's pixel size; a GIF reports its scaled output size and an MP4 the
+encoded size. `task` is the id of the capture task that recorded it, and
+`duration_ms` is the recorded time with pauses left out. Any field the host
+doesn't know for a save is `null`; still captures have no `task` or
+`duration_ms`.
+
+`on_upload_success`:
+
+```json
+{
+  "url": "https://i.imgur.com/abc.png",
+  "path": "C:\\Users\\me\\Pictures\\capscr\\capture.png",
+  "destination": "imgur",
+  "delete_url": "https://imgur.com/delete/xyz"
+}
+```
+
+`destination` is one of `imgur`, `custom`, `sftp` or `s3`. `path` is `null`
+when no file on disk backs the upload: an editor upload, or the Upload action
+with history saving turned off.
+`delete_url` is present only when the host returned one and the manifest
+grants `upload = ["delete_url"]`, since anyone holding it can remove the
+upload.
 
 ### `on_capture` (image blob)
 
@@ -288,8 +334,8 @@ on the plugins tab (or restart capscr) to load it.
 - `on_capture` receives full pixels and can cancel/replace; `fetch`/`fetch_post`
   cover HTTP(S) GET/POST (no custom headers beyond content-type yet)
   (POST for webhook-style plugins is not yet exposed)
-- capabilities for `clipboard`, `notifications`, `fetch`, and `image` are
-  enforced; other declared capabilities are still informational
+- capabilities for `clipboard`, `notifications`, `fetch`, `image` and
+  `upload` are enforced; other declared capabilities are still informational
 - per-hook fuel limit and epoch-deadline trap are active; `time_slice_ms`
   tunes the epoch budget (defaults to ~500ms)
 - only `runtime.type = "wasm"` accepted; a native loader is not planned

@@ -56,6 +56,10 @@ impl Mp4Streamer {
         self.frames_pushed
     }
 
+    pub fn size(&self) -> Option<(u32, u32)> {
+        (self.width > 0).then_some((self.width, self.height))
+    }
+
     pub fn push(&mut self, image: Arc<RgbaImage>, at: Duration) -> Result<()> {
         if self.child.is_none() {
             self.spawn_encoder(image.width(), image.height())?;

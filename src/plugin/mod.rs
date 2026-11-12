@@ -4,7 +4,7 @@ mod manifest;
 #[cfg(feature = "plugin-runtime")]
 mod wasm;
 
-pub use manifest::{PluginManifest, SettingSpec};
+pub use manifest::{PayloadFormat, PluginManifest, SettingSpec};
 
 /// cap on <plugin_dir>/config.toml so a malicious marketplace plugin can't ship
 /// a huge config to bloat host memory at load
@@ -20,12 +20,35 @@ pub enum PluginEvent {
         image: Arc<RgbaImage>,
         mode: CaptureType,
     },
-    PostSave {
-        path: PathBuf,
-    },
-    PostUpload {
-        url: String,
-    },
+    PostSave(SaveInfo),
+    PostUpload(UploadInfo),
+}
+
+// what the saving code knows about a written capture; unknown fields stay None
+#[derive(Debug, Clone, Default)]
+pub struct SaveInfo {
+    pub path: PathBuf,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    pub task: Option<String>,
+    pub duration_ms: Option<u64>,
+}
+
+impl SaveInfo {
+    pub fn new(path: &Path) -> Self {
+        Self {
+            path: path.to_path_buf(),
+            ..Self::default()
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct UploadInfo {
+    pub url: String,
+    pub path: Option<PathBuf>,
+    pub destination: String,
+    pub delete_url: Option<String>,
 }
 
 impl PluginEvent {
@@ -33,19 +56,44 @@ impl PluginEvent {
     fn hook_name(&self) -> &'static str {
         match self {
             PluginEvent::PostCapture { .. } => "on_capture",
-            PluginEvent::PostSave { .. } => "on_capture_saved",
-            PluginEvent::PostUpload { .. } => "on_upload_success",
+            PluginEvent::PostSave(_) => "on_capture_saved",
+            PluginEvent::PostUpload(_) => "on_upload_success",
         }
     }
 
     /// UTF-8 payload for the fire-and-forget notify hooks. PostCapture does not
-    /// use this — it takes the binary image blob via dispatch_capture — but the
-    /// match stays exhaustive
-    fn payload(&self) -> String {
-        match self {
-            PluginEvent::PostCapture { mode, .. } => format!("{:?}", mode),
-            PluginEvent::PostSave { path } => path.to_string_lossy().to_string(),
-            PluginEvent::PostUpload { url } => url.clone(),
+    /// use this (it takes the binary image blob via dispatch_capture), but the
+    /// match stays exhaustive. delete_url only reaches plugins granted upload:delete_url
+    fn payload(&self, format: PayloadFormat, delete_url_granted: bool) -> String {
+        let lossy = |path: &Path| path.to_string_lossy().into_owned();
+        match (self, format) {
+            (PluginEvent::PostCapture { mode, .. }, _) => format!("{:?}", mode),
+            (PluginEvent::PostSave(save), PayloadFormat::Text) => lossy(&save.path),
+            (PluginEvent::PostUpload(upload), PayloadFormat::Text) => upload.url.clone(),
+            (PluginEvent::PostSave(save), PayloadFormat::Json) => serde_json::json!({
+                "path": lossy(&save.path),
+                "kind": save
+                    .path
+                    .extension()
+                    .map(|ext| ext.to_string_lossy().to_ascii_lowercase()),
+                "width": save.width,
+                "height": save.height,
+                "task": save.task,
+                "duration_ms": save.duration_ms,
+            })
+            .to_string(),
+            (PluginEvent::PostUpload(upload), PayloadFormat::Json) => {
+                let mut body = serde_json::json!({
+                    "url": upload.url,
+                    "path": upload.path.as_deref().map(lossy),
+                    "destination": upload.destination,
+                });
+                if let Some(delete_url) = upload.delete_url.as_ref().filter(|_| delete_url_granted)
+                {
+                    body["delete_url"] = delete_url.as_str().into();
+                }
+                body.to_string()
+            }
         }
     }
 }
@@ -174,8 +222,8 @@ impl PluginManager {
             return self.dispatch_capture(image, *mode);
         }
         let hook_name = event.hook_name();
-        let payload = event.payload();
         for plugin in &self.loaded {
+            let payload = event.payload(plugin.payload, plugin.upload_delete_url);
             if let Err(e) = plugin.call_hook(hook_name, &payload) {
                 tracing::warn!("plugin '{}' hook '{}' failed: {e}", plugin.id, hook_name);
             }
@@ -251,6 +299,65 @@ mod tests {
         pm.plugins_dir = Some(dir.to_path_buf());
         assert!(pm.load_all().is_empty());
         pm
+    }
+
+    fn upload() -> PluginEvent {
+        PluginEvent::PostUpload(UploadInfo {
+            url: "https://i.example/a.png".into(),
+            path: Some(PathBuf::from("shots/a.png")),
+            destination: "imgur".into(),
+            delete_url: Some("https://i.example/delete/xyz".into()),
+        })
+    }
+
+    #[test]
+    fn text_payloads_stay_the_bare_path_or_url() {
+        let save = PluginEvent::PostSave(SaveInfo {
+            width: Some(3),
+            ..SaveInfo::new(Path::new("shots/a.png"))
+        });
+        assert_eq!(save.payload(PayloadFormat::Text, true), "shots/a.png");
+        assert_eq!(
+            upload().payload(PayloadFormat::Text, true),
+            "https://i.example/a.png"
+        );
+    }
+
+    #[test]
+    fn json_payloads_carry_the_known_fields() {
+        let save = PluginEvent::PostSave(SaveInfo {
+            width: Some(640),
+            height: Some(480),
+            task: Some("gif-quick".into()),
+            duration_ms: Some(2500),
+            ..SaveInfo::new(Path::new("shots/a.GIF"))
+        });
+        let body: serde_json::Value =
+            serde_json::from_str(&save.payload(PayloadFormat::Json, false)).unwrap();
+        assert_eq!(
+            body,
+            serde_json::json!({
+                "path": "shots/a.GIF", "kind": "gif", "width": 640, "height": 480,
+                "task": "gif-quick", "duration_ms": 2500,
+            })
+        );
+
+        let still = PluginEvent::PostSave(SaveInfo::new(Path::new("noext")));
+        let body: serde_json::Value =
+            serde_json::from_str(&still.payload(PayloadFormat::Json, false)).unwrap();
+        assert!(body["kind"].is_null() && body["width"].is_null() && body["task"].is_null());
+    }
+
+    #[test]
+    fn delete_url_needs_the_capability() {
+        let hidden: serde_json::Value =
+            serde_json::from_str(&upload().payload(PayloadFormat::Json, false)).unwrap();
+        assert_eq!(hidden["destination"], "imgur");
+        assert_eq!(hidden["path"], "shots/a.png");
+        assert!(hidden.get("delete_url").is_none());
+        let shown: serde_json::Value =
+            serde_json::from_str(&upload().payload(PayloadFormat::Json, true)).unwrap();
+        assert_eq!(shown["delete_url"], "https://i.example/delete/xyz");
     }
 
     #[test]

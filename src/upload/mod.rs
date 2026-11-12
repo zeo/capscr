@@ -28,6 +28,18 @@ pub enum UploadService {
     S3(S3Target),
 }
 
+impl UploadService {
+    // destination name in plugin upload payloads
+    pub fn label(&self) -> &'static str {
+        match self {
+            UploadService::Imgur | UploadService::ImgurWithClientId(_) => "imgur",
+            UploadService::Custom(_) => "custom",
+            UploadService::Sftp(_) => "sftp",
+            UploadService::S3(_) => "s3",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct S3Target {
     pub bucket: String,
