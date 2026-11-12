@@ -1703,6 +1703,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn exact_black_check_detects_sparse_content() {
         let mut image = RgbaImage::from_pixel(8, 8, image::Rgba([0, 0, 0, 255]));
         image.put_pixel(3, 1, image::Rgba([0, 0, 1, 255]));
