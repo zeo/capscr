@@ -51,8 +51,11 @@ const MAX_PLUGIN_ZIP_BYTES: u64 = 50 * 1024 * 1024; // 50 MB
 const MAX_PLUGIN_FILES: usize = 256;
 const MAX_PLUGIN_FILE_BYTES: u64 = 16 * 1024 * 1024; // per-file cap inside the zip
 const MAX_PLUGIN_TOTAL_BYTES: u64 = 200 * 1024 * 1024; // total extracted cap
+const MAX_SIGNATURE_BYTES: usize = 4 * 1024;
 const REGISTRY_SCHEMA_VERSION: u32 = 1;
 const MAX_REDIRECTS: usize = 5;
+// minisign key 11771420AA1039A7; rot.lt's deploy signs registry.json with the secret half
+const REGISTRY_PUBLIC_KEY: &str = "RWSnORCqIBR3ET9Jgj3WNDgSK4im/Psdq0kO57GGQquALIZdjFeaT6s5";
 static PLUGIN_MUTATION_LOCK: Mutex<()> = Mutex::new(());
 
 fn lock_plugin_mutations() -> Result<MutexGuard<'static, ()>> {
@@ -100,6 +103,9 @@ pub struct RegistryEntry {
     pub min_capscr_version: String,
     #[serde(default)]
     pub license: String,
+    // filled in by fetch_registry from min_capscr_version, never read off the wire
+    #[serde(default, skip_deserializing)]
+    pub compatible: bool,
 }
 
 pub fn fetch_registry(registry_url: &str) -> Result<Registry> {
@@ -115,21 +121,21 @@ pub fn fetch_registry(registry_url: &str) -> Result<Registry> {
         .dns_resolver(crate::upload::ssrf_validating_resolver())
         .redirect(https_redirect_policy())
         .build()?;
-    let resp = client.get(registry_url).send()?;
-    if !resp.status().is_success() {
-        bail!("registry fetch failed: HTTP {}", resp.status());
-    }
-    let mut bytes = Vec::new();
-    resp.take(MAX_REGISTRY_BYTES as u64 + 1)
-        .read_to_end(&mut bytes)?;
-    if bytes.len() > MAX_REGISTRY_BYTES {
-        bail!(
-            "registry exceeds size cap ({} > {} bytes)",
-            bytes.len(),
-            MAX_REGISTRY_BYTES
-        );
-    }
-    let registry: Registry = serde_json::from_slice(&bytes)?;
+    let bytes = fetch_capped(&client, registry_url, MAX_REGISTRY_BYTES, "registry")?;
+    let mut signature_url = reqwest::Url::parse(registry_url)?;
+    signature_url.set_path(&format!("{}.minisig", signature_url.path()));
+    let signature = fetch_capped(
+        &client,
+        signature_url.as_str(),
+        MAX_SIGNATURE_BYTES,
+        "registry signature",
+    )?;
+    verify_registry(
+        &bytes,
+        &String::from_utf8_lossy(&signature),
+        REGISTRY_PUBLIC_KEY,
+    )?;
+    let mut registry: Registry = serde_json::from_slice(&bytes)?;
     if registry.version != REGISTRY_SCHEMA_VERSION {
         bail!(
             "registry schema version {} unsupported (this build expects {})",
@@ -137,16 +143,72 @@ pub fn fetch_registry(registry_url: &str) -> Result<Registry> {
             REGISTRY_SCHEMA_VERSION
         );
     }
-    for entry in &registry.plugins {
+    for entry in &mut registry.plugins {
         validate_id(&entry.id)?;
+        entry.compatible = version_at_least(env!("CARGO_PKG_VERSION"), &entry.min_capscr_version);
     }
     Ok(registry)
+}
+
+fn fetch_capped(
+    client: &reqwest::blocking::Client,
+    url: &str,
+    cap: usize,
+    what: &str,
+) -> Result<Vec<u8>> {
+    let resp = client.get(url).send()?;
+    if !resp.status().is_success() {
+        bail!("{what} fetch failed: HTTP {}", resp.status());
+    }
+    let mut bytes = Vec::new();
+    resp.take(cap as u64 + 1).read_to_end(&mut bytes)?;
+    if bytes.len() > cap {
+        bail!("{what} exceeds size cap ({} > {cap} bytes)", bytes.len());
+    }
+    Ok(bytes)
+}
+
+// prehashed signatures only, which minisign 0.12 makes by default
+fn verify_registry(bytes: &[u8], signature: &str, public_key: &str) -> Result<()> {
+    let public_key = minisign_verify::PublicKey::from_base64(public_key)
+        .map_err(|error| anyhow!("registry public key unreadable: {error}"))?;
+    minisign_verify::Signature::decode(signature)
+        .and_then(|signature| public_key.verify(bytes, &signature, false))
+        .map_err(|error| anyhow!("registry signature invalid: {error}"))
+}
+
+// dotted numeric compare; missing parts are 0 and any non-numeric part fails
+fn version_at_least(current: &str, min: &str) -> bool {
+    let min = min.trim();
+    if min.is_empty() {
+        return true;
+    }
+    let parse = |version: &str| {
+        version
+            .split('.')
+            .map(|part| part.parse::<u64>().ok())
+            .collect::<Option<Vec<_>>>()
+    };
+    let (Some(mut current), Some(mut min)) = (parse(current), parse(min)) else {
+        return false;
+    };
+    let len = current.len().max(min.len());
+    current.resize(len, 0);
+    min.resize(len, 0);
+    current >= min
 }
 
 /// installs the plugin and returns true if it was left disabled pending the
 /// user's review of its declared capabilities
 pub fn install_plugin(plugins_dir: &Path, entry: &RegistryEntry) -> Result<bool> {
     validate_id(&entry.id)?;
+    if !version_at_least(env!("CARGO_PKG_VERSION"), &entry.min_capscr_version) {
+        bail!(
+            "{} needs capscr {} or newer",
+            entry.name,
+            entry.min_capscr_version.trim()
+        );
+    }
     let _mutation_guard = lock_plugin_mutations()?;
     if !entry.download_url.starts_with("https://") {
         bail!("plugin download_url must be https");
@@ -791,9 +853,72 @@ mod tests {
             tags: Vec::new(),
             min_capscr_version: String::new(),
             license: String::new(),
+            compatible: true,
         };
         let error = install_plugin(dir.path(), &entry).expect_err("private plugin URL");
         assert!(error.to_string().contains("Private IP"), "got: {error}");
+
+        let future = RegistryEntry {
+            min_capscr_version: "999.0".into(),
+            ..entry
+        };
+        let error = install_plugin(dir.path(), &future).expect_err("future min version");
+        assert!(
+            error.to_string().contains("needs capscr 999.0"),
+            "got: {error}"
+        );
+    }
+
+    // throwaway keypair; the secret half was deleted after signing the fixture
+    const TEST_PUBLIC_KEY: &str = "RWQt31Y22MY1vGqs7y5tXct+QUpO8BTP+Y66SsuAGppgjjJgUgzvu1eQ";
+    const TEST_REGISTRY: &[u8] = b"{\"version\":1,\"plugins\":[]}\n";
+    const TEST_SIGNATURE: &str = "untrusted comment: signature from minisign secret key
+RUQt31Y22MY1vMeraPjBsFC8NSwkmQO4Knd8EAbPI/mxgKSefLshqJucFN+R43LJLmeWb3fQbN3DJ3FV10IiTmRcmZMFryuhOQ0=
+trusted comment: capscr test fixture
+uQLSi5BTRwXMnq7p9yxQRTkKD5xBy2nRZs+4LPfsmMwZED5C73V7DFltcJy5ksjcGpEBLqmBlcUfzchRsxTvDQ==
+";
+
+    #[test]
+    fn registry_signature_must_match_the_bytes_and_the_key() {
+        verify_registry(TEST_REGISTRY, TEST_SIGNATURE, TEST_PUBLIC_KEY).expect("valid");
+
+        let tampered = b"{\"version\":1,\"plugins\":[{}]}\n";
+        assert!(verify_registry(tampered, TEST_SIGNATURE, TEST_PUBLIC_KEY).is_err());
+
+        let forged_comment = TEST_SIGNATURE.replace("capscr test fixture", "capscr test fixturE");
+        assert!(verify_registry(TEST_REGISTRY, &forged_comment, TEST_PUBLIC_KEY).is_err());
+
+        assert!(verify_registry(TEST_REGISTRY, "not a signature", TEST_PUBLIC_KEY).is_err());
+        assert!(verify_registry(TEST_REGISTRY, TEST_SIGNATURE, REGISTRY_PUBLIC_KEY).is_err());
+    }
+
+    #[test]
+    #[ignore = "fetches the live registry over the network"]
+    fn live_registry_signature_verifies() {
+        fetch_registry("https://rot.lt/capscr/registry.json").expect("live registry");
+    }
+
+    #[test]
+    fn min_version_compares_dotted_numbers() {
+        for (current, min, expected) in [
+            ("0.6.0", "", true),
+            ("0.6.0", "  ", true),
+            ("0.6.0", "0.5.0", true),
+            ("0.6.0", "0.6", true),
+            ("0.6.0", "0.6.0.0", true),
+            ("0.6.0", "0.6.1", false),
+            ("0.6.0", "0.10.0", false),
+            ("0.10.0", "0.9.9", true),
+            ("1.0.0", "0.99.99", true),
+            ("0.6.0", "0.6.0-beta", false),
+            ("0.6.0", "v0.6.0", false),
+        ] {
+            assert_eq!(
+                version_at_least(current, min),
+                expected,
+                "{current} >= {min}"
+            );
+        }
     }
 
     #[test]

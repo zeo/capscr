@@ -195,6 +195,7 @@ export interface RegistryEntry {
   tags: string[];
   min_capscr_version: string;
   license: string;
+  compatible: boolean;
 }
 
 export interface UpdateInfo {

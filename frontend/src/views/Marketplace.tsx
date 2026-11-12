@@ -430,6 +430,12 @@ export function Marketplace() {
                                   <span class="v">{entry.license}</span>
                                 </span>
                               </Show>
+                              <Show when={!entry.compatible}>
+                                <span>
+                                  <span class="k">needs capscr </span>
+                                  <span class="v">{entry.min_capscr_version} or newer</span>
+                                </span>
+                              </Show>
                             </div>
                             <Show when={entry.description}>
                               <div
@@ -479,7 +485,7 @@ export function Marketplace() {
                               <button
                                 class="btn"
                                 data-size="xs"
-                                disabled={busyId() !== null}
+                                disabled={busyId() !== null || !entry.compatible}
                                 onClick={() => install(entry)}
                               >
                                 <Download size={11} stroke-width={1.5} />

@@ -103,6 +103,7 @@ wasmtime = { version = "50", default-features = false, features = ["cranelift", 
 # manifest entry. Both already transitive; pinning them as direct deps so the
 # marketplace path doesn't break on upstream churn.
 sha2 = "0.10"
+minisign-verify = "0.3"
 hex = "0.4"
 
 # upload destinations: SFTP via russh under the `sftp` feature

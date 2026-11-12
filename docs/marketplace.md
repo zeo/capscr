@@ -13,6 +13,7 @@ default URL: `https://rot.lt/capscr/registry.json` (overridable via `config.mark
 - **cache-control**: anything you like. capscr fetches on demand from the Marketplace tab, no aggressive polling. `max-age=300` is reasonable for a curated list.
 - **CORS**: not required — capscr fetches from the Rust process, not the browser.
 - **size cap (client-side)**: 2 MB. budget your registry accordingly.
+- **signature**: `<registry URL>.minisig` must hold a minisign signature over the exact bytes served at the registry URL. see section 7.
 
 ## 2. shape
 
@@ -61,7 +62,7 @@ default URL: `https://rot.lt/capscr/registry.json` (overridable via `config.mark
 | `sha256` | string | yes | lowercase hex sha256 of the zip body. **verified before extraction** — mismatch aborts the install. |
 | `size_bytes` | u64 | yes | exact zip size. capscr aborts if the download exceeds 50 MB regardless. |
 | `tags` | string[] | no | shown as chips. |
-| `min_capscr_version` | string | no | currently informational; capscr doesn't enforce yet. set it anyway. |
+| `min_capscr_version` | string | no | dotted numbers such as `0.6.0`. an older capscr greys out the install button and refuses the install. any non-numeric part (`0.6.0-beta`, `v0.6`) marks the plugin incompatible everywhere. |
 | `license` | string | no | SPDX identifier (e.g. `MIT`, `Apache-2.0`). |
 
 ### unknown fields
@@ -129,7 +130,7 @@ if any step fails, the existing install (if any) is untouched.
 
 ## 6. mirroring
 
-anyone can run a mirror. just serve the same `registry.json` shape. users override `marketplace.registry_url` in their `%APPDATA%/com.capscr.capscr/config/config.toml`:
+anyone can run a mirror: serve a byte-for-byte copy of `registry.json` next to its `registry.json.minisig`. capscr only trusts the built-in key, so a registry with a different plugin list won't load. users override `marketplace.registry_url` in their `%APPDATA%/com.capscr.capscr/config/config.toml`:
 
 ```toml
 [marketplace]
@@ -137,3 +138,25 @@ registry_url = "https://my-mirror.example/capscr/registry.json"
 ```
 
 mirror URLs are still HTTPS-validated client-side.
+
+## 7. signing
+
+capscr checks every registry against one minisign public key, compiled in as `REGISTRY_PUBLIC_KEY` in `src/marketplace.rs`:
+
+```
+RWSnORCqIBR3ET9Jgj3WNDgSK4im/Psdq0kO57GGQquALIZdjFeaT6s5
+```
+
+the key id is `11771420AA1039A7`. rot.lt's deploy workflow signs `dist/capscr/registry.json` right after the build, because the build stamps `updated_unix`. capscr fetches `registry.json.minisig` (4 KiB cap) and verifies it before parsing. a missing, malformed or mismatched signature fails the browse and the install with "registry signature invalid", and nothing from that registry is used. only prehashed signatures are accepted. minisign 0.12, which the deploy pins, makes those by default.
+
+the signature also authenticates its trusted comment, so editing either line breaks it. plugin zips aren't signed on their own: their `sha256` lives inside the signed registry.
+
+to check the live registry by hand:
+
+```
+curl -fsSO https://rot.lt/capscr/registry.json
+curl -fsSO https://rot.lt/capscr/registry.json.minisig
+minisign -V -P RWSnORCqIBR3ET9Jgj3WNDgSK4im/Psdq0kO57GGQquALIZdjFeaT6s5 -m registry.json
+```
+
+rotating the key means a new keypair, a new `CAPSCR_REGISTRY_MINISIGN_KEY` secret on rot.lt, and a capscr release with the new public key. releases that still carry the old key stop loading the registry once the signature changes.
