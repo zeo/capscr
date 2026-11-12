@@ -242,6 +242,18 @@ impl ImageUploader {
                     let v4 = IpAddr::V4(Ipv4Addr::new(o[12], o[13], o[14], o[15]));
                     return Self::is_private_ip(v4);
                 }
+                // local-use NAT64 64:ff9b:1::/48 (rfc 8215) is site-local by definition
+                if o[..6] == [0x00, 0x64, 0xFF, 0x9B, 0x00, 0x01] {
+                    return true;
+                }
+                // well-known NAT64 64:ff9b::/96 (rfc 6052) and 6to4 2002::/16
+                // (rfc 3056) carry an IPv4 address a gateway routes to
+                if o[..12] == [0x00, 0x64, 0xFF, 0x9B, 0, 0, 0, 0, 0, 0, 0, 0] {
+                    return Self::is_private_ip(IpAddr::V4(Ipv4Addr::new(o[12], o[13], o[14], o[15])));
+                }
+                if o[..2] == [0x20, 0x02] {
+                    return Self::is_private_ip(IpAddr::V4(Ipv4Addr::new(o[2], o[3], o[4], o[5])));
+                }
                 false
             }
         }
@@ -596,14 +608,6 @@ impl ImageUploader {
         }
 
         Err(anyhow!("Could not extract URL from response"))
-    }
-}
-
-impl Default for ImageUploader {
-    fn default() -> Self {
-        Self::new().unwrap_or_else(|_| Self {
-            client: reqwest::blocking::Client::new(),
-        })
     }
 }
 
@@ -1795,8 +1799,28 @@ mod tests {
     }
 
     #[test]
+    fn embedded_ipv4_in_nat64_and_6to4_is_checked() {
+        for (address, private) in [
+            ("64:ff9b::7f00:1", true),
+            ("64:ff9b::a00:1", true),
+            ("64:ff9b::808:808", false),
+            ("2002:7f00:1::", true),
+            ("2002:c0a8:101::", true),
+            ("2002:808:808::", false),
+            ("64:ff9b:1::1", true),
+            ("2606:4700::1111", false),
+        ] {
+            assert_eq!(
+                ImageUploader::is_private_ip(address.parse().unwrap()),
+                private,
+                "{address}"
+            );
+        }
+    }
+
+    #[test]
     fn test_extract_json_url() {
-        let uploader = ImageUploader::default();
+        let uploader = ImageUploader::new().unwrap();
         let json = r#"{"data": {"url": "https://example.com/image.png"}}"#;
         let result = uploader.extract_url_from_response(json, "data.url");
         assert!(result.is_ok());
@@ -1805,7 +1829,7 @@ mod tests {
 
     #[test]
     fn test_extract_plain_url() {
-        let uploader = ImageUploader::default();
+        let uploader = ImageUploader::new().unwrap();
         let text = "https://example.com/image.png";
         let result = uploader.extract_url_from_response(text, "url");
         assert!(result.is_ok());
@@ -1813,7 +1837,7 @@ mod tests {
 
     #[test]
     fn test_custom_uploader_requires_https() {
-        let uploader = ImageUploader::default();
+        let uploader = ImageUploader::new().unwrap();
         let config = CustomUploader {
             request_url: "http://insecure.example.com".to_string(),
             ..Default::default()

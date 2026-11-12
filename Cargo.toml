@@ -24,9 +24,7 @@ sftp = ["dep:russh", "dep:russh-sftp"]
 # gui shell
 tauri = { version = "2", features = ["tray-icon", "image-png", "image-ico", "protocol-asset"] }
 tauri-plugin-clipboard-manager = "2"
-tauri-plugin-notification = "2"
 tauri-plugin-dialog = "2"
-tauri-plugin-fs = "2"
 tauri-plugin-opener = "2"
 tauri-plugin-autostart = "2"
 tauri-plugin-window-state = "2"
