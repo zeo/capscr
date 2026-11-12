@@ -756,11 +756,26 @@ fn is_transient_upload_error(e: &anyhow::Error) -> bool {
         "temporary failure",
         "server misbehaving",
         "stream closed",
-        "502",
-        "503",
-        "504",
     ];
-    transient_markers.iter().any(|m| text.contains(m))
+    // match the status position only, so a 503 in a file name never retries
+    let server_error = ["502", "503", "504"].iter().any(|code| {
+        text.contains(&format!("status: {code}")) || text.contains(&format!("status {code}"))
+    });
+    server_error || transient_markers.iter().any(|m| text.contains(m))
+}
+
+pub fn mime_for(ext: &str) -> Option<&'static str> {
+    Some(match ext.to_ascii_lowercase().as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "bmp" => "image/bmp",
+        "avif" => "image/avif",
+        "jxl" => "image/jxl",
+        "mp4" => "video/mp4",
+        _ => return None,
+    })
 }
 
 pub fn test_connection_ftp(_target: &FtpTarget) -> Result<Vec<TestStep>> {
@@ -1767,8 +1782,29 @@ mod tests {
         assert!(is_transient_upload_error(&anyhow!(
             "connection reset by peer"
         )));
-        assert!(is_transient_upload_error(&anyhow!("status code: 503")));
+        assert!(is_transient_upload_error(&anyhow!(
+            "Upload failed with status: 503 Service Unavailable"
+        )));
+        assert!(is_transient_upload_error(&anyhow!(
+            "S3 upload failed with status 502 Bad Gateway: x"
+        )));
         assert!(is_transient_upload_error(&anyhow!("tls handshake failed")));
+    }
+
+    #[test]
+    fn transient_classifier_ignores_codes_outside_the_status() {
+        let e = anyhow!("Upload failed with status: 401 Unauthorized")
+            .context("uploading 20260504.png");
+        assert!(!is_transient_upload_error(&e));
+    }
+
+    #[test]
+    fn mime_for_covers_every_capture_format() {
+        for format in crate::config::ImageFormat::all() {
+            assert!(mime_for(format.extension()).is_some(), "{format:?}");
+        }
+        assert_eq!(mime_for("MP4"), Some("video/mp4"));
+        assert_eq!(mime_for("txt"), None);
     }
 
     #[test]

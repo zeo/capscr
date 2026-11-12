@@ -1384,16 +1384,7 @@ fn run_post_action(
     let do_upload = || -> anyhow::Result<crate::upload::UploadResult> {
         let uploader = crate::upload::shared_uploader()?;
         let service = build_upload_service_for_target(&config, upload_target);
-        let result = uploader.upload(&image, &service)?;
-        state.record_upload(UploadRecord {
-            url: result.url.clone(),
-            delete_url: result.delete_url.clone(),
-        });
-        crate::rebuild_tray_menu(app);
-        if config.upload.copy_url_to_clipboard {
-            let _ = crate::upload::copy_url_to_clipboard(&result.url);
-        }
-        Ok(result)
+        uploader.upload(&image, &service)
     };
 
     match action {
@@ -1459,11 +1450,11 @@ fn run_post_action(
             let history_path =
                 do_save_to_history_async(image.clone(), hdr_bitmap.clone(), app.clone());
             let result = do_upload()?;
+            finish_upload(app, &config, &result);
             Sound::Upload.play_if_enabled(config.post_capture.play_sound);
             if config.ui.show_notifications {
                 let _ = show_notification("Uploaded", &result.url);
             }
-            emit_upload_success(app, &result);
             Ok(history_path)
         }
         PostCaptureAction::Prompt => {
@@ -1582,7 +1573,7 @@ pub fn list_captures(state: State<AppState>) -> Result<Vec<HistoryEntry>, String
             .unwrap_or_default();
         if !matches!(
             ext.as_str(),
-            "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "mp4"
+            "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "avif" | "jxl" | "mp4"
         ) {
             continue;
         }
@@ -1696,7 +1687,8 @@ pub fn copy_capture_to_clipboard(path: String, state: State<AppState>) -> Result
         .and_then(|e| e.to_str())
         .map(|s| s.to_lowercase())
         .unwrap_or_default();
-    if ext == "gif" || ext == "mp4" {
+    // the image crate decodes neither avif nor jxl here, so those go as files
+    if matches!(ext.as_str(), "gif" | "mp4" | "avif" | "jxl") {
         // copy the file itself so pasting inserts the animation instead of a
         // path string; fall back to path text if the file copy fails
         #[cfg(any(windows, target_os = "linux"))]
@@ -1715,68 +1707,77 @@ pub fn copy_capture_to_clipboard(path: String, state: State<AppState>) -> Result
 }
 
 #[tauri::command]
-pub fn reupload_capture(
+pub async fn reupload_capture(
     path: String,
     app: AppHandle,
-    state: State<AppState>,
+    state: State<'_, AppState>,
 ) -> Result<UploadResponse, String> {
-    let buf = PathBuf::from(&path);
     let config = state.config.lock().unwrap().clone();
-    let canonical = std::fs::canonicalize(&buf).map_err(|e| e.to_string())?;
+    let canonical = std::fs::canonicalize(&path).map_err(|e| e.to_string())?;
     if !is_path_allowed(&canonical, &config) {
         return Err("Path is outside the allowed directories".into());
     }
-    // GIF files contain animation data that image::open drops to the first frame.
-    // upload the raw file bytes via a dedicated path instead of re-encoding.
-    let ext = canonical
+    upload_path(app, config, canonical).await
+}
+
+fn read_upload_file(path: &std::path::Path) -> Result<(Vec<u8>, &'static str, String), String> {
+    let ext = path
         .extension()
         .and_then(|e| e.to_str())
-        .map(|s| s.to_lowercase())
         .unwrap_or_default();
-    if ext == "gif" {
-        return Err(
-            "GIF reupload is not yet supported — open the file manually and upload it from there"
-                .into(),
-        );
-    }
-    if ext == "mp4" {
-        return Err(
-            "MP4 reupload is not yet supported — open the file manually and upload it from there"
-                .into(),
-        );
-    }
-    let mime = match ext.as_str() {
-        "jpg" | "jpeg" => "image/jpeg",
-        "webp" => "image/webp",
-        "bmp" => "image/bmp",
-        _ => "image/png",
+    let mime = match crate::upload::mime_for(ext) {
+        Some(mime) => mime,
+        None if ext.is_empty() => return Err("file has no extension; cannot detect type".into()),
+        None => return Err(format!("unsupported file type: .{}", ext.to_lowercase())),
     };
-    let bytes = std::fs::read(&canonical).map_err(|e| e.to_string())?;
-    let file_name = canonical
+    let metadata = std::fs::metadata(path).map_err(|e| e.to_string())?;
+    if metadata.len() > 100 * 1024 * 1024 {
+        return Err("file too large to upload (>100 MB)".into());
+    }
+    let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+    let file_name = path
         .file_name()
         .and_then(|n| n.to_str())
-        .unwrap_or("capture")
+        .unwrap_or("upload")
         .to_string();
-    let uploader = crate::upload::shared_uploader().map_err(|e| e.to_string())?;
+    Ok((bytes, mime, file_name))
+}
+
+// uploads the file bytes as they are, so gif animation and video survive
+async fn upload_path(
+    app: AppHandle,
+    config: Config,
+    path: PathBuf,
+) -> Result<UploadResponse, String> {
     let service = build_upload_service(&config);
-    let _pending_mutation =
+    let pending_mutation =
         PendingFileMutation::begin(&app).map_err(|error| error.to_string())?;
-    let result = uploader
-        .upload_raw(&bytes, mime, &file_name, &service)
-        .map_err(|e| e.to_string())?;
-    state.record_upload(UploadRecord {
-        url: result.url.clone(),
-        delete_url: result.delete_url.clone(),
-    });
-    crate::rebuild_tray_menu(&app);
-    if config.upload.copy_url_to_clipboard {
-        let _ = crate::upload::copy_url_to_clipboard(&result.url);
-    }
-    emit_upload_success(&app, &result);
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let _pending_mutation = pending_mutation;
+        let (bytes, mime, file_name) = read_upload_file(&path)?;
+        crate::upload::shared_uploader()
+            .and_then(|uploader| uploader.upload_raw(&bytes, mime, &file_name, &service))
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    finish_upload(&app, &config, &result);
     Ok(UploadResponse {
         url: result.url,
         delete_url: result.delete_url,
     })
+}
+
+fn finish_upload(app: &AppHandle, config: &Config, result: &crate::upload::UploadResult) {
+    app.state::<AppState>().record_upload(UploadRecord {
+        url: result.url.clone(),
+        delete_url: result.delete_url.clone(),
+    });
+    crate::rebuild_tray_menu(app);
+    if config.upload.copy_url_to_clipboard {
+        let _ = crate::upload::copy_url_to_clipboard(&result.url);
+    }
+    emit_upload_success(app, result);
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -3149,13 +3150,12 @@ pub fn copy_edited_image_to_clipboard(request: tauri::ipc::Request<'_>) -> Resul
 }
 
 #[tauri::command]
-pub fn upload_file(
+pub async fn upload_file(
     path: String,
     app: AppHandle,
-    state: State<AppState>,
+    state: State<'_, AppState>,
 ) -> Result<UploadResponse, String> {
-    let buf = PathBuf::from(&path);
-    let canonical = std::fs::canonicalize(&buf).map_err(|e| e.to_string())?;
+    let canonical = std::fs::canonicalize(&path).map_err(|e| e.to_string())?;
     if !canonical.is_file() {
         return Err("not a regular file".into());
     }
@@ -3165,57 +3165,7 @@ pub fn upload_file(
     if !state.was_dropped(&canonical) && !is_path_allowed(&canonical, &config) {
         return Err("Path is outside the allowed directories".into());
     }
-
-    let ext = canonical
-        .extension()
-        .and_then(|e| e.to_str())
-        .map(|s| s.to_lowercase())
-        .unwrap_or_default();
-    let mime = match ext.as_str() {
-        "png" => "image/png",
-        "jpg" | "jpeg" => "image/jpeg",
-        "gif" => "image/gif",
-        "webp" => "image/webp",
-        "bmp" => "image/bmp",
-        "mp4" => "video/mp4",
-        "" => return Err("file has no extension; cannot detect type".into()),
-        other => return Err(format!("unsupported file type: .{}", other)),
-    };
-
-    let metadata = std::fs::metadata(&canonical).map_err(|e| e.to_string())?;
-    if metadata.len() > 100 * 1024 * 1024 {
-        return Err("file too large to upload (>100 MB)".into());
-    }
-
-    let bytes = std::fs::read(&canonical).map_err(|e| e.to_string())?;
-    let file_name = canonical
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("upload")
-        .to_string();
-
-    let uploader = crate::upload::shared_uploader().map_err(|e| e.to_string())?;
-    let service = build_upload_service(&config);
-    let _pending_mutation =
-        PendingFileMutation::begin(&app).map_err(|error| error.to_string())?;
-    let result = uploader
-        .upload_raw(&bytes, mime, &file_name, &service)
-        .map_err(|e| e.to_string())?;
-
-    state.record_upload(UploadRecord {
-        url: result.url.clone(),
-        delete_url: result.delete_url.clone(),
-    });
-    crate::rebuild_tray_menu(&app);
-    if config.upload.copy_url_to_clipboard {
-        let _ = crate::upload::copy_url_to_clipboard(&result.url);
-    }
-    emit_upload_success(&app, &result);
-
-    Ok(UploadResponse {
-        url: result.url,
-        delete_url: result.delete_url,
-    })
+    upload_path(app, config, canonical).await
 }
 
 #[tauri::command]
@@ -3242,15 +3192,7 @@ pub async fn upload_edited_image(
     })
     .await
     .map_err(|e| e.to_string())??;
-    state.record_upload(UploadRecord {
-        url: result.url.clone(),
-        delete_url: result.delete_url.clone(),
-    });
-    crate::rebuild_tray_menu(&app);
-    if config.upload.copy_url_to_clipboard {
-        let _ = crate::upload::copy_url_to_clipboard(&result.url);
-    }
-    emit_upload_success(&app, &result);
+    finish_upload(&app, &config, &result);
     Ok(UploadResponse {
         url: result.url,
         delete_url: result.delete_url,
@@ -4129,29 +4071,16 @@ fn apply_gif_post_action(
                     }
                 };
                 let service = build_upload_service_for_target(&cfg, target_override);
-                let is_mp4 = path.extension().is_some_and(|ext| ext == "mp4");
-                let (mime, default_name) = if is_mp4 {
-                    ("video/mp4", "capture.mp4")
-                } else {
-                    ("image/gif", "capture.gif")
-                };
+                let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("gif");
+                let mime = crate::upload::mime_for(ext).unwrap_or("image/gif");
                 let file_name = path
                     .file_name()
                     .and_then(|n| n.to_str())
-                    .unwrap_or(default_name);
+                    .unwrap_or("capture.gif");
                 match uploader.upload_raw(&bytes, mime, file_name, &service) {
                     Ok(result) => {
-                        let st = app2.state::<AppState>();
-                        st.record_upload(UploadRecord {
-                            url: result.url.clone(),
-                            delete_url: result.delete_url.clone(),
-                        });
-                        crate::rebuild_tray_menu(&app2);
-                        if cfg.upload.copy_url_to_clipboard {
-                            let _ = crate::upload::copy_url_to_clipboard(&result.url);
-                        }
+                        finish_upload(&app2, &cfg, &result);
                         Sound::Upload.play_if_enabled(cfg.post_capture.play_sound);
-                        emit_upload_success(&app2, &result);
                     }
                     Err(e) => emit_error(&app2, "upload", &e.to_string()),
                 }
@@ -5116,77 +5045,85 @@ pub fn fire_task(task_id: String, app: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn test_upload_connection(
+pub async fn test_upload_connection(
     destination: String,
     config: Config,
     app: AppHandle,
-    state: State<AppState>,
+    state: State<'_, AppState>,
 ) -> Result<ConnectionTestReport, String> {
-    let cfg = {
+    let mut cfg = {
         let saved = state.config.lock().unwrap();
         connection_test_config(&destination, config, &saved)?
     };
-    let _pending_sftp_trust = if matches!(destination.as_str(), "Sftp" | "sftp") {
+    cfg.upload.destination = match destination.as_str() {
+        "Ftp" | "ftp" => UploadDestination::Ftp,
+        "Sftp" | "sftp" => UploadDestination::Sftp,
+        "Imgur" | "imgur" => UploadDestination::Imgur,
+        "Custom" | "custom" => UploadDestination::Custom,
+        "S3" | "s3" => UploadDestination::S3,
+        other => return Err(format!("'{other}' has no test-connection probe")),
+    };
+    let pending_sftp_trust = if cfg.upload.destination == UploadDestination::Sftp {
         Some(PendingFileMutation::begin(&app).map_err(|error| error.to_string())?)
     } else {
         None
     };
-    let steps = match destination.as_str() {
-        "Ftp" | "ftp" => {
-            let target = crate::upload::FtpTarget {
-                host: cfg.upload.ftp.host.clone(),
-                port: cfg.upload.ftp.port,
-                username: cfg.upload.ftp.username.clone(),
-                password: cfg.upload.ftp.password_plaintext(),
-                remote_dir: cfg.upload.ftp.remote_dir.clone(),
-                use_tls: cfg.upload.ftp.use_tls,
-                public_url_template: cfg.upload.ftp.public_url_template.clone(),
-            };
-            crate::upload::test_connection_ftp(&target).map_err(|e| e.to_string())?
+    let service = build_upload_service(&cfg);
+    let steps = tauri::async_runtime::spawn_blocking(move || {
+        let _pending_sftp_trust = pending_sftp_trust;
+        match &service {
+            UploadService::Ftp(target) => crate::upload::test_connection_ftp(target),
+            UploadService::Sftp(target) => crate::upload::test_connection_sftp(target),
+            UploadService::Imgur | UploadService::ImgurWithClientId(_) => {
+                crate::upload::test_connection_imgur(&cfg.upload.imgur_client_id)
+            }
+            UploadService::Custom(uploader) => crate::upload::test_connection_custom(uploader),
+            UploadService::S3(target) => crate::upload::test_connection_s3(target),
         }
-        "Sftp" | "sftp" => {
-            let target = crate::upload::SftpTarget {
-                host: cfg.upload.sftp.host.clone(),
-                port: cfg.upload.sftp.port,
-                username: cfg.upload.sftp.username.clone(),
-                password: cfg.upload.sftp.password_plaintext(),
-                remote_dir: cfg.upload.sftp.remote_dir.clone(),
-                public_url_template: cfg.upload.sftp.public_url_template.clone(),
-                private_key_path: cfg.upload.sftp.private_key_path.clone(),
-                private_key_passphrase: cfg.upload.sftp.private_key_passphrase_plaintext(),
-            };
-            crate::upload::test_connection_sftp(&target).map_err(|e| e.to_string())?
-        }
-        "Imgur" | "imgur" => crate::upload::test_connection_imgur(&cfg.upload.imgur_client_id)
-            .map_err(|e| e.to_string())?,
-        "Custom" | "custom" => {
-            let uploader = crate::upload::CustomUploader {
-                name: "Custom".to_string(),
-                request_url: cfg.upload.custom_url.clone(),
-                file_form_name: cfg.upload.custom_form_name.clone(),
-                response_url_path: cfg.upload.custom_response_path.clone(),
-            };
-            crate::upload::test_connection_custom(&uploader).map_err(|e| e.to_string())?
-        }
-        "S3" | "s3" => {
-            let target = crate::upload::S3Target {
-                bucket: cfg.upload.s3.bucket.clone(),
-                region: cfg.upload.s3.region.clone(),
-                endpoint: cfg.upload.s3.endpoint.clone(),
-                access_key_id: cfg.upload.s3.access_key_id.clone(),
-                secret_access_key: cfg.upload.s3.secret_access_key_plaintext(),
-                public_url_template: cfg.upload.s3.public_url_template.clone(),
-            };
-            crate::upload::test_connection_s3(&target).map_err(|e| e.to_string())?
-        }
-        other => return Err(format!("'{other}' has no test-connection probe")),
-    };
+        .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())??;
     let overall_ok = !steps.is_empty() && steps.iter().all(|s| s.ok);
     Ok(ConnectionTestReport {
         destination,
         overall_ok,
         steps,
     })
+}
+
+#[cfg(test)]
+mod read_upload_file_tests {
+    use super::read_upload_file;
+
+    #[test]
+    fn every_capture_kind_reads_with_its_mime() {
+        let dir = tempfile::tempdir().unwrap();
+        for (name, mime) in [
+            ("a.avif", "image/avif"),
+            ("b.JXL", "image/jxl"),
+            ("c.mp4", "video/mp4"),
+            ("d.gif", "image/gif"),
+        ] {
+            let path = dir.path().join(name);
+            std::fs::write(&path, b"bytes").unwrap();
+            let (bytes, got, file_name) = read_upload_file(&path).unwrap();
+            assert_eq!(
+                (bytes.as_slice(), got, file_name.as_str()),
+                (&b"bytes"[..], mime, name)
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_or_missing_extensions_are_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["notes.txt", "noext"] {
+            let path = dir.path().join(name);
+            std::fs::write(&path, b"x").unwrap();
+            assert!(read_upload_file(&path).is_err(), "{name}");
+        }
+    }
 }
 
 #[cfg(test)]
@@ -5423,14 +5360,18 @@ pub fn set_hotkeys_disabled(
 }
 
 #[tauri::command]
-pub fn run_ocr(path: String, state: State<AppState>) -> Result<String, String> {
+pub async fn run_ocr(path: String, state: State<'_, AppState>) -> Result<String, String> {
     let config = state.config.lock().unwrap().clone();
     let canonical = std::fs::canonicalize(&path).map_err(|e| e.to_string())?;
     if !is_path_allowed(&canonical, &config) {
         return Err("Path is outside the allowed directories".into());
     }
-    let bytes = std::fs::read(&canonical).map_err(|e| e.to_string())?;
-    ocr_image_bytes(&bytes).map_err(|e| e.to_string())
+    tauri::async_runtime::spawn_blocking(move || {
+        let bytes = std::fs::read(&canonical).map_err(|e| e.to_string())?;
+        ocr_image_bytes(&bytes).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// run Windows OCR over an encoded image (png/jpeg/...) and return the text

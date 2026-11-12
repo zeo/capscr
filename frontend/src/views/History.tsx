@@ -37,6 +37,11 @@ const FILTER_PILLS = () =>
 // grid tiles use a cached backend thumbnail: full-size animated gifs in
 // <img> decode to gigabytes across a grid, and files outside the asset
 // scope render blank
+// gif and mp4 would lose their motion in the editor, and the image crate
+// decodes neither avif nor jxl, so these open and copy as plain files
+const fileOnly = (e: HistoryEntry) =>
+  e.is_gif || e.is_mp4 || /\.(avif|jxl)$/i.test(e.path);
+
 function ThumbImg(props: { path: string; alt: string }) {
   const [shouldLoad, setShouldLoad] = createSignal(false);
   const [failed, setFailed] = createSignal(false);
@@ -235,7 +240,7 @@ export function History() {
     flashTimer = setTimeout(() => setFlash(null), tone === "err" ? 6000 : 2500);
   };
   const openCapture = (entry: HistoryEntry) => {
-    const action = entry.is_gif || entry.is_mp4
+    const action = fileOnly(entry)
       ? api.openInExplorer(entry.path)
       : api.openEditor(entry.path);
     action.catch((error: unknown) => showFlash("err", `open failed: ${error}`));
@@ -451,7 +456,7 @@ export function History() {
                       <Scissors size={12} stroke-width={1.5} />
                     </button>
                   </Show>
-                   <Show when={!e.is_gif && !e.is_mp4}>
+                  <Show when={!fileOnly(e)}>
                     <button
                       class="icon-btn"
                       title="edit"
@@ -474,15 +479,13 @@ export function History() {
                       <Pin size={12} stroke-width={1.5} />
                     </button>
                   </Show>
-                  <Show when={!e.is_gif && !e.is_mp4}>
-                    <button
-                      class="icon-btn"
-                      title="re-upload"
-                      onClick={() => doReupload(e.path)}
-                    >
-                      <UploadCloud size={12} stroke-width={1.5} />
-                    </button>
-                  </Show>
+                  <button
+                    class="icon-btn"
+                    title="re-upload"
+                    onClick={() => doReupload(e.path)}
+                  >
+                    <UploadCloud size={12} stroke-width={1.5} />
+                  </button>
                   <button
                     class="icon-btn"
                     title="open in os viewer"
