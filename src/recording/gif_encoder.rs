@@ -4,7 +4,7 @@ use image::RgbaImage;
 use std::fs::OpenOptions;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::mpsc::{channel, Receiver, Sender, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -139,6 +139,7 @@ pub struct GifRecorder {
     paused: Arc<AtomicBool>,
     audio_temp_path: Option<std::path::PathBuf>,
     audio_stop_tx: Option<Sender<()>>,
+    audio_thread: Mutex<Option<thread::JoinHandle<()>>>,
     audio_started: Option<Instant>,
     // paused stretches of the audio clock, cut from the track at mux time
     audio_pauses: Mutex<Vec<(Duration, Option<Duration>)>>,
@@ -558,6 +559,7 @@ impl GifRecorder {
             paused: Arc::new(AtomicBool::new(false)),
             audio_temp_path: None,
             audio_stop_tx: None,
+            audio_thread: Mutex::new(None),
             audio_started: None,
             audio_pauses: Mutex::new(Vec::new()),
         }
@@ -653,11 +655,12 @@ impl GifRecorder {
             self.audio_stop_tx = Some(audio_tx);
             self.audio_started = Some(Instant::now());
 
-            thread::spawn(move || {
+            let audio_thread = thread::spawn(move || {
                 if let Err(e) = record_loopback_audio(&audio_path, audio_rx) {
                     tracing::error!("WASAPI Audio loopback record error: {e}");
                 }
             });
+            self.audio_thread = Mutex::new(Some(audio_thread));
         }
 
         let state = Arc::clone(&self.state);
@@ -749,7 +752,7 @@ impl GifRecorder {
             let mut consecutive_dupes: u32 = 0;
 
             let reason = loop {
-                if rx.try_recv().is_ok() {
+                if stop_requested(&rx) {
                     break StopReason::Requested;
                 }
 
@@ -1010,6 +1013,21 @@ impl GifRecorder {
         }
     }
 
+    /// stops the audio tap and waits until its wav header is final
+    fn finish_audio(&self) {
+        if let Some(tx) = &self.audio_stop_tx {
+            let _ = tx.send(());
+        }
+        let handle = self
+            .audio_thread
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
+        if handle.is_some_and(|handle| handle.join().is_err()) {
+            tracing::error!("audio capture thread panicked");
+        }
+    }
+
     #[allow(dead_code)]
     pub fn frame_count(&self) -> usize {
         match self.sink.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
@@ -1244,6 +1262,7 @@ impl GifRecorder {
             }
         }
 
+        self.finish_audio();
         let audio_exists = self
             .audio_temp_path
             .as_ref()
@@ -1305,6 +1324,7 @@ impl GifRecorder {
 
     pub fn reset(&mut self) {
         self.stop();
+        self.finish_audio();
         // dropping the sink removes spool/stream temp files and reaps any
         // live ffmpeg child; a mid-capture thread sees None and ends
         *self.sink.lock().unwrap_or_else(|e| e.into_inner()) = None;
@@ -1323,11 +1343,20 @@ impl Drop for GifRecorder {
     fn drop(&mut self) {
         // save_mp4 removes the audio wav only on its mux path; its early error
         // returns (no frames, bad path, stream finish failure) skip cleanup, so
-        // reap the temp wav here to hold the temp-hygiene invariant on every exit
+        // reap the temp wav here to hold the temp-hygiene invariant on every exit.
+        // the capture thread is only signalled since a grab can take a frame
+        // interval, but the audio writer is joined so the wav isn't still open
+        self.stop();
+        self.finish_audio();
         if let Some(ref wav_path) = self.audio_temp_path {
             let _ = std::fs::remove_file(wav_path);
         }
     }
+}
+
+/// a dropped sender counts as a stop so an abandoned recorder ends its threads
+fn stop_requested(rx: &Receiver<()>) -> bool {
+    !matches!(rx.try_recv(), Err(TryRecvError::Empty))
 }
 
 pub fn find_ffmpeg() -> std::path::PathBuf {
@@ -1485,7 +1514,7 @@ pub fn record_loopback_audio(wav_path: &Path, stop_rx: Receiver<()>) -> Result<(
     let pad_threshold_frames = sample_rate as u64 / 2;
     let mut padding_active = false;
 
-    while stop_rx.try_recv().is_err() {
+    while !stop_requested(&stop_rx) {
         std::thread::sleep(std::time::Duration::from_millis(10));
 
         while let Ok(Some(packet_size)) = capture_client.get_next_packet_size() {
@@ -1599,6 +1628,16 @@ impl Default for GifRecorder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stop_is_requested_by_a_signal_or_a_dropped_sender() {
+        let (tx, rx) = channel();
+        assert!(!stop_requested(&rx));
+        tx.send(()).unwrap();
+        assert!(stop_requested(&rx));
+        drop(tx);
+        assert!(stop_requested(&rx));
+    }
 
     #[test]
     #[cfg(windows)]
