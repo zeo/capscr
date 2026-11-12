@@ -1018,6 +1018,9 @@ impl Config {
                 "filename_template contains invalid path characters"
             ));
         }
+        if !template_is_valid(&self.output.filename_template) {
+            return Err(anyhow!("filename_template has an invalid % specifier"));
+        }
         // reject a clearly-bad output directory at save time, before set_config
         // widens the asset-protocol scope to it. sanitize() repairs these in a
         // loaded config, so this only rejects a fresh bad value the UI tries to
@@ -1171,6 +1174,7 @@ impl Config {
             || self.output.filename_template.contains('/')
             || self.output.filename_template.contains('\\')
             || self.output.filename_template.contains("..")
+            || !template_is_valid(&self.output.filename_template)
         {
             self.output.filename_template = "capture_%Y%m%d_%H%M%S".to_string();
         }
@@ -1496,8 +1500,13 @@ impl Config {
     }
 
     pub fn generate_filename(&self) -> String {
+        use std::fmt::Write;
         let now = chrono::Local::now();
-        let formatted = now.format(&self.output.filename_template).to_string();
+        // chrono's Display panics on a bad specifier and release builds abort
+        let mut formatted = String::new();
+        if write!(formatted, "{}", now.format(&self.output.filename_template)).is_err() {
+            formatted.clear();
+        }
         let sanitized: String = formatted
             .chars()
             .filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-')
@@ -1514,6 +1523,10 @@ impl Config {
     pub fn output_path(&self) -> PathBuf {
         self.output.directory.join(self.generate_filename())
     }
+}
+
+fn template_is_valid(template: &str) -> bool {
+    chrono::format::StrftimeItems::new(template).parse().is_ok()
 }
 
 fn migrate_secret(
@@ -1537,6 +1550,37 @@ fn migrate_secret(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn validate_rejects_bad_template_specifiers() {
+        for bad in ["cap_%", "cap_%Q", "%Y%"] {
+            let mut config = Config::default();
+            config.output.filename_template = bad.to_string();
+            assert!(config.validate().is_err(), "{bad} should be rejected");
+        }
+        for good in ["capture_%Y%m%d_%H%M%S", "shot-%Y-%m-%d"] {
+            let mut config = Config::default();
+            config.output.filename_template = good.to_string();
+            assert!(config.validate().is_ok(), "{good} should be accepted");
+        }
+    }
+
+    #[test]
+    fn sanitize_resets_bad_template() {
+        let mut config = Config::default();
+        config.output.filename_template = "cap_%".to_string();
+        config.sanitize();
+        assert_eq!(config.output.filename_template, "capture_%Y%m%d_%H%M%S");
+    }
+
+    #[test]
+    fn generate_filename_survives_bad_template() {
+        let mut config = Config::default();
+        config.output.filename_template = "cap_%Q".to_string();
+        let name = config.generate_filename();
+        assert!(name.starts_with("capture_"), "{name}");
+        assert!(name.ends_with(config.output.format.extension()), "{name}");
+    }
 
     #[test]
     fn test_default_performance_config() {

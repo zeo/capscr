@@ -1351,13 +1351,7 @@ fn run_post_action(
             tracing::warn!("failed to create history dir: {e}");
             return None;
         }
-        let base = {
-            let now = chrono::Local::now();
-            let name = now.format(&config.output.filename_template).to_string();
-            let ext = config.output.format.extension();
-            history_dir.join(format!("{name}.{ext}"))
-        };
-        let path = get_unique_filepath(&base);
+        let path = get_unique_filepath(&history_dir.join(config.generate_filename()));
 
         let path_clone = path.clone();
         let format = config.output.format;
