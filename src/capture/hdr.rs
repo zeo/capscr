@@ -682,7 +682,7 @@ mod windows_hdr {
         };
         use windows::Win32::Graphics::Dxgi::Common::{
             DXGI_FORMAT, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_R10G10B10A2_UNORM,
-            DXGI_FORMAT_R16G16B16A16_FLOAT,
+            DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_MODE_ROTATION_ROTATE180,
         };
         use windows::Win32::Graphics::Dxgi::{
             IDXGIOutput1, IDXGIOutput5, IDXGIOutputDuplication, IDXGIResource,
@@ -1015,7 +1015,14 @@ mod windows_hdr {
                 ));
             }
 
-            let (data, width, height, hdr_format) = captured_data.unwrap();
+            let (mut data, width, height, hdr_format) = captured_data.unwrap();
+
+            // duplication hands back the unrotated surface; gdi and orient_captured_image
+            // never see a 180 turn, so it is undone here
+            if duplication.GetDesc().Rotation == DXGI_MODE_ROTATION_ROTATE180 {
+                let bpp = data.len() / (width as usize * height as usize).max(1);
+                data = rotate180_pixels(&data, bpp);
+            }
 
             tracing::info!(
                 "capture_hdr_screen: acquired frame with last_present_time={} accumulated_frames={} format={:?}",
@@ -1029,6 +1036,25 @@ mod windows_hdr {
 
             Ok((data, width, height, hdr_format))
         }
+    }
+
+    // rows are packed, so reversing pixel order turns the frame half way round
+    fn rotate180_pixels(data: &[u8], bpp: usize) -> Vec<u8> {
+        data.chunks_exact(bpp).rev().flatten().copied().collect()
+    }
+
+    #[cfg(test)]
+    #[test]
+    fn rotate180_reverses_rows_and_columns() {
+        assert_eq!(
+            rotate180_pixels(&[1, 1, 1, 1, 2, 2, 2, 2], 4),
+            [2, 2, 2, 2, 1, 1, 1, 1]
+        );
+        assert_eq!(rotate180_pixels(b"abcd", 1), *b"dcba");
+        let tall: Vec<u8> = (0..16).collect();
+        let turned = rotate180_pixels(&tall, 8);
+        assert_eq!(turned[..8], tall[8..]);
+        assert_eq!(turned[8..], tall[..8]);
     }
 
     fn get_bytes_per_pixel(format: DXGI_FORMAT) -> usize {
