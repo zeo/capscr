@@ -46,6 +46,8 @@ pub enum StopReason {
     FrameCap,
     DiskFull,
     EncoderFailed,
+    #[cfg(target_os = "linux")]
+    SourceLost,
 }
 
 #[derive(Debug, Clone)]

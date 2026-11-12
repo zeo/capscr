@@ -3947,6 +3947,10 @@ fn finalize_gif_recording(task: &CaptureTask, app: &AppHandle) {
                         "stopped early: couldn't write frames to disk — saved what was captured"
                             .to_string(),
                     ),
+                    #[cfg(target_os = "linux")]
+                    Some(StopReason::SourceLost) => {
+                        Some("stopped: screen sharing ended, recording saved".to_string())
+                    }
                     _ => None,
                 };
                 if let Some(note) = early_stop_note {

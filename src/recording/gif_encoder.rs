@@ -755,6 +755,13 @@ impl GifRecorder {
                 if stop_requested(&rx) {
                     break StopReason::Requested;
                 }
+                #[cfg(target_os = "linux")]
+                if direct_source
+                    .as_ref()
+                    .is_some_and(crate::capture::RecordingSource::ended)
+                {
+                    break StopReason::SourceLost;
+                }
 
                 clock.update(paused.load(Ordering::SeqCst), Instant::now());
                 if clock.is_paused() {

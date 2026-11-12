@@ -222,6 +222,10 @@ pub(crate) enum RecordingSource {
 }
 
 impl RecordingSource {
+    pub(crate) fn ended(&self) -> bool {
+        matches!(self, Self::PipeWire(stream) if stream.ended())
+    }
+
     pub(crate) fn new(region: Rectangle, cursor: bool) -> Result<Self> {
         if !super::is_wayland_session() {
             // the XWayland root only contains X clients, so this arm must

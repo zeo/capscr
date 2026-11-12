@@ -6,6 +6,7 @@
 // back to the previous frame after a bounded wait and the recorder's dedup
 // fingerprint absorbs the repeats.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -24,6 +25,9 @@ type FrameSlot = Arc<Mutex<Option<(RgbaImage, Instant)>>>;
 
 pub struct PipeWireFrameStream {
     latest: FrameSlot,
+    // set once the node goes away or the stream errors, e.g. the user stopped
+    // sharing from the desktop's own indicator
+    ended: Arc<AtomicBool>,
     stream: StreamInfo,
     stop_tx: Option<pipewire::channel::Sender<()>>,
     worker: Option<std::thread::JoinHandle<()>>,
@@ -41,10 +45,12 @@ impl PipeWireFrameStream {
         let (stop_tx, stop_rx) = pipewire::channel::channel::<()>();
         let (ready_tx, ready_rx) = mpsc::channel::<Result<()>>();
         let slot = latest.clone();
+        let ended = Arc::new(AtomicBool::new(false));
+        let stream_ended = ended.clone();
         let node_id = stream.node_id;
         let worker = std::thread::Builder::new()
             .name("capscr-screencast".into())
-            .spawn(move || run_stream(fd, node_id, slot, stop_rx, ready_tx))?;
+            .spawn(move || run_stream(fd, node_id, slot, stream_ended, stop_rx, ready_tx))?;
         match ready_rx.recv_timeout(FIRST_FRAME_TIMEOUT) {
             Ok(Ok(())) => {}
             Ok(Err(e)) => return Err(e),
@@ -52,6 +58,7 @@ impl PipeWireFrameStream {
         }
         Ok(Self {
             latest,
+            ended,
             stream,
             stop_tx: Some(stop_tx),
             worker: Some(worker),
@@ -69,22 +76,8 @@ impl PipeWireFrameStream {
                 Some(_) => FRESH_FRAME_WAIT,
                 None => FIRST_FRAME_TIMEOUT,
             };
-        let (frame, stamp) = loop {
-            let current = self.latest.lock().unwrap().clone();
-            match current {
-                Some((frame, stamp))
-                    if Some(stamp) != self.last_consumed || Instant::now() >= deadline =>
-                {
-                    break (frame, stamp);
-                }
-                Some(_) => {}
-                None if Instant::now() >= deadline => {
-                    bail!("screencast delivered no frames")
-                }
-                None => {}
-            }
-            std::thread::sleep(Duration::from_millis(5));
-        };
+        let (frame, stamp) =
+            wait_for_frame(&self.latest, &self.ended, self.last_consumed, deadline)?;
         self.last_consumed = Some(stamp);
 
         let (size_w, size_h) = self.stream.size;
@@ -104,6 +97,32 @@ impl PipeWireFrameStream {
             bail!("capture region lies outside the shared monitor");
         }
         Ok(image::imageops::crop_imm(&frame, src_x, src_y, src_w, src_h).to_image())
+    }
+
+    pub fn ended(&self) -> bool {
+        self.ended.load(Ordering::SeqCst)
+    }
+}
+
+// a fresh frame, or the last one again once the deadline passes on a static screen
+fn wait_for_frame(
+    slot: &FrameSlot,
+    ended: &AtomicBool,
+    last_consumed: Option<Instant>,
+    deadline: Instant,
+) -> Result<(RgbaImage, Instant)> {
+    loop {
+        if ended.load(Ordering::SeqCst) {
+            bail!("screencast ended");
+        }
+        match slot.lock().unwrap().as_ref() {
+            Some((frame, stamp)) if Some(*stamp) != last_consumed || Instant::now() >= deadline => {
+                return Ok((frame.clone(), *stamp));
+            }
+            None if Instant::now() >= deadline => bail!("screencast delivered no frames"),
+            _ => {}
+        }
+        std::thread::sleep(Duration::from_millis(5));
     }
 }
 
@@ -373,6 +392,7 @@ fn run_stream(
     fd: std::os::fd::OwnedFd,
     node_id: u32,
     slot: FrameSlot,
+    ended: Arc<AtomicBool>,
     stop_rx: pipewire::channel::Receiver<()>,
     ready_tx: mpsc::Sender<Result<()>>,
 ) {
@@ -381,13 +401,24 @@ fn run_stream(
     use pipewire::spa::param::ParamType;
     use pipewire::spa::pod::{self, serialize::PodSerializer, Pod};
     use pipewire::spa::utils::{Direction, Fraction, Rectangle, SpaTypes};
-    use pipewire::stream::{StreamFlags, StreamRc};
+    use pipewire::stream::{StreamFlags, StreamRc, StreamState};
 
     let setup = || -> Result<(pipewire::main_loop::MainLoopRc, StreamRc, Box<dyn std::any::Any>)> {
         pipewire::init();
         let main_loop = pipewire::main_loop::MainLoopRc::new(None)?;
         let context = pipewire::context::ContextRc::new(&main_loop, None)?;
         let core = context.connect_fd_rc(fd, None)?;
+        let registry = core.get_registry_rc()?;
+        let node_gone = ended.clone();
+        let registry_listener = registry
+            .add_listener_local()
+            .global_remove(move |id| {
+                if id == node_id {
+                    node_gone.store(true, Ordering::SeqCst);
+                }
+            })
+            .register();
+        let stream_failed = ended.clone();
 
         #[derive(Clone, Default)]
         struct StreamData {
@@ -406,6 +437,11 @@ fn run_stream(
 
         let listener = stream
             .add_local_listener_with_user_data(StreamData::default())
+            .state_changed(move |_, _, _, new| {
+                if matches!(new, StreamState::Error(_) | StreamState::Unconnected) {
+                    stream_failed.store(true, Ordering::SeqCst);
+                }
+            })
             .param_changed(|_, data, id, param| {
                 let Some(param) = param else { return };
                 if id != ParamType::Format.as_raw() {
@@ -540,7 +576,12 @@ fn run_stream(
             &mut params,
         )?;
 
-        Ok((main_loop, stream, Box::new(listener)))
+        // listeners drop before the registry they hang off
+        Ok((
+            main_loop,
+            stream,
+            Box::new((listener, registry_listener, registry)),
+        ))
     };
 
     match setup() {
@@ -560,6 +601,51 @@ fn run_stream(
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    fn slot_with_frame() -> (FrameSlot, Instant) {
+        let stamp = Instant::now();
+        let frame = RgbaImage::new(2, 2);
+        (Arc::new(Mutex::new(Some((frame, stamp)))), stamp)
+    }
+
+    #[test]
+    fn an_ended_stream_stops_the_wait_early() {
+        let (slot, stamp) = slot_with_frame();
+        let ended = Arc::new(AtomicBool::new(false));
+        let setter = ended.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(20));
+            setter.store(true, Ordering::SeqCst);
+        });
+        let started = Instant::now();
+        let result = wait_for_frame(
+            &slot,
+            &ended,
+            Some(stamp),
+            started + Duration::from_millis(500),
+        );
+        assert!(result.is_err());
+        assert!(started.elapsed() < Duration::from_millis(100));
+    }
+
+    #[test]
+    fn a_static_screen_gets_the_last_frame_after_the_deadline() {
+        let (slot, stamp) = slot_with_frame();
+        let ended = AtomicBool::new(false);
+        let deadline = Instant::now() + Duration::from_millis(20);
+        let (_, served) = wait_for_frame(&slot, &ended, Some(stamp), deadline).unwrap();
+        assert_eq!(served, stamp);
+    }
+
+    #[test]
+    fn an_empty_slot_past_the_deadline_reports_no_frames() {
+        let slot: FrameSlot = Arc::new(Mutex::new(None));
+        let ended = AtomicBool::new(false);
+        let error = wait_for_frame(&slot, &ended, None, Instant::now()).unwrap_err();
+        assert!(error.to_string().contains("delivered no frames"), "{error}");
+    }
+
     #[test]
     #[ignore = "needs a screencast portal and an approved source picker"]
     fn screencast_delivers_frames() {
