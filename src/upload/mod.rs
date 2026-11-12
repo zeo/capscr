@@ -23,7 +23,6 @@ pub enum UploadService {
     Imgur,
     ImgurWithClientId(String),
     Custom(CustomUploader),
-    Ftp(FtpTarget),
     Sftp(SftpTarget),
     S3(S3Target),
 }
@@ -35,17 +34,6 @@ pub struct S3Target {
     pub endpoint: String,
     pub access_key_id: String,
     pub secret_access_key: String,
-    pub public_url_template: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct FtpTarget {
-    pub host: String,
-    pub port: u16,
-    pub username: String,
-    pub password: String,
-    pub remote_dir: String,
-    pub use_tls: bool,
     pub public_url_template: String,
 }
 
@@ -384,7 +372,6 @@ impl ImageUploader {
                     self.upload_imgur(data, mime, file_name, cid)
                 }
                 UploadService::Custom(config) => self.upload_custom(data, mime, file_name, config),
-                UploadService::Ftp(target) => upload_ftp(data, file_name, target),
                 UploadService::Sftp(target) => upload_sftp(data, file_name, target),
                 UploadService::S3(target) => upload_s3(data, file_name, target),
             };
@@ -778,13 +765,6 @@ pub fn mime_for(ext: &str) -> Option<&'static str> {
     })
 }
 
-pub fn test_connection_ftp(_target: &FtpTarget) -> Result<Vec<TestStep>> {
-    Ok(vec![TestStep::fail(
-        "transport",
-        "plain FTP is disabled; use SFTP".into(),
-    )])
-}
-
 #[cfg(feature = "sftp")]
 fn accept_sftp_host_key(
     path: &std::path::Path,
@@ -1172,10 +1152,6 @@ pub fn test_connection_custom(uploader: &CustomUploader) -> Result<Vec<TestStep>
         ));
     }
     Ok(steps)
-}
-
-pub fn upload_ftp(_data: &[u8], _file_name: &str, _target: &FtpTarget) -> Result<UploadResult> {
-    Err(anyhow!("plain FTP is disabled; use SFTP"))
 }
 
 #[cfg(feature = "sftp")]
@@ -1854,16 +1830,8 @@ mod tests {
     }
 
     #[test]
-    fn ftp_transport_is_disabled() {
-        let target = FtpTarget::default();
-        let err = upload_ftp(b"capture", "capture.png", &target).unwrap_err();
-        assert!(err.to_string().contains("disabled"));
-        assert!(!test_connection_ftp(&target).unwrap()[0].ok);
-    }
-
-    #[test]
-    fn ftp_rejects_loopback() {
-        let err = validate_resolved_host("127.0.0.1", 21).unwrap_err();
+    fn resolved_host_rejects_loopback() {
+        let err = validate_resolved_host("127.0.0.1", 22).unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("Private") || msg.contains("Host not allowed") || msg.contains("private"),
@@ -1872,20 +1840,20 @@ mod tests {
     }
 
     #[test]
-    fn ftp_rejects_rfc1918_literal() {
-        let err = validate_resolved_host("10.0.0.5", 21).unwrap_err();
+    fn resolved_host_rejects_rfc1918_literal() {
+        let err = validate_resolved_host("10.0.0.5", 22).unwrap_err();
         assert!(err.to_string().contains("Private"));
     }
 
     #[test]
-    fn ftp_rejects_aws_metadata() {
-        let err = validate_resolved_host("169.254.169.254", 21).unwrap_err();
+    fn resolved_host_rejects_aws_metadata() {
+        let err = validate_resolved_host("169.254.169.254", 22).unwrap_err();
         assert!(err.to_string().contains("metadata"));
     }
 
     #[test]
-    fn ftp_rejects_localhost_label() {
-        let err = validate_resolved_host("localhost", 21).unwrap_err();
+    fn resolved_host_rejects_localhost_label() {
+        let err = validate_resolved_host("localhost", 22).unwrap_err();
         assert!(err.to_string().contains("not allowed"));
     }
 

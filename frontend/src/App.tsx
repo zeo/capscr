@@ -331,6 +331,9 @@ function Hub() {
         refetchHotkeyDiag();
       }),
     );
+    void api
+      .takeStartupNotices()
+      .then((notices) => notices.forEach((msg) => pushToast("config", msg)));
 
     // background update check — delayed 4s so it doesn't compete with hub
     // first-paint or block the network during the user's first capture.

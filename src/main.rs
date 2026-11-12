@@ -75,7 +75,7 @@ fn main() {
         }))
         .init();
 
-    let config = config::Config::load().unwrap_or_default();
+    let (config, startup_notices) = config::Config::load().unwrap_or_default();
     // ensure the output dir exists off the startup critical path: the capture
     // and save paths create it on demand anyway, so this is only an early
     // warning, and canonicalize on a cold or networked Pictures folder can
@@ -112,6 +112,7 @@ fn main() {
     let mut initial_tasks = config.capture_tasks.clone();
     initial_tasks.extend(state::pause_binding(&config));
     let app_state = state::AppState::new(config);
+    *app_state.startup_notices.lock().unwrap() = startup_notices;
 
     let autostart_desired = app_state.config.lock().unwrap().ui.auto_start;
     let initial_jump = parse_jump_arg(std::env::args());
@@ -328,6 +329,7 @@ fn main() {
             commands::get_autostart,
             commands::list_installed_plugins,
             commands::plugin_load_errors,
+            commands::take_startup_notices,
             commands::open_plugins_folder,
             commands::marketplace_browse,
             commands::marketplace_install,
@@ -538,43 +540,23 @@ fn build_tray_menu<R: tauri::Runtime, M: tauri::Manager<R>>(app: &M) -> tauri::R
             format!("○ {label}")
         }
     };
-    let dest_imgur = MenuItem::with_id(
-        app,
-        "dest_imgur",
-        mark(current_dest == config::UploadDestination::Imgur, "Imgur"),
-        true,
-        None::<&str>,
-    )?;
-    let dest_custom = MenuItem::with_id(
-        app,
-        "dest_custom",
-        mark(
-            current_dest == config::UploadDestination::Custom,
-            "Custom HTTPS",
-        ),
-        true,
-        None::<&str>,
-    )?;
-    let dest_ftp = MenuItem::with_id(
-        app,
-        "dest_ftp",
-        mark(current_dest == config::UploadDestination::Ftp, "FTP"),
-        true,
-        None::<&str>,
-    )?;
-    let dest_sftp = MenuItem::with_id(
-        app,
-        "dest_sftp",
-        mark(current_dest == config::UploadDestination::Sftp, "SFTP"),
-        true,
-        None::<&str>,
-    )?;
-    let dest_submenu = Submenu::with_items(
-        app,
-        "Upload destination",
-        true,
-        &[&dest_imgur, &dest_custom, &dest_ftp, &dest_sftp],
-    )?;
+    let dest_items = config::UploadDestination::all()
+        .iter()
+        .map(|d| {
+            MenuItem::with_id(
+                app,
+                d.menu_id(),
+                mark(current_dest == *d, d.display_name()),
+                true,
+                None::<&str>,
+            )
+        })
+        .collect::<tauri::Result<Vec<_>>>()?;
+    let dest_refs: Vec<&dyn tauri::menu::IsMenuItem<R>> = dest_items
+        .iter()
+        .map(|m| m as &dyn tauri::menu::IsMenuItem<R>)
+        .collect();
+    let dest_submenu = Submenu::with_items(app, "Upload destination", true, &dest_refs)?;
 
     // --- Open hub (single top-level item, no submenu) ---
     let open_hub = MenuItem::with_id(app, "tab_default", "Open hub", true, None::<&str>)?;
@@ -758,14 +740,11 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
                 "tab_default" => {
                     let _ = commands::open_hub_window(app);
                 }
-                "dest_imgur" | "dest_custom" | "dest_ftp" | "dest_sftp" => {
-                    let st = app.state::<state::AppState>();
-                    let new_dest = match id {
-                        "dest_imgur" => config::UploadDestination::Imgur,
-                        "dest_custom" => config::UploadDestination::Custom,
-                        "dest_ftp" => config::UploadDestination::Ftp,
-                        _ => config::UploadDestination::Sftp,
+                dest if dest.starts_with("dest_") => {
+                    let Some(new_dest) = config::UploadDestination::from_menu_id(dest) else {
+                        return;
                     };
+                    let st = app.state::<state::AppState>();
                     let saved = {
                         let mut stored = st.config.lock().unwrap();
                         if stored.upload.destination == new_dest {

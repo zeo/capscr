@@ -90,6 +90,8 @@ pub struct AppState {
     // last url a healthy webview was observed on; the about:blank watchdogs
     // navigate stuck webviews here when no live hub exists to copy from
     pub canonical_webview_url: Mutex<Option<url::Url>>,
+    // one-time messages from config load, drained by the hub once it can toast
+    pub startup_notices: Mutex<Vec<String>>,
 }
 
 // a session's dropped-path set won't grow past a real user's drags, but cap it
@@ -140,6 +142,7 @@ impl AppState {
             last_region: Mutex::new(None),
             dropped_paths: Mutex::new(HashSet::new()),
             canonical_webview_url: Mutex::new(None),
+            startup_notices: Mutex::new(Vec::new()),
         }
     }
 

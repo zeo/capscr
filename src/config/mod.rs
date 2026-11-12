@@ -141,7 +141,6 @@ impl TaskPostAction {
 pub enum TaskUploadTarget {
     Imgur,
     Custom,
-    Ftp,
     Sftp,
     S3,
 }
@@ -634,7 +633,6 @@ pub enum UploadDestination {
     #[default]
     Imgur,
     Custom,
-    Ftp,
     Sftp,
     S3,
 }
@@ -653,10 +651,17 @@ impl UploadDestination {
         match self {
             UploadDestination::Imgur => "Imgur",
             UploadDestination::Custom => "Custom HTTP",
-            UploadDestination::Ftp => "FTP",
             UploadDestination::Sftp => "SFTP",
             UploadDestination::S3 => "S3 Compatible",
         }
+    }
+
+    pub fn menu_id(&self) -> String {
+        format!("dest_{self:?}").to_lowercase()
+    }
+
+    pub fn from_menu_id(id: &str) -> Option<Self> {
+        Self::all().iter().copied().find(|d| d.menu_id() == id)
     }
 }
 
@@ -679,8 +684,6 @@ pub struct UploadConfig {
     pub custom_response_path: String,
     #[serde(default = "default_imgur_client_id")]
     pub imgur_client_id: String,
-    #[serde(default)]
-    pub ftp: FtpUploadConfig,
     #[serde(default)]
     pub sftp: SftpUploadConfig,
     #[serde(default)]
@@ -724,61 +727,10 @@ impl Default for UploadConfig {
             custom_form_name: String::from("file"),
             custom_response_path: String::from("url"),
             imgur_client_id: default_imgur_client_id(),
-            ftp: FtpUploadConfig::default(),
             sftp: SftpUploadConfig::default(),
             s3: S3UploadConfig::default(),
         }
     }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct FtpUploadConfig {
-    #[serde(default)]
-    pub host: String,
-    #[serde(default = "default_ftp_port")]
-    pub port: u16,
-    #[serde(default)]
-    pub username: String,
-    /// plaintext password (legacy field). Kept for backward compatibility
-    /// only — Config::load migrates any non-empty value into the encrypted
-    /// vault on next save. New configs leave this empty.
-    #[serde(default)]
-    pub password: String,
-    /// DPAPI-wrapped password (hex-encoded). Bound to the current user
-    /// account — copying config.toml to another machine or user account
-    /// makes this unrecoverable.
-    #[serde(default)]
-    pub password_encrypted: String,
-    #[serde(default)]
-    pub remote_dir: String,
-    #[serde(default)]
-    pub use_tls: bool,
-    #[serde(default)]
-    pub public_url_template: String,
-}
-
-impl FtpUploadConfig {
-    /// returns a pending plaintext replacement first, then the stored password
-    pub fn password_plaintext(&self) -> String {
-        if !self.password.is_empty() {
-            return self.password.clone();
-        }
-        if !self.password_encrypted.is_empty() {
-            match crate::secret::decrypt(&self.password_encrypted) {
-                Ok(p) => return p,
-                Err(e) => {
-                    tracing::warn!(
-                        "FTP password decrypt failed (corrupt blob or wrong user?): {e}"
-                    );
-                }
-            }
-        }
-        String::new()
-    }
-}
-
-fn default_ftp_port() -> u16 {
-    21
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -789,8 +741,8 @@ pub struct SftpUploadConfig {
     pub port: u16,
     #[serde(default)]
     pub username: String,
-    /// plaintext password (legacy slot). present for parity with FtpUploadConfig
-    /// so users restoring a hand-edited config don't have to retype credentials;
+    /// plaintext password (legacy slot), kept so users restoring a hand-edited
+    /// config don't have to retype credentials;
     /// migrate_secrets moves any value here into password_encrypted on next save
     #[serde(default)]
     pub password: String,
@@ -1317,61 +1269,75 @@ impl Config {
         Self::config_dir().map(|p| p.join("config.toml"))
     }
 
-    pub fn load() -> Result<Self> {
+    pub fn load() -> Result<(Self, Vec<String>)> {
+        let mut notices = Vec::new();
         if let Some(path) = Self::config_path() {
             if path.exists() {
-                let content = fs::read_to_string(&path)?;
+                let original = fs::read_to_string(&path)?;
+                let mut content = original.clone();
+                let mut legacy_ftp = None;
+                if let Ok(mut value) = toml::from_str::<toml::Value>(&original) {
+                    if let Some(found) = migrate_legacy_ftp(&mut value) {
+                        if let Ok(text) = toml::to_string(&value) {
+                            content = text;
+                            legacy_ftp = Some(found);
+                        }
+                    }
+                }
                 match toml::from_str::<Config>(&content) {
                     Ok(mut config) => {
                         config.sanitize();
                         if let Err(e) = config.validate() {
                             // keep the validated-default fallback but preserve the
-                            // user's file by renaming it — they get a clean state
-                            // without losing the data they hand-edited.
-                            Self::backup_corrupt_config(&path, &content);
+                            // user's file by renaming it, so they get a clean state
+                            // without losing the data they hand-edited
+                            Self::backup_corrupt_config(&path, &original);
                             tracing::warn!(
                                 "config at {path:?} failed validation: {e}. \
                                  falling back to defaults; original saved to .bak"
                             );
-                            return Ok(Config::default());
+                            return Ok((Config::default(), notices));
                         }
-                        // first-launch-after-upgrade migration: if the legacy
-                        // plaintext FTP password is set but the encrypted slot
-                        // is empty, wrap it now and persist. The user never
-                        // sees their cleartext password on disk again.
-                        let needs_secret_migration = config.has_plaintext_secrets();
+                        // first-launch-after-upgrade migration: a legacy plaintext
+                        // password with an empty encrypted slot is wrapped now and
+                        // persisted, so cleartext never stays on disk
+                        let needs_save = legacy_ftp.is_some() || config.has_plaintext_secrets();
                         #[cfg(target_os = "linux")]
-                        let needs_secret_migration = needs_secret_migration
+                        let needs_save = needs_save
                             || [
-                                &config.upload.ftp.password_encrypted,
                                 &config.upload.sftp.password_encrypted,
                                 &config.upload.sftp.private_key_passphrase_encrypted,
                                 &config.upload.s3.secret_access_key_encrypted,
                             ]
                             .iter()
                             .any(|blob| !blob.is_empty() && !blob.starts_with("keyring:"));
-                        if needs_secret_migration {
+                        if needs_save {
                             if let Err(e) = config.save_and_migrate_secrets() {
                                 tracing::warn!(
-                                    "secret migration save failed: {e}; \
-                                     plaintext password stays on disk for now"
+                                    "config migration save failed: {e}; \
+                                     the old file stays on disk for now"
                                 );
+                            } else if let Some(legacy) = &legacy_ftp {
+                                let mut retired = crate::secret::SecretTransaction::default();
+                                retired.retire(&legacy.secret);
+                                retired.commit();
                             }
                         }
-                        return Ok(config);
+                        notices.extend(legacy_ftp.and_then(|legacy| legacy.notice));
+                        return Ok((config, notices));
                     }
                     Err(e) => {
-                        Self::backup_corrupt_config(&path, &content);
+                        Self::backup_corrupt_config(&path, &original);
                         tracing::warn!(
                             "config at {path:?} failed to parse: {e}. \
                              falling back to defaults; original saved to .bak"
                         );
-                        return Ok(Config::default());
+                        return Ok((Config::default(), notices));
                     }
                 }
             }
         }
-        Ok(Config::default())
+        Ok((Config::default(), notices))
     }
 
     fn backup_corrupt_config(path: &Path, content: &str) {
@@ -1415,8 +1381,7 @@ impl Config {
     }
 
     fn has_plaintext_secrets(&self) -> bool {
-        !self.upload.ftp.password.is_empty()
-            || !self.upload.sftp.password.is_empty()
+        !self.upload.sftp.password.is_empty()
             || !self.upload.sftp.private_key_passphrase.is_empty()
             || !self.upload.s3.secret_access_key.is_empty()
     }
@@ -1428,7 +1393,6 @@ impl Config {
         let mut transaction = crate::secret::SecretTransaction::default();
         #[cfg(target_os = "linux")]
         for blob in [
-            &mut self.upload.ftp.password_encrypted,
             &mut self.upload.sftp.password_encrypted,
             &mut self.upload.sftp.private_key_passphrase_encrypted,
             &mut self.upload.s3.secret_access_key_encrypted,
@@ -1442,12 +1406,6 @@ impl Config {
             }
         }
 
-        migrate_secret(
-            &mut self.upload.ftp.password,
-            &mut self.upload.ftp.password_encrypted,
-            "FTP password",
-            &mut transaction,
-        )?;
         migrate_secret(
             &mut self.upload.sftp.password,
             &mut self.upload.sftp.password_encrypted,
@@ -1523,6 +1481,85 @@ impl Config {
     pub fn output_path(&self) -> PathBuf {
         self.output.directory.join(self.generate_filename())
     }
+}
+
+#[derive(Debug, PartialEq)]
+struct LegacyFtp {
+    notice: Option<String>,
+    secret: String,
+}
+
+// plain ftp upload was removed in 0.6.0: anything still pointing at it moves to
+// sftp, and the old [upload.ftp] table and its stored password are dropped
+fn migrate_legacy_ftp(value: &mut toml::Value) -> Option<LegacyFtp> {
+    let mut moved = false;
+    let tasks = value
+        .get_mut("capture_tasks")
+        .and_then(toml::Value::as_array_mut);
+    for task in tasks.into_iter().flatten() {
+        if let Some(target) = task.get_mut("target_destination") {
+            if target.as_str() == Some("ftp") {
+                *target = "sftp".into();
+                moved = true;
+            }
+        }
+    }
+    let mut ftp = None;
+    if let Some(upload) = value.get_mut("upload").and_then(toml::Value::as_table_mut) {
+        if let Some(destination) = upload.get_mut("destination") {
+            if destination.as_str() == Some("Ftp") {
+                *destination = "Sftp".into();
+                moved = true;
+            }
+        }
+        ftp = upload.remove("ftp");
+        let host = ftp
+            .as_ref()
+            .and_then(|ftp| ftp.get("host"))
+            .and_then(toml::Value::as_str)
+            .unwrap_or_default();
+        if moved && !host.is_empty() {
+            let sftp = upload
+                .entry("sftp")
+                .or_insert_with(|| toml::Table::new().into());
+            if let Some(sftp) = sftp.as_table_mut() {
+                if sftp
+                    .get("host")
+                    .and_then(toml::Value::as_str)
+                    .unwrap_or_default()
+                    .is_empty()
+                {
+                    sftp.insert("host".into(), host.into());
+                }
+            }
+        }
+    }
+    if !moved && ftp.is_none() {
+        return None;
+    }
+    let field = |key: &str| {
+        ftp.as_ref()
+            .and_then(|ftp| ftp.get(key))
+            .and_then(toml::Value::as_str)
+            .unwrap_or_default()
+            .to_string()
+    };
+    let host = field("host");
+    let notice = moved.then(|| {
+        let at = if host.is_empty() {
+            String::new()
+        } else {
+            format!(" (host {host})")
+        };
+        format!(
+            "ftp upload was removed, so uploads that used ftp now go to sftp{at}. \
+             check the sftp settings in destinations before the next upload"
+        )
+    });
+    Some(LegacyFtp {
+        notice,
+        secret: field("password_encrypted"),
+    })
 }
 
 fn template_is_valid(template: &str) -> bool {
@@ -1714,8 +1751,6 @@ mod tests {
     #[test]
     fn pending_plaintext_replacements_are_authoritative() {
         let mut config = Config::default();
-        config.upload.ftp.password = "new ftp".into();
-        config.upload.ftp.password_encrypted = "stale".into();
         config.upload.sftp.password = "new sftp".into();
         config.upload.sftp.password_encrypted = "stale".into();
         config.upload.sftp.private_key_passphrase = "new passphrase".into();
@@ -1724,7 +1759,6 @@ mod tests {
         config.upload.s3.secret_access_key_encrypted = "stale".into();
 
         assert!(config.has_plaintext_secrets());
-        assert_eq!(config.upload.ftp.password_plaintext(), "new ftp");
         assert_eq!(config.upload.sftp.password_plaintext(), "new sftp");
         assert_eq!(
             config.upload.sftp.private_key_passphrase_plaintext(),
@@ -1738,8 +1772,6 @@ mod tests {
     fn migration_replaces_every_stored_secret_and_clears_plaintext() {
         let old = crate::secret::encrypt("old").expect("encrypt old secret");
         let mut config = Config::default();
-        config.upload.ftp.password = "new ftp".into();
-        config.upload.ftp.password_encrypted = old.clone();
         config.upload.sftp.password = "new sftp".into();
         config.upload.sftp.password_encrypted = old.clone();
         config.upload.sftp.private_key_passphrase = "new passphrase".into();
@@ -1751,7 +1783,6 @@ mod tests {
         transaction.commit();
 
         assert!(!config.has_plaintext_secrets());
-        assert_eq!(config.upload.ftp.password_plaintext(), "new ftp");
         assert_eq!(config.upload.sftp.password_plaintext(), "new sftp");
         assert_eq!(
             config.upload.sftp.private_key_passphrase_plaintext(),
@@ -1764,19 +1795,95 @@ mod tests {
     fn rejected_save_does_not_replace_stored_credentials() {
         let mut config = Config::default();
         config.output.quality = MAX_QUALITY + 1;
-        config.upload.ftp.password = "pending replacement".into();
-        config.upload.ftp.password_encrypted = "keyring:stored".into();
+        config.upload.sftp.password = "pending replacement".into();
+        config.upload.sftp.password_encrypted = "keyring:stored".into();
 
         let error = config
             .save_and_migrate_secrets()
             .expect_err("invalid config must be rejected");
 
         assert!(error.to_string().contains("quality"));
-        assert_eq!(config.upload.ftp.password, "pending replacement");
+        assert_eq!(config.upload.sftp.password, "pending replacement");
         assert_eq!(
-            config.upload.ftp.password_encrypted, "keyring:stored",
+            config.upload.sftp.password_encrypted, "keyring:stored",
             "validation must run before credential storage"
         );
+    }
+
+    fn migrated(text: &str) -> (Option<LegacyFtp>, toml::Value) {
+        let mut value: toml::Value = toml::from_str(text).unwrap();
+        (migrate_legacy_ftp(&mut value), value)
+    }
+
+    #[test]
+    fn legacy_ftp_destination_moves_to_sftp_with_its_host() {
+        let (legacy, value) = migrated(
+            "[upload]\ndestination = \"Ftp\"\n[upload.ftp]\nhost = \"files.example.com\"\n\
+             password_encrypted = \"keyring:old\"\n",
+        );
+        let legacy = legacy.unwrap();
+        assert!(legacy.notice.unwrap().contains("files.example.com"));
+        assert_eq!(legacy.secret, "keyring:old");
+        assert!(value["upload"].get("ftp").is_none());
+        let config: Config = toml::from_str(&toml::to_string(&value).unwrap()).unwrap();
+        assert_eq!(config.upload.destination, UploadDestination::Sftp);
+        assert_eq!(config.upload.sftp.host, "files.example.com");
+    }
+
+    #[test]
+    fn legacy_ftp_keeps_an_existing_sftp_host() {
+        let (legacy, value) = migrated(
+            "[upload]\ndestination = \"Ftp\"\n[upload.ftp]\nhost = \"old.example.com\"\n\
+             [upload.sftp]\nhost = \"kept.example.com\"\n",
+        );
+        assert!(legacy.unwrap().notice.is_some());
+        assert_eq!(
+            value["upload"]["sftp"]["host"].as_str(),
+            Some("kept.example.com")
+        );
+    }
+
+    #[test]
+    fn legacy_ftp_task_target_moves_to_sftp() {
+        let (legacy, value) =
+            migrated("[[capture_tasks]]\nid = \"t\"\ntarget_destination = \"ftp\"\n");
+        assert!(legacy.unwrap().notice.is_some());
+        assert_eq!(
+            value["capture_tasks"][0]["target_destination"].as_str(),
+            Some("sftp")
+        );
+    }
+
+    #[test]
+    fn unused_ftp_table_is_dropped_without_a_notice() {
+        let (legacy, value) = migrated(
+            "[upload]\ndestination = \"Imgur\"\n[upload.ftp]\npassword_encrypted = \"keyring:old\"\n",
+        );
+        assert_eq!(
+            legacy,
+            Some(LegacyFtp {
+                notice: None,
+                secret: "keyring:old".into()
+            })
+        );
+        assert!(value["upload"].get("ftp").is_none());
+    }
+
+    #[test]
+    fn config_without_ftp_is_left_alone() {
+        assert_eq!(migrated("[upload]\ndestination = \"Sftp\"\n").0, None);
+        assert_eq!(migrated("").0, None);
+    }
+
+    #[test]
+    fn destination_menu_ids_round_trip() {
+        for destination in UploadDestination::all() {
+            assert_eq!(
+                UploadDestination::from_menu_id(&destination.menu_id()),
+                Some(*destination)
+            );
+        }
+        assert_eq!(UploadDestination::from_menu_id("dest_ftp"), None);
     }
 
     #[test]

@@ -51,7 +51,7 @@ export interface GifOptions {
   engine: "Builtin" | "Ffmpeg";
 }
 
-export interface FtpConfig {
+export interface SftpConfig {
   host: string;
   port: number;
   username: string;
@@ -59,20 +59,6 @@ export interface FtpConfig {
    *  moves this into password_encrypted via the platform secret store
    *  (DPAPI on windows, Secret Service on linux) and clears it from disk.
    *  An empty string here means "keep the current vault" */
-  password: string;
-  /** secret-store blob. read-only from the frontend's perspective —
-   *  set by the backend on save, used as a "vault populated" sentinel */
-  password_encrypted: string;
-  remote_dir: string;
-  use_tls: boolean;
-  public_url_template: string;
-}
-
-export interface SftpConfig {
-  host: string;
-  port: number;
-  username: string;
-  /** plaintext password — same vault treatment as FtpConfig.password */
   password: string;
   /** secret-store blob */
   password_encrypted: string;
@@ -98,13 +84,12 @@ export interface S3Config {
 }
 
 export interface UploadConfig {
-  destination: "Imgur" | "Custom" | "Ftp" | "Sftp" | "S3";
+  destination: "Imgur" | "Custom" | "Sftp" | "S3";
   copy_url_to_clipboard: boolean;
   custom_url: string;
   custom_form_name: string;
   custom_response_path: string;
   imgur_client_id: string;
-  ftp: FtpConfig;
   sftp: SftpConfig;
   s3: S3Config;
 }
@@ -136,7 +121,7 @@ export interface CaptureTask {
     | "prompt"
     | "do-nothing"
     | "copy-text";
-  target_destination?: "imgur" | "custom" | "ftp" | "sftp" | "s3" | null;
+  target_destination?: "imgur" | "custom" | "sftp" | "s3" | null;
   // per-task pre-capture delay in ms; null falls back to the global delay
   delay_ms?: number | null;
 }
@@ -290,6 +275,7 @@ export const api = {
 
   listInstalledPlugins: () => invoke<InstalledPlugin[]>("list_installed_plugins"),
   pluginLoadErrors: () => invoke<string[]>("plugin_load_errors"),
+  takeStartupNotices: () => invoke<string[]>("take_startup_notices"),
   openPluginsFolder: () => invoke<void>("open_plugins_folder"),
   setAutostart: (enabled: boolean) => invoke<void>("set_autostart", { enabled }),
   getAutostart: () => invoke<boolean>("get_autostart"),
@@ -324,7 +310,7 @@ export const api = {
   sftpForgetHost: (hostPort: string) =>
     invoke<boolean>("sftp_forget_host", { hostPort }),
   testUploadConnection: (
-    destination: "Ftp" | "Sftp" | "Imgur" | "Custom" | "S3",
+    destination: "Sftp" | "Imgur" | "Custom" | "S3",
     config: AppConfig,
   ) => invoke<ConnectionTestReport>("test_upload_connection", { destination, config }),
   fireTask: (taskId: string) => invoke<void>("fire_task", { taskId }),

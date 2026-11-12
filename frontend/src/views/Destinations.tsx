@@ -16,10 +16,10 @@ export function Destinations() {
   const [status, setStatus] = createSignal<{ tone: string; msg: string } | null>(
     null,
   );
-  const [testing, setTesting] = createSignal<"Ftp" | "Sftp" | "Imgur" | "Custom" | "S3" | null>(null);
+  const [testing, setTesting] = createSignal<"Sftp" | "Imgur" | "Custom" | "S3" | null>(null);
   const [report, setReport] = createSignal<ConnectionTestReport | null>(null);
 
-  const test = async (destination: "Ftp" | "Sftp" | "Imgur" | "Custom" | "S3") => {
+  const test = async (destination: "Sftp" | "Imgur" | "Custom" | "S3") => {
     const c = config();
     if (!c) return;
     setTesting(destination);
@@ -162,159 +162,6 @@ export function Destinations() {
 
             <Show when={report()}>
               <ConnectionTestPanel report={report()!} />
-            </Show>
-
-            <Show when={c().upload.destination === "Ftp"}>
-              <Section title="ftp">
-                <div class="field">
-                  <label class="field-label">host</label>
-                  <div class="field-control">
-                    <input
-                      type="text"
-                      placeholder="ftp.example.com"
-                      value={c().upload.ftp.host}
-                      onInput={(e) =>
-                        patch({
-                          ...c().upload,
-                          ftp: { ...c().upload.ftp, host: e.currentTarget.value },
-                        })
-                      }
-                    />
-                  </div>
-                </div>
-                <div class="field">
-                  <label class="field-label">port</label>
-                  <div class="field-control">
-                    <input
-                      type="number"
-                      min={1}
-                      max={65535}
-                      value={c().upload.ftp.port}
-                      onInput={(e) => {
-                        const v = parseInt(e.currentTarget.value);
-                        if (!isNaN(v) && v >= 1 && v <= 65535) {
-                          patch({
-                            ...c().upload,
-                            ftp: { ...c().upload.ftp, port: v },
-                          });
-                        }
-                      }}
-                      onChange={(e) =>
-                        patch({
-                          ...c().upload,
-                          ftp: {
-                            ...c().upload.ftp,
-                            port: commitNumber(e.currentTarget, { min: 1, max: 65535, fallback: c().upload.ftp.port, int: true }),
-                          },
-                        })
-                      }
-                    />
-                    <span class="field-hint">21 plain, 990 implicit tls</span>
-                  </div>
-                </div>
-                <div class="field">
-                  <label class="field-label">username</label>
-                  <div class="field-control">
-                    <input
-                      type="text"
-                      placeholder="anonymous"
-                      value={c().upload.ftp.username}
-                      onInput={(e) =>
-                        patch({
-                          ...c().upload,
-                          ftp: { ...c().upload.ftp, username: e.currentTarget.value },
-                        })
-                      }
-                    />
-                  </div>
-                </div>
-                <div class="field">
-                  <label class="field-label">password</label>
-                  <div class="field-control">
-                    <input
-                      type="password"
-                      placeholder={
-                        c().upload.ftp.password_encrypted
-                          ? "(stored — leave blank to keep current)"
-                          : ""
-                      }
-                      value={c().upload.ftp.password}
-                      onInput={(e) =>
-                        patch({
-                          ...c().upload,
-                          ftp: { ...c().upload.ftp, password: e.currentTarget.value },
-                        })
-                      }
-                    />
-                    <span class="field-hint">
-                      {c().upload.ftp.password_encrypted
-                        ? `encrypted at rest with ${VAULT} (per-user)`
-                        : `encrypted at rest with ${VAULT} on save`}
-                    </span>
-                  </div>
-                </div>
-                <div class="field">
-                  <label class="field-label">remote dir</label>
-                  <div class="field-control">
-                    <input
-                      type="text"
-                      placeholder="/uploads"
-                      value={c().upload.ftp.remote_dir}
-                      onInput={(e) =>
-                        patch({
-                          ...c().upload,
-                          ftp: { ...c().upload.ftp, remote_dir: e.currentTarget.value },
-                        })
-                      }
-                    />
-                  </div>
-                </div>
-                <div class="field">
-                  <label class="field-label">tls</label>
-                  <div class="field-control">
-                    <span class="field-hint">plain FTP is disabled; choose SFTP</span>
-                  </div>
-                </div>
-                <div class="field">
-                  <label class="field-label">public url template</label>
-                  <div class="field-control">
-                    <input
-                      type="text"
-                      placeholder="https://cdn.example.com/{filename}"
-                      value={c().upload.ftp.public_url_template}
-                      onInput={(e) =>
-                        patch({
-                          ...c().upload,
-                          ftp: {
-                            ...c().upload.ftp,
-                            public_url_template: e.currentTarget.value,
-                          },
-                        })
-                      }
-                    />
-                    <span class="field-hint">
-                      {`{filename} → basename, empty = no url returned`}
-                    </span>
-                  </div>
-                </div>
-                <div class="field">
-                  <label class="field-label">test</label>
-                  <div class="field-control">
-                    <button
-                      class="btn"
-                      data-variant="ghost"
-                      disabled
-                      onClick={() => test("Ftp")}
-                    >
-                      <Zap size={12} stroke-width={1.5} />
-                      disabled
-                    </button>
-                    <span class="field-hint">
-                      connects, logs in, cwd's to remote dir. doesn't upload.
-                    </span>
-                  </div>
-                </div>
-              </Section>
             </Show>
 
             <Show when={c().upload.destination === "Sftp"}>

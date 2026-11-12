@@ -10,7 +10,7 @@ use crate::plugin::{CaptureType, PluginEvent, PluginResponse};
 use crate::recording::{GifRecorder, RecordingSettings, RecordingState, StopReason};
 use crate::sound::Sound;
 use crate::state::{AppState, HotkeyStatus, UploadRecord};
-use crate::upload::{CustomUploader, FtpTarget, UploadService};
+use crate::upload::{CustomUploader, UploadService};
 use image::RgbaImage;
 use serde::{Deserialize, Serialize};
 use std::any::Any;
@@ -80,13 +80,6 @@ pub fn get_default_config() -> Config {
     Config::default()
 }
 
-fn ftp_identity_matches(requested: &Config, saved: &Config) -> bool {
-    requested.upload.ftp.host == saved.upload.ftp.host
-        && requested.upload.ftp.port == saved.upload.ftp.port
-        && requested.upload.ftp.username == saved.upload.ftp.username
-        && requested.upload.ftp.use_tls == saved.upload.ftp.use_tls
-}
-
 fn sftp_identity_matches(requested: &Config, saved: &Config) -> bool {
     requested.upload.sftp.host == saved.upload.sftp.host
         && requested.upload.sftp.port == saved.upload.sftp.port
@@ -106,7 +99,6 @@ fn bind_backend_secret_references(
     stored: &Config,
 ) -> crate::secret::SecretTransaction {
     let mut retired = crate::secret::SecretTransaction::default();
-    config.upload.ftp.password_encrypted.clear();
     config.upload.sftp.password_encrypted.clear();
     config
         .upload
@@ -115,11 +107,6 @@ fn bind_backend_secret_references(
         .clear();
     config.upload.s3.secret_access_key_encrypted.clear();
 
-    if ftp_identity_matches(config, stored) {
-        config.upload.ftp.password_encrypted = stored.upload.ftp.password_encrypted.clone();
-    } else {
-        retired.retire(&stored.upload.ftp.password_encrypted);
-    }
     if sftp_identity_matches(config, stored) {
         config.upload.sftp.password_encrypted = stored.upload.sftp.password_encrypted.clone();
         config.upload.sftp.private_key_passphrase_encrypted = stored
@@ -1012,18 +999,6 @@ fn build_s3_service(config: &Config) -> UploadService {
     })
 }
 
-fn build_ftp_service(config: &Config) -> UploadService {
-    UploadService::Ftp(FtpTarget {
-        host: config.upload.ftp.host.clone(),
-        port: config.upload.ftp.port,
-        username: config.upload.ftp.username.clone(),
-        password: config.upload.ftp.password_plaintext(),
-        remote_dir: config.upload.ftp.remote_dir.clone(),
-        use_tls: config.upload.ftp.use_tls,
-        public_url_template: config.upload.ftp.public_url_template.clone(),
-    })
-}
-
 fn build_sftp_service(config: &Config) -> UploadService {
     UploadService::Sftp(crate::upload::SftpTarget {
         host: config.upload.sftp.host.clone(),
@@ -1066,7 +1041,6 @@ fn build_upload_service_for_target(
                 file_form_name: config.upload.custom_form_name.clone(),
                 response_url_path: config.upload.custom_response_path.clone(),
             }),
-            UploadDestination::Ftp => build_ftp_service(config),
             UploadDestination::Sftp => build_sftp_service(config),
             UploadDestination::S3 => build_s3_service(config),
         },
@@ -1077,7 +1051,6 @@ fn build_upload_service_for_target(
             file_form_name: config.upload.custom_form_name.clone(),
             response_url_path: config.upload.custom_response_path.clone(),
         }),
-        Some(TaskUploadTarget::Ftp) => build_ftp_service(config),
         Some(TaskUploadTarget::Sftp) => build_sftp_service(config),
         Some(TaskUploadTarget::S3) => build_s3_service(config),
     }
@@ -4508,6 +4481,11 @@ pub fn plugin_load_errors(state: State<AppState>) -> Vec<String> {
 }
 
 #[tauri::command]
+pub fn take_startup_notices(state: State<AppState>) -> Vec<String> {
+    std::mem::take(&mut *state.startup_notices.lock().unwrap())
+}
+
+#[tauri::command]
 pub fn open_plugins_folder(app: AppHandle) -> Result<(), String> {
     let dir = plugins_dir()?;
     let _pending_mutation =
@@ -4958,7 +4936,6 @@ fn connection_test_config(
     mut requested: Config,
     saved: &Config,
 ) -> Result<Config, String> {
-    requested.upload.ftp.password_encrypted.clear();
     requested.upload.sftp.password_encrypted.clear();
     requested
         .upload
@@ -4968,20 +4945,6 @@ fn connection_test_config(
     requested.upload.s3.secret_access_key_encrypted.clear();
 
     match destination {
-        "Ftp" | "ftp" => {
-            let same_identity = ftp_identity_matches(&requested, saved);
-            if requested.upload.ftp.password.is_empty() && same_identity {
-                requested.upload.ftp.password_encrypted =
-                    saved.upload.ftp.password_encrypted.clone();
-            }
-            if requested.upload.ftp.password.is_empty()
-                && requested.upload.ftp.password_encrypted.is_empty()
-            {
-                return Err(
-                    "enter the FTP password before testing a different connection".to_string(),
-                );
-            }
-        }
         "Sftp" | "sftp" => {
             let same_identity = sftp_identity_matches(&requested, saved);
             if same_identity {
@@ -5056,7 +5019,6 @@ pub async fn test_upload_connection(
         connection_test_config(&destination, config, &saved)?
     };
     cfg.upload.destination = match destination.as_str() {
-        "Ftp" | "ftp" => UploadDestination::Ftp,
         "Sftp" | "sftp" => UploadDestination::Sftp,
         "Imgur" | "imgur" => UploadDestination::Imgur,
         "Custom" | "custom" => UploadDestination::Custom,
@@ -5072,7 +5034,6 @@ pub async fn test_upload_connection(
     let steps = tauri::async_runtime::spawn_blocking(move || {
         let _pending_sftp_trust = pending_sftp_trust;
         match &service {
-            UploadService::Ftp(target) => crate::upload::test_connection_ftp(target),
             UploadService::Sftp(target) => crate::upload::test_connection_sftp(target),
             UploadService::Imgur | UploadService::ImgurWithClientId(_) => {
                 crate::upload::test_connection_imgur(&cfg.upload.imgur_client_id)
@@ -5132,12 +5093,6 @@ mod connection_test_config_tests {
 
     fn saved_config() -> Config {
         let mut config = Config::default();
-        config.upload.ftp.host = "ftp.example.com".into();
-        config.upload.ftp.port = 990;
-        config.upload.ftp.username = "ftp-user".into();
-        config.upload.ftp.use_tls = true;
-        config.upload.ftp.password_encrypted = "keyring:saved-ftp".into();
-
         config.upload.sftp.host = "sftp.example.com".into();
         config.upload.sftp.port = 2222;
         config.upload.sftp.username = "sftp-user".into();
@@ -5157,18 +5112,9 @@ mod connection_test_config_tests {
     fn probes_take_references_from_backend_state_for_saved_identities() {
         let saved = saved_config();
         let mut requested = saved.clone();
-        requested.upload.ftp.password_encrypted = "keyring:client-ftp".into();
         requested.upload.sftp.password_encrypted = "keyring:client-sftp".into();
         requested.upload.sftp.private_key_passphrase_encrypted = "keyring:client-key".into();
         requested.upload.s3.secret_access_key_encrypted = "keyring:client-s3".into();
-
-        let ftp = connection_test_config("Ftp", requested.clone(), &saved).unwrap();
-        assert_eq!(
-            ftp.upload.ftp.password_encrypted,
-            "keyring:saved-ftp"
-        );
-        assert!(ftp.upload.sftp.password_encrypted.is_empty());
-        assert!(ftp.upload.s3.secret_access_key_encrypted.is_empty());
 
         let sftp = connection_test_config("Sftp", requested.clone(), &saved).unwrap();
         assert_eq!(
@@ -5179,6 +5125,7 @@ mod connection_test_config_tests {
             sftp.upload.sftp.private_key_passphrase_encrypted,
             "keyring:saved-key"
         );
+        assert!(sftp.upload.s3.secret_access_key_encrypted.is_empty());
 
         let s3 = connection_test_config("S3", requested, &saved).unwrap();
         assert_eq!(
@@ -5191,17 +5138,12 @@ mod connection_test_config_tests {
     fn settings_restore_backend_references_for_saved_identities() {
         let saved = saved_config();
         let mut requested = saved.clone();
-        requested.upload.ftp.password_encrypted = "keyring:client-ftp".into();
         requested.upload.sftp.password_encrypted = "keyring:client-sftp".into();
         requested.upload.sftp.private_key_passphrase_encrypted = "keyring:client-key".into();
         requested.upload.s3.secret_access_key_encrypted = "keyring:client-s3".into();
 
         let _retired = bind_backend_secret_references(&mut requested, &saved);
 
-        assert_eq!(
-            requested.upload.ftp.password_encrypted,
-            "keyring:saved-ftp"
-        );
         assert_eq!(
             requested.upload.sftp.password_encrypted,
             "keyring:saved-sftp"
@@ -5223,17 +5165,14 @@ mod connection_test_config_tests {
     fn settings_do_not_rebind_secrets_after_identity_changes() {
         let saved = saved_config();
         let mut requested = saved.clone();
-        requested.upload.ftp.host = "other-ftp.example.com".into();
         requested.upload.sftp.username = "other-sftp-user".into();
         requested.upload.s3.access_key_id = "other-access-key".into();
-        requested.upload.ftp.password_encrypted = "keyring:client-ftp".into();
         requested.upload.sftp.password_encrypted = "keyring:client-sftp".into();
         requested.upload.sftp.private_key_passphrase_encrypted = "keyring:client-key".into();
         requested.upload.s3.secret_access_key_encrypted = "keyring:client-s3".into();
 
         let _retired = bind_backend_secret_references(&mut requested, &saved);
 
-        assert!(requested.upload.ftp.password_encrypted.is_empty());
         assert!(requested.upload.sftp.password_encrypted.is_empty());
         assert!(
             requested
@@ -5248,14 +5187,6 @@ mod connection_test_config_tests {
     #[test]
     fn probes_reject_stored_references_for_changed_identities() {
         let saved = saved_config();
-
-        let mut ftp = saved.clone();
-        ftp.upload.ftp.username = "other-user".into();
-        ftp.upload.ftp.password_encrypted = "keyring:saved-ftp".into();
-        assert!(connection_test_config("Ftp", ftp.clone(), &saved).is_err());
-        ftp.upload.ftp.password = "fresh password".into();
-        let ftp = connection_test_config("Ftp", ftp, &saved).unwrap();
-        assert!(ftp.upload.ftp.password_encrypted.is_empty());
 
         let mut sftp = saved.clone();
         sftp.upload.sftp.private_key_path = "C:\\keys\\other".into();
