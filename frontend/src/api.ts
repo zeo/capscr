@@ -275,6 +275,8 @@ export const api = {
 
   listInstalledPlugins: () => invoke<InstalledPlugin[]>("list_installed_plugins"),
   pluginLoadErrors: () => invoke<string[]>("plugin_load_errors"),
+  pickOutputDir: () => invoke<AppConfig | null>("pick_output_dir"),
+  setOutputDir: (path: string) => invoke<AppConfig | null>("set_output_dir", { path }),
   takeStartupNotices: () => invoke<string[]>("take_startup_notices"),
   openPluginsFolder: () => invoke<void>("open_plugins_folder"),
   setAutostart: (enabled: boolean) => invoke<void>("set_autostart", { enabled }),

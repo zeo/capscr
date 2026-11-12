@@ -1,6 +1,5 @@
 import { createResource, createSignal, For, Match, onCleanup, Show, Switch } from "solid-js";
 import { listen } from "@tauri-apps/api/event";
-import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { HotkeyInput } from "../components/HotkeyInput";
 import { Section } from "../components/Section";
 import {
@@ -201,15 +200,19 @@ const ENCODER_LABELS: Record<VideoEncoder, string> = {
 
 function GeneralPane(props: { c: AppConfig; patch: Patch }) {
   const c = () => props.c;
-  const pickDirectory = async () => {
-    const picked = await openDialog({
-      directory: true,
-      multiple: false,
-      defaultPath: c().output.directory,
-      title: "Pick output directory",
-    });
-    if (typeof picked === "string" && picked.length > 0) {
-      props.patch("output", { ...c().output, directory: picked });
+  const [dirError, setDirError] = createSignal<string | null>(null);
+  // the folder is saved by the backend on its own, so only the directory field
+  // of the draft moves and other unsaved edits stay dirty
+  const changeDirectory = async (request: Promise<AppConfig | null>) => {
+    setDirError(null);
+    try {
+      const saved = await request;
+      const cur = config();
+      if (saved && cur) {
+        mutateConfig({ ...cur, output: { ...cur.output, directory: saved.output.directory } });
+      }
+    } catch (error) {
+      setDirError(String(error));
     }
   };
   return (
@@ -239,23 +242,25 @@ function GeneralPane(props: { c: AppConfig; patch: Patch }) {
             <input
               type="text"
               value={c().output.directory}
-              onInput={(e) =>
-                props.patch("output", { ...c().output, directory: e.currentTarget.value })
-              }
+              onChange={async (e) => {
+                const input = e.currentTarget;
+                await changeDirectory(api.setOutputDir(input.value));
+                input.value = c().output.directory;
+              }}
             />
             <button
               type="button"
               class="btn"
               data-variant="ghost"
               data-size="xs"
-              onClick={pickDirectory}
+              onClick={() => changeDirectory(api.pickOutputDir())}
               title="browse for folder"
             >
               <FolderOpen size={11} stroke-width={1.5} />
               browse
             </button>
           </div>
-          <span class="field-hint">absolute path or %env% template</span>
+          <span class="field-hint">{dirError() ?? "captures save here; a new folder asks for confirmation"}</span>
         </div>
       </div>
       <div class="field">

@@ -154,9 +154,7 @@ pub fn set_config(
         config.hotkeys.disabled_globally = state
             .hotkeys_disabled
             .load(std::sync::atomic::Ordering::SeqCst);
-        // window growth is recorded by the backend after the hub loaded its copy,
-        // so a stale settings draft must not undo it and regrow resized windows
-        config.ui.grown_windows = stored.ui.grown_windows.clone();
+        pin_backend_owned(&mut config, &stored);
         config.validate().map_err(|e| e.to_string())?;
         let _pending_mutation =
             PendingFileMutation::begin(&app).map_err(|error| error.to_string())?;
@@ -202,27 +200,123 @@ pub fn set_config(
         config.capture_tasks.clone()
     };
     state.send_hotkey_reload(tasks_to_register);
-    let output_dir = config.output.directory.clone();
-    if let Err(e) = app
-        .asset_protocol_scope()
-        .allow_directory(&output_dir, true)
-    {
-        tracing::warn!("asset scope allow_directory({:?}) failed: {e}", output_dir);
-    }
-    if let Ok(dir_can) = std::fs::canonicalize(&output_dir) {
-        let _ = app.asset_protocol_scope().allow_directory(&dir_can, true);
-    }
-    if let Some(h_dir) = history_dir() {
-        if let Err(e) = app.asset_protocol_scope().allow_directory(&h_dir, true) {
-            tracing::warn!("asset scope allow_directory({:?}) failed: {e}", h_dir);
-        }
-        if let Ok(h_can) = std::fs::canonicalize(&h_dir) {
-            let _ = app.asset_protocol_scope().allow_directory(&h_can, true);
-        }
-    }
+    allow_capture_dirs(&app, &config.output.directory);
     crate::rebuild_tray_menu(&app);
     let _ = app.emit("capscr://config-updated", ());
     Ok(config)
+}
+
+fn pin_backend_owned(config: &mut Config, stored: &Config) {
+    // window growth is recorded by the backend after the hub loaded its copy,
+    // so a stale settings draft must not undo it and regrow resized windows
+    config.ui.grown_windows = stored.ui.grown_windows.clone();
+    // the output folder gates delete, upload and open, so it only changes
+    // through pick_output_dir or a confirmed set_output_dir
+    config.output.directory = stored.output.directory.clone();
+}
+
+fn allow_capture_dirs(app: &AppHandle, output_dir: &std::path::Path) {
+    let scope = app.asset_protocol_scope();
+    for dir in [Some(output_dir.to_path_buf()), history_dir()].into_iter().flatten() {
+        if let Err(e) = scope.allow_directory(&dir, true) {
+            tracing::warn!("asset scope allow_directory({dir:?}) failed: {e}");
+        }
+        if let Ok(canonical) = std::fs::canonicalize(&dir) {
+            let _ = scope.allow_directory(&canonical, true);
+        }
+    }
+}
+
+fn apply_output_dir(app: &AppHandle, directory: PathBuf) -> Result<Config, String> {
+    let state = app.state::<AppState>();
+    let saved = {
+        let mut stored = state.config.lock().unwrap();
+        let mut config = stored.clone();
+        config.output.directory = directory;
+        config.validate().map_err(|e| e.to_string())?;
+        config.ensure_output_dir().map_err(|e| e.to_string())?;
+        let _pending_mutation =
+            PendingFileMutation::begin(app).map_err(|error| error.to_string())?;
+        config
+            .save_and_migrate_secrets()
+            .map_err(|e| e.to_string())?;
+        *stored = config.clone();
+        config
+    };
+    allow_capture_dirs(app, &saved.output.directory);
+    crate::rebuild_tray_menu(app);
+    let _ = app.emit("capscr://config-updated", ());
+    Ok(saved)
+}
+
+#[tauri::command]
+pub async fn pick_output_dir(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+) -> Result<Option<Config>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        use tauri_plugin_dialog::DialogExt;
+        let current = app.state::<AppState>().config.lock().unwrap().output.directory.clone();
+        // the user's own pick in the native picker is the consent
+        let Some(picked) = app
+            .dialog()
+            .file()
+            .set_title("Pick output directory")
+            .set_directory(&current)
+            .set_parent(&window)
+            .blocking_pick_folder()
+        else {
+            return Ok(None);
+        };
+        let directory = picked.into_path().map_err(|e| e.to_string())?;
+        apply_output_dir(&app, directory).map(Some)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn set_output_dir(
+    path: String,
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+) -> Result<Option<Config>, String> {
+    let directory = PathBuf::from(path.trim());
+    if !directory.is_absolute() {
+        return Err("the capture folder must be an absolute path".into());
+    }
+    let current = app.state::<AppState>().config.lock().unwrap().output.directory.clone();
+    let same = directory == current
+        || matches!(
+            (std::fs::canonicalize(&directory), std::fs::canonicalize(&current)),
+            (Ok(a), Ok(b)) if a == b
+        );
+    if same {
+        return Ok(None);
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+        let confirmed = app
+            .dialog()
+            .message(format!(
+                "capscr will save, list, upload and delete captures in {}.",
+                directory.display()
+            ))
+            .title("change capture folder")
+            .kind(MessageDialogKind::Warning)
+            .buttons(MessageDialogButtons::OkCancelCustom(
+                "use this folder".into(),
+                "keep current".into(),
+            ))
+            .parent(&window)
+            .blocking_show();
+        if !confirmed {
+            return Ok(None);
+        }
+        apply_output_dir(&app, directory).map(Some)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -1605,19 +1699,53 @@ pub fn list_captures(state: State<AppState>) -> Result<Vec<HistoryEntry>, String
 }
 
 fn is_path_allowed(canonical: &std::path::Path, config: &Config) -> bool {
-    if let Ok(dir_canonical) = std::fs::canonicalize(&config.output.directory) {
-        if canonical.starts_with(&dir_canonical) {
-            return true;
-        }
+    let roots: Vec<PathBuf> = std::iter::once(config.output.directory.clone())
+        .chain(history_dir())
+        .collect();
+    is_path_within(canonical, &roots)
+}
+
+fn is_path_within(canonical: &std::path::Path, roots: &[PathBuf]) -> bool {
+    roots.iter().any(|root| {
+        std::fs::canonicalize(root).is_ok_and(|root| canonical.starts_with(root))
+    })
+}
+
+#[cfg(test)]
+mod path_guard_tests {
+    use super::*;
+
+    #[test]
+    fn is_path_within_only_accepts_existing_roots() {
+        let base = tempfile::tempdir().unwrap();
+        let out = base.path().join("out");
+        let sibling = base.path().join("out2");
+        std::fs::create_dir_all(&out).unwrap();
+        std::fs::create_dir_all(&sibling).unwrap();
+        let inside = std::fs::canonicalize(&out).unwrap().join("shot.png");
+        let beside = std::fs::canonicalize(&sibling).unwrap().join("shot.png");
+
+        assert!(is_path_within(&inside, std::slice::from_ref(&out)));
+        assert!(!is_path_within(&beside, std::slice::from_ref(&out)));
+        assert!(!is_path_within(&inside, &[base.path().join("missing")]));
+        assert!(!is_path_within(&inside, &[]));
     }
-    if let Some(h_dir) = history_dir() {
-        if let Ok(h_canonical) = std::fs::canonicalize(&h_dir) {
-            if canonical.starts_with(&h_canonical) {
-                return true;
-            }
-        }
+
+    #[test]
+    fn set_config_keeps_backend_owned_fields() {
+        let mut stored = Config::default();
+        stored.output.directory = PathBuf::from("/stored/captures");
+        stored.ui.grown_windows = vec!["hub".into()];
+        let mut draft = Config::default();
+        draft.output.directory = PathBuf::from("/somewhere/else");
+        draft.output.quality = 42;
+
+        pin_backend_owned(&mut draft, &stored);
+
+        assert_eq!(draft.output.directory, stored.output.directory);
+        assert_eq!(draft.ui.grown_windows, stored.ui.grown_windows);
+        assert_eq!(draft.output.quality, 42);
     }
-    false
 }
 
 #[tauri::command]

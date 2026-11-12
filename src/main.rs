@@ -314,6 +314,8 @@ fn main() {
             commands::get_default_config,
             commands::is_hdr_capture,
             commands::set_config,
+            commands::pick_output_dir,
+            commands::set_output_dir,
             commands::set_capture_tasks,
             commands::take_screenshot,
             commands::list_captures,
