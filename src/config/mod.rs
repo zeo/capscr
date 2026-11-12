@@ -1270,85 +1270,97 @@ impl Config {
     }
 
     pub fn load() -> Result<(Self, Vec<String>)> {
-        let mut notices = Vec::new();
-        if let Some(path) = Self::config_path() {
-            if path.exists() {
-                let original = fs::read_to_string(&path)?;
-                let mut content = original.clone();
-                let mut legacy_ftp = None;
-                if let Ok(mut value) = toml::from_str::<toml::Value>(&original) {
-                    if let Some(found) = migrate_legacy_ftp(&mut value) {
-                        if let Ok(text) = toml::to_string(&value) {
-                            content = text;
-                            legacy_ftp = Some(found);
-                        }
-                    }
-                }
-                match toml::from_str::<Config>(&content) {
-                    Ok(mut config) => {
-                        config.sanitize();
-                        if let Err(e) = config.validate() {
-                            // keep the validated-default fallback but preserve the
-                            // user's file by renaming it, so they get a clean state
-                            // without losing the data they hand-edited
-                            Self::backup_corrupt_config(&path, &original);
-                            tracing::warn!(
-                                "config at {path:?} failed validation: {e}. \
-                                 falling back to defaults; original saved to .bak"
-                            );
-                            return Ok((Config::default(), notices));
-                        }
-                        // first-launch-after-upgrade migration: a legacy plaintext
-                        // password with an empty encrypted slot is wrapped now and
-                        // persisted, so cleartext never stays on disk
-                        let needs_save = legacy_ftp.is_some() || config.has_plaintext_secrets();
-                        #[cfg(target_os = "linux")]
-                        let needs_save = needs_save
-                            || [
-                                &config.upload.sftp.password_encrypted,
-                                &config.upload.sftp.private_key_passphrase_encrypted,
-                                &config.upload.s3.secret_access_key_encrypted,
-                            ]
-                            .iter()
-                            .any(|blob| !blob.is_empty() && !blob.starts_with("keyring:"));
-                        if needs_save {
-                            if let Err(e) = config.save_and_migrate_secrets() {
-                                tracing::warn!(
-                                    "config migration save failed: {e}; \
-                                     the old file stays on disk for now"
-                                );
-                            } else if let Some(legacy) = &legacy_ftp {
-                                let mut retired = crate::secret::SecretTransaction::default();
-                                retired.retire(&legacy.secret);
-                                retired.commit();
-                            }
-                        }
-                        notices.extend(legacy_ftp.and_then(|legacy| legacy.notice));
-                        return Ok((config, notices));
-                    }
-                    Err(e) => {
-                        Self::backup_corrupt_config(&path, &original);
-                        tracing::warn!(
-                            "config at {path:?} failed to parse: {e}. \
-                             falling back to defaults; original saved to .bak"
-                        );
-                        return Ok((Config::default(), notices));
-                    }
+        match Self::config_path() {
+            Some(path) => Self::load_from(&path),
+            None => Ok((Config::default(), Vec::new())),
+        }
+    }
+
+    fn load_from(path: &Path) -> Result<(Self, Vec<String>)> {
+        if !path.exists() {
+            return Ok((Config::default(), Vec::new()));
+        }
+        let original = fs::read_to_string(path)?;
+        let mut content = original.clone();
+        let mut legacy_ftp = None;
+        if let Ok(mut value) = toml::from_str::<toml::Value>(&original) {
+            if let Some(found) = migrate_legacy_ftp(&mut value) {
+                if let Ok(text) = toml::to_string(&value) {
+                    content = text;
+                    legacy_ftp = Some(found);
                 }
             }
         }
-        Ok((Config::default(), notices))
+        let loaded = toml::from_str::<Config>(&content)
+            .map_err(anyhow::Error::from)
+            .and_then(|mut config| {
+                config.sanitize();
+                config.validate().map(|()| config)
+            });
+        let mut config = match loaded {
+            Ok(config) => config,
+            Err(e) => {
+                // defaults keep the app usable; the user's file is copied aside
+                // first so the next settings save can't destroy what they wrote
+                tracing::warn!(
+                    "config at {path:?} couldn't be loaded: {e:#}; falling back to defaults"
+                );
+                let reason = e.to_string();
+                let reason = reason.lines().next().unwrap_or_default().trim();
+                let notice = match Self::backup_corrupt_config(path, &original) {
+                    Some(backup) => format!(
+                        "config.toml couldn't be loaded ({reason}); defaults are in use \
+                         and your old file is saved as {}",
+                        backup.file_name().unwrap_or_default().to_string_lossy()
+                    ),
+                    None => format!(
+                        "config.toml couldn't be loaded ({reason}) or backed up; defaults \
+                         are in use, so copy config.toml somewhere safe before saving settings"
+                    ),
+                };
+                return Ok((Config::default(), vec![notice]));
+            }
+        };
+        // first-launch-after-upgrade migration: a legacy plaintext password with
+        // an empty encrypted slot is wrapped now and persisted, so cleartext
+        // never stays on disk
+        let needs_save = legacy_ftp.is_some() || config.has_plaintext_secrets();
+        #[cfg(target_os = "linux")]
+        let needs_save = needs_save
+            || [
+                &config.upload.sftp.password_encrypted,
+                &config.upload.sftp.private_key_passphrase_encrypted,
+                &config.upload.s3.secret_access_key_encrypted,
+            ]
+            .iter()
+            .any(|blob| !blob.is_empty() && !blob.starts_with("keyring:"));
+        if needs_save {
+            if let Err(e) = config.save_and_migrate_secrets() {
+                tracing::warn!(
+                    "config migration save failed: {e}; the old file stays on disk for now"
+                );
+            } else if let Some(legacy) = &legacy_ftp {
+                let mut retired = crate::secret::SecretTransaction::default();
+                retired.retire(&legacy.secret);
+                retired.commit();
+            }
+        }
+        let notices = legacy_ftp
+            .and_then(|legacy| legacy.notice)
+            .into_iter()
+            .collect();
+        Ok((config, notices))
     }
 
-    fn backup_corrupt_config(path: &Path, content: &str) {
-        let mut backup = path.to_path_buf();
+    fn backup_corrupt_config(path: &Path, content: &str) -> Option<PathBuf> {
         let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
-        let new_name = format!("config.bad.{stamp}.toml");
-        backup.set_file_name(new_name);
-        // write-then-replace: never delete the user's broken config until
-        // the backup has been written successfully.
-        if let Err(e) = fs::write(&backup, content) {
-            tracing::error!("could not back up corrupt config to {backup:?}: {e}");
+        let backup = path.with_file_name(format!("config.bad.{stamp}.toml"));
+        match fs::write(&backup, content) {
+            Ok(()) => Some(backup),
+            Err(e) => {
+                tracing::error!("could not back up corrupt config to {backup:?}: {e}");
+                None
+            }
         }
     }
 
@@ -1813,6 +1825,71 @@ mod tests {
     fn migrated(text: &str) -> (Option<LegacyFtp>, toml::Value) {
         let mut value: toml::Value = toml::from_str(text).unwrap();
         (migrate_legacy_ftp(&mut value), value)
+    }
+
+    fn backups_in(dir: &Path) -> Vec<PathBuf> {
+        fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with("config.bad."))
+            })
+            .collect()
+    }
+
+    fn assert_reset_with_backup(text: &str) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        fs::write(&path, text).unwrap();
+
+        let (config, notices) = Config::load_from(&path).unwrap();
+
+        assert_eq!(config.output.quality, Config::default().output.quality);
+        let backups = backups_in(dir.path());
+        assert_eq!(backups.len(), 1);
+        assert_eq!(fs::read_to_string(&backups[0]).unwrap(), text);
+        assert_eq!(notices.len(), 1);
+        let name = backups[0]
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        assert!(notices[0].contains(&name), "{}", notices[0]);
+    }
+
+    #[test]
+    fn valid_config_loads_without_notices() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let mut saved = Config::default();
+        saved.output.quality = 77;
+        fs::write(&path, toml::to_string_pretty(&saved).unwrap()).unwrap();
+
+        let (config, notices) = Config::load_from(&path).unwrap();
+
+        assert_eq!(config.output.quality, 77);
+        assert!(notices.is_empty());
+        assert!(backups_in(dir.path()).is_empty());
+    }
+
+    #[test]
+    fn garbled_config_falls_back_and_names_the_backup() {
+        assert_reset_with_backup("this is = [not toml\n");
+    }
+
+    #[test]
+    fn mistyped_config_falls_back_and_names_the_backup() {
+        assert_reset_with_backup("[output]\nquality = \"high\"\n");
+    }
+
+    #[test]
+    fn missing_config_loads_defaults_without_notices() {
+        let dir = tempfile::tempdir().unwrap();
+        let (config, notices) = Config::load_from(&dir.path().join("config.toml")).unwrap();
+        assert_eq!(config.output.quality, Config::default().output.quality);
+        assert!(notices.is_empty());
     }
 
     #[test]
