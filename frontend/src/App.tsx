@@ -303,7 +303,11 @@ function Hub() {
             if (cur) {
               mutateConfig({
                 ...cur,
-                upload: { ...cur.upload, destination: fresh.upload.destination },
+                upload: {
+                  ...cur.upload,
+                  destination: fresh.upload.destination,
+                  plugin: fresh.upload.plugin,
+                },
                 hotkeys: {
                   ...cur.hotkeys,
                   disabled_globally: fresh.hotkeys.disabled_globally,
@@ -975,7 +979,10 @@ function Hub() {
             <div class="drop-overlay-glyph">+</div>
             <div class="drop-overlay-title">drop to upload</div>
             <div class="drop-overlay-lede">
-              destination: {config()?.upload.destination ?? "..."}
+              destination:{" "}
+              {config()?.upload.destination === "Plugin"
+                ? config()?.upload.plugin
+                : (config()?.upload.destination ?? "...")}
             </div>
           </div>
         </div>

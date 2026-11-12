@@ -188,7 +188,19 @@ fn main() {
                 let handle = app.handle().clone();
                 std::thread::spawn(move || {
                     handle.state::<state::AppState>().load_plugins();
+                    rebuild_tray_menu(&handle);
                 });
+            }
+            {
+                let handle = app.handle().clone();
+                upload::set_plugin_upload(Box::new(move |id, data, mime, file_name| {
+                    handle
+                        .state::<state::AppState>()
+                        .plugin_manager
+                        .read()
+                        .unwrap()
+                        .upload(id, data, mime, file_name)
+                }));
             }
             build_tray(app)?;
             // on a tray-less desktop (vanilla gnome has no StatusNotifier
@@ -329,6 +341,7 @@ fn main() {
             commands::list_installed_plugins,
             commands::plugin_load_errors,
             commands::reload_plugins,
+            commands::list_upload_plugins,
             commands::plugin_settings,
             commands::set_plugin_settings,
             commands::take_startup_notices,
@@ -534,7 +547,10 @@ fn build_tray_menu<R: tauri::Runtime, M: tauri::Manager<R>>(app: &M) -> tauri::R
     )?;
 
     // --- Destination switcher ---
-    let current_dest = state.config.lock().unwrap().upload.destination;
+    let (current_dest, current_plugin) = {
+        let config = state.config.lock().unwrap();
+        (config.upload.destination, config.upload.plugin.clone())
+    };
     let mark = |is_current: bool, label: &str| -> String {
         if is_current {
             format!("● {label}")
@@ -542,7 +558,7 @@ fn build_tray_menu<R: tauri::Runtime, M: tauri::Manager<R>>(app: &M) -> tauri::R
             format!("○ {label}")
         }
     };
-    let dest_items = config::UploadDestination::all()
+    let mut dest_items = config::UploadDestination::all()
         .iter()
         .map(|d| {
             MenuItem::with_id(
@@ -554,6 +570,17 @@ fn build_tray_menu<R: tauri::Runtime, M: tauri::Manager<R>>(app: &M) -> tauri::R
             )
         })
         .collect::<tauri::Result<Vec<_>>>()?;
+    for plugin in state.plugin_manager.read().unwrap().upload_destinations() {
+        let current =
+            current_dest == config::UploadDestination::Plugin && current_plugin == plugin.id;
+        dest_items.push(MenuItem::with_id(
+            app,
+            format!("{}{}", config::PLUGIN_MENU_PREFIX, plugin.id),
+            mark(current, &plugin.name),
+            true,
+            None::<&str>,
+        )?);
+    }
     let dest_refs: Vec<&dyn tauri::menu::IsMenuItem<R>> = dest_items
         .iter()
         .map(|m| m as &dyn tauri::menu::IsMenuItem<R>)
@@ -743,13 +770,19 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
                     let _ = commands::open_hub_window(app);
                 }
                 dest if dest.starts_with("dest_") => {
-                    let Some(new_dest) = config::UploadDestination::from_menu_id(dest) else {
+                    let new_plugin = dest.strip_prefix(config::PLUGIN_MENU_PREFIX);
+                    let Some(new_dest) = new_plugin
+                        .map(|_| config::UploadDestination::Plugin)
+                        .or_else(|| config::UploadDestination::from_menu_id(dest))
+                    else {
                         return;
                     };
                     let st = app.state::<state::AppState>();
                     let saved = {
                         let mut stored = st.config.lock().unwrap();
-                        if stored.upload.destination == new_dest {
+                        if stored.upload.destination == new_dest
+                            && new_plugin.is_none_or(|id| stored.upload.plugin == id)
+                        {
                             Ok(false)
                         } else {
                             let _pending_mutation =
@@ -764,6 +797,9 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
                                 };
                             let mut config = stored.clone();
                             config.upload.destination = new_dest;
+                            if let Some(id) = new_plugin {
+                                config.upload.plugin = id.to_string();
+                            }
                             match config.save_and_migrate_secrets() {
                                 Ok(()) => {
                                     *stored = config;
@@ -786,7 +822,7 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
                     let _ = app.emit("capscr://config-updated", ());
                     let _ = crate::clipboard::show_notification(
                         "Upload destination",
-                        &format!("Switched to {:?}", new_dest),
+                        &format!("Switched to {}", new_plugin.unwrap_or(new_dest.display_name())),
                     );
                 }
                 "hotkeys_toggle" => {

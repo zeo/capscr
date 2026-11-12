@@ -1,8 +1,8 @@
-import { createSignal, For, Show } from "solid-js";
+import { createResource, createSignal, For, Show } from "solid-js";
 import { Save, FolderOpen, Zap } from "lucide-solid";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { Section } from "../components/Section";
-import { api, AppConfig, ConnectionTestReport } from "../api";
+import { api, AppConfig, ConnectionTestReport, UploadConfig } from "../api";
 import { configDirty, setConfigDirty } from "../dirty";
 import { applySavedConfig, config, mutateConfig } from "../store";
 import { commitNumber } from "../num";
@@ -12,12 +12,22 @@ import { IS_LINUX } from "../keys";
 // the freedesktop secret service (login keyring) on linux
 const VAULT = IS_LINUX ? "the system keyring" : "Windows DPAPI";
 
+const PLUGIN_PREFIX = "plugin:";
+
+const targetValue = (upload: UploadConfig) =>
+  upload.destination === "Plugin" ? PLUGIN_PREFIX + upload.plugin : upload.destination;
+
 export function Destinations() {
   const [status, setStatus] = createSignal<{ tone: string; msg: string } | null>(
     null,
   );
   const [testing, setTesting] = createSignal<"Sftp" | "Imgur" | "Custom" | "S3" | null>(null);
   const [report, setReport] = createSignal<ConnectionTestReport | null>(null);
+  const [uploadPlugins] = createResource(api.listUploadPlugins);
+
+  const missingPlugin = (upload: UploadConfig) =>
+    upload.destination === "Plugin" &&
+    !(uploadPlugins() ?? []).some((plugin) => plugin.id === upload.plugin);
 
   const test = async (destination: "Sftp" | "Imgur" | "Custom" | "S3") => {
     const c = config();
@@ -82,19 +92,45 @@ export function Destinations() {
                 <label class="field-label">target</label>
                 <div class="field-control">
                   <select
-                    value={c().upload.destination}
-                    onChange={(e) =>
+                    value={targetValue(c().upload)}
+                    onChange={(e) => {
+                      const value = e.currentTarget.value;
+                      const plugin = value.startsWith(PLUGIN_PREFIX)
+                        ? value.slice(PLUGIN_PREFIX.length)
+                        : null;
                       patch({
                         ...c().upload,
-                        destination: e.currentTarget.value as never,
-                      })
-                    }
+                        destination: plugin === null ? (value as never) : "Plugin",
+                        plugin: plugin ?? c().upload.plugin,
+                      });
+                    }}
                   >
                     <option value="Imgur">imgur (anonymous)</option>
                     <option value="Custom">custom http</option>
                     <option value="Sftp">sftp (ssh)</option>
                     <option value="S3">S3 Compatible</option>
+                    <For each={uploadPlugins() ?? []}>
+                      {(plugin) => (
+                        <option
+                          value={PLUGIN_PREFIX + plugin.id}
+                          selected={targetValue(c().upload) === PLUGIN_PREFIX + plugin.id}
+                        >
+                          {plugin.name} (plugin)
+                        </option>
+                      )}
+                    </For>
+                    <Show when={missingPlugin(c().upload)}>
+                      <option value={PLUGIN_PREFIX + c().upload.plugin} selected>
+                        {c().upload.plugin || "no plugin"} (not loaded)
+                      </option>
+                    </Show>
                   </select>
+                  <Show when={c().upload.destination === "Plugin"}>
+                    <span class="field-hint">
+                      the plugin sends the file itself. its settings live on the
+                      plugins tab.
+                    </span>
+                  </Show>
                 </div>
               </div>
               <Show when={c().upload.destination === "Imgur"}>

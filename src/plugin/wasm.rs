@@ -27,6 +27,7 @@ use wasmtime::{AsContextMut, Caller, Engine, Instance, Linker, Memory, Module, S
 
 pub struct WasmPlugin {
     pub id: String,
+    pub name: String,
     store: Mutex<Store<HostState>>,
     instance: Instance,
     memory: Memory,
@@ -38,6 +39,10 @@ pub struct WasmPlugin {
     /// takes the binary image blob and returns an i64 response (0=continue,
     /// <0=cancel, >0=ptr/len of a replacement image) rather than `(ptr,len)->()`
     capture_hook: Option<TypedFunc<(i32, i32), i64>>,
+    /// the upload hook: (ptr,len) of a file blob in, packed (ptr,len) of a json reply out
+    upload_hook: Option<TypedFunc<(i32, i32), i64>>,
+    /// upload:destination, which lets the upload hook take uploads
+    upload_destination: bool,
     /// granted image capabilities, mirrored here so dispatch can gate without
     /// locking the store: read = receive pixels, modify = honour cancel/replace
     image_read: bool,
@@ -65,6 +70,8 @@ struct HostState {
     /// instant after which fetch is refused for the current hook call. set by
     /// call_hook before each invocation; None outside a hook (fetch denied)
     fetch_deadline: Option<std::time::Instant>,
+    /// true while the upload hook runs, so fetch_post may carry the whole file
+    uploading: bool,
     /// flat key→string config read from <plugin_dir>/config.toml at load time,
     /// surfaced to the plugin via the config_get host import. the sandbox has no
     /// filesystem, so this is how a plugin gets user-authored settings (webhook
@@ -142,6 +149,15 @@ const FETCH_MAX_BYTES: usize = 1 << 20;
 const MAX_CAPTURE_BLOB_BYTES: usize = 256 * 1024 * 1024;
 /// max width/height for a plugin-returned replacement image
 const MAX_CAPTURE_DIM: u32 = 16384;
+/// fetch_post limits inside the upload hook, sized for the file plus a multipart
+/// envelope and matching the built-in uploaders' timeout
+const UPLOAD_BODY_MAX_BYTES: usize = crate::upload::MAX_UPLOAD_SIZE + (1 << 20);
+const UPLOAD_FETCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+const UPLOAD_HOOK_BUDGET: std::time::Duration = std::time::Duration::from_secs(120);
+// copying the file into a request body is per-byte guest work, far past the
+// notify hooks' fuel; the epoch deadline still bounds the wall clock
+const UPLOAD_HOOK_FUEL: u64 = 2_000_000_000;
+const MAX_UPLOAD_REPLY_BYTES: usize = 64 * 1024;
 const DEFAULT_PLUGIN_MEMORY_BYTES: usize = 64 * 1024 * 1024;
 const MAX_PLUGIN_MEMORY_BYTES: usize = 256 * 1024 * 1024;
 // host imports burn no fuel, so the epoch deadline is the only bound on a hook
@@ -225,6 +241,7 @@ impl WasmHost {
                 caps: Capabilities::from_manifest(&manifest.capabilities),
                 deadline_ticks,
                 fetch_deadline: None,
+                uploading: false,
                 config,
                 mem_limiter: MemLimiter { cap: memory_cap },
             },
@@ -429,7 +446,15 @@ impl WasmHost {
                         Some(b) => b,
                         None => return 0,
                     };
-                    if req_body.len() > FETCH_MAX_BYTES {
+                    let (body_cap, call_timeout) = if caller.data().uploading {
+                        (UPLOAD_BODY_MAX_BYTES, UPLOAD_FETCH_TIMEOUT)
+                    } else {
+                        (
+                            FETCH_MAX_BYTES,
+                            std::time::Duration::from_secs(FETCH_TIMEOUT_SECS),
+                        )
+                    };
+                    if req_body.len() > body_cap {
                         tracing::warn!(plugin = %caller.data().plugin_id, "fetch_post body too large");
                         return 0;
                     }
@@ -445,8 +470,7 @@ impl WasmHost {
                         );
                         return 0;
                     }
-                    let timeout =
-                        remaining.min(std::time::Duration::from_secs(FETCH_TIMEOUT_SECS));
+                    let timeout = remaining.min(call_timeout);
                     let resp = match host_request(
                         HttpMethod::Post,
                         &url,
@@ -510,7 +534,19 @@ impl WasmHost {
 
         let mut hooks = std::collections::HashMap::new();
         let mut capture_hook = None;
+        let mut upload_hook = None;
         for (hook_name, export_name) in &manifest.hooks {
+            if hook_name == "upload" {
+                match instance.get_typed_func::<(i32, i32), i64>(&mut store, export_name) {
+                    Ok(f) => upload_hook = Some(f),
+                    Err(e) => tracing::warn!(
+                        "plugin '{}' upload export '{}' missing or not (i32,i32)->i64: {e}",
+                        manifest.plugin.id,
+                        export_name
+                    ),
+                }
+                continue;
+            }
             // on_capture has a richer ABI: (ptr,len)->i64, binary image blob in,
             // response out. resolve it separately from the (ptr,len)->() notifies
             if hook_name == "on_capture" {
@@ -542,21 +578,27 @@ impl WasmHost {
         let image_read = store.data().caps.image_read;
         let image_modify = store.data().caps.image_modify;
 
+        let upload_grant = |grant: &str| {
+            manifest
+                .capabilities
+                .get("upload")
+                .is_some_and(|grants| grants.iter().any(|granted| granted == grant))
+        };
         Ok(WasmPlugin {
             id: manifest.plugin.id.clone(),
+            name: manifest.plugin.name.clone(),
             store: Mutex::new(store),
             instance,
             memory,
             alloc,
             hooks,
             capture_hook,
+            upload_hook,
+            upload_destination: upload_grant("destination"),
             image_read,
             image_modify,
             payload: manifest.plugin.payload,
-            upload_delete_url: manifest
-                .capabilities
-                .get("upload")
-                .is_some_and(|grants| grants.iter().any(|grant| grant == "delete_url")),
+            upload_delete_url: upload_grant("delete_url"),
         })
     }
 }
@@ -686,6 +728,98 @@ impl WasmPlugin {
             }
         }
     }
+}
+
+impl WasmPlugin {
+    pub fn is_upload_destination(&self) -> bool {
+        self.upload_hook.is_some() && self.upload_destination
+    }
+
+    /// hand a file to the upload hook and read back its json reply
+    pub fn call_upload_hook(
+        &self,
+        file_name: &str,
+        mime: &str,
+        data: &[u8],
+    ) -> Result<crate::upload::UploadResult> {
+        let hook = self
+            .upload_hook
+            .as_ref()
+            .filter(|_| self.upload_destination)
+            .ok_or_else(|| anyhow!("plugin '{}' is not an upload destination", self.id))?;
+        let alloc = self
+            .alloc
+            .as_ref()
+            .ok_or_else(|| anyhow!("plugin '{}' has no capscr_alloc export", self.id))?;
+        let blob = upload_blob(file_name, mime, data);
+        let len =
+            i32::try_from(blob.len()).map_err(|_| anyhow!("upload too large for the guest"))?;
+
+        let mut store = self
+            .store
+            .lock()
+            .map_err(|_| anyhow!("plugin '{}' store poisoned", self.id))?;
+        let _ = store.set_fuel(UPLOAD_HOOK_FUEL);
+        let deadline = store.data().deadline_ticks;
+        store.set_epoch_deadline(deadline);
+        store.data_mut().fetch_deadline = Some(std::time::Instant::now() + UPLOAD_HOOK_BUDGET);
+
+        let ptr = alloc
+            .call(&mut *store, len)
+            .map_err(|e| anyhow!("capscr_alloc({len}): {e}"))?;
+        if ptr <= 0 {
+            return Err(anyhow!("capscr_alloc returned {ptr} (out of memory?)"));
+        }
+        self.memory
+            .write(&mut *store, ptr as usize, &blob)
+            .map_err(|e| anyhow!("memory write: {e}"))?;
+        store.data_mut().uploading = true;
+        let ret = hook.call(&mut *store, (ptr, len));
+        store.data_mut().uploading = false;
+        let ret = ret.map_err(|e| anyhow!("upload plugin '{}' trapped: {e}", self.id))?;
+        if ret <= 0 {
+            return Err(anyhow!("upload plugin '{}' returned no reply", self.id));
+        }
+        let reply_ptr = ((ret as u64) >> 32) as usize;
+        let reply_len = (ret as u64 & 0xffff_ffff) as usize;
+        let reply = self
+            .memory
+            .data(&*store)
+            .get(reply_ptr..reply_ptr.saturating_add(reply_len))
+            .filter(|_| reply_len <= MAX_UPLOAD_REPLY_BYTES)
+            .ok_or_else(|| anyhow!("upload plugin '{}' reply is out of bounds", self.id))?;
+        parse_upload_reply(reply).map_err(|e| anyhow!("upload plugin '{}': {e}", self.id))
+    }
+}
+
+/// `[name_len:u32 LE][name][mime_len:u32 LE][mime][file bytes]`
+fn upload_blob(file_name: &str, mime: &str, data: &[u8]) -> Vec<u8> {
+    let mut blob = Vec::with_capacity(8 + file_name.len() + mime.len() + data.len());
+    for field in [file_name.as_bytes(), mime.as_bytes()] {
+        blob.extend_from_slice(&(field.len() as u32).to_le_bytes());
+        blob.extend_from_slice(field);
+    }
+    blob.extend_from_slice(data);
+    blob
+}
+
+fn parse_upload_reply(reply: &[u8]) -> Result<crate::upload::UploadResult> {
+    #[derive(serde::Deserialize)]
+    struct Reply {
+        url: Option<String>,
+        delete_url: Option<String>,
+        error: Option<String>,
+    }
+    let reply: Reply =
+        serde_json::from_slice(reply).map_err(|e| anyhow!("reply is not json: {e}"))?;
+    if let Some(error) = reply.error {
+        return Err(anyhow!("{}", error.chars().take(300).collect::<String>()));
+    }
+    let url = reply.url.ok_or_else(|| anyhow!("reply has no url"))?;
+    Ok(crate::upload::UploadResult {
+        url,
+        delete_url: reply.delete_url,
+    })
 }
 
 /// parse a `[w:u32 LE][h:u32 LE][rgba…]` blob (a plugin's replacement image)
@@ -1056,6 +1190,18 @@ mod tests {
         wat_src: &str,
         caps: HashMap<String, Vec<String>>,
     ) -> (tempfile::TempDir, WasmPlugin) {
+        load_hooked(
+            wat_src,
+            ("on_capture_saved", "capscr_on_capture_saved"),
+            caps,
+        )
+    }
+
+    fn load_hooked(
+        wat_src: &str,
+        (hook, export): (&str, &str),
+        caps: HashMap<String, Vec<String>>,
+    ) -> (tempfile::TempDir, WasmPlugin) {
         let wasm = wat::parse_str(wat_src).expect("wat should compile to wasm");
         let dir = tempfile::tempdir().expect("tempdir");
         std::fs::write(dir.path().join("plugin.wasm"), &wasm).expect("write wasm");
@@ -1074,12 +1220,9 @@ mod tests {
                 memory_max_bytes: None,
                 time_slice_ms: None,
             }),
-            hooks: [(
-                "on_capture_saved".to_string(),
-                "capscr_on_capture_saved".to_string(),
-            )]
-            .into_iter()
-            .collect(),
+            hooks: [(hook.to_string(), export.to_string())]
+                .into_iter()
+                .collect(),
             capabilities: caps,
             enabled: true,
             settings: Vec::new(),
@@ -1260,34 +1403,90 @@ mod tests {
         wat_src: &str,
         caps: HashMap<String, Vec<String>>,
     ) -> (tempfile::TempDir, WasmPlugin) {
-        let wasm = wat::parse_str(wat_src).expect("wat should compile to wasm");
-        let dir = tempfile::tempdir().expect("tempdir");
-        std::fs::write(dir.path().join("plugin.wasm"), &wasm).expect("write wasm");
-        let manifest = PluginManifest {
-            plugin: PluginMeta {
-                id: "test".into(),
-                name: "Test".into(),
-                version: "1.0.0".into(),
-                author: None,
-                description: None,
-                payload: PayloadFormat::Text,
-            },
-            runtime: Some(RuntimeSpec {
-                runtime_type: "wasm".into(),
-                file: "plugin.wasm".into(),
-                memory_max_bytes: None,
-                time_slice_ms: None,
-            }),
-            hooks: [("on_capture".to_string(), "capscr_on_capture".to_string())]
-                .into_iter()
-                .collect(),
-            capabilities: caps,
-            enabled: true,
-            settings: Vec::new(),
+        load_hooked(wat_src, ("on_capture", "capscr_on_capture"), caps)
+    }
+
+    // an upload hook that ignores its input and returns `reply` from offset 4096,
+    // or the packed pointer given verbatim when `reply` is empty
+    fn upload_wat(reply: &str, packed: i64) -> String {
+        let escaped = reply.replace('\\', "\\\\").replace('"', "\\\"");
+        let ret = if reply.is_empty() {
+            format!("(i64.const {packed})")
+        } else {
+            format!("(i64.const {})", (4096i64 << 32) | reply.len() as i64)
         };
-        let host = WasmHost::new().expect("host");
-        let plugin = host.load(dir.path(), &manifest).expect("load");
-        (dir, plugin)
+        format!(
+            r#"(module
+                 (memory (export "memory") 1)
+                 (data (i32.const 4096) "{escaped}")
+                 (func (export "capscr_alloc") (param i32) (result i32) (i32.const 1024))
+                 (func (export "capscr_upload") (param i32 i32) (result i64) {ret}))"#
+        )
+    }
+
+    fn load_upload_plugin(wat_src: &str, caps: &[&str]) -> (tempfile::TempDir, WasmPlugin) {
+        load_hooked(
+            wat_src,
+            ("upload", "capscr_upload"),
+            caps_map(&[("upload", caps)]),
+        )
+    }
+
+    #[test]
+    fn upload_hook_reply_carries_the_url_and_delete_link() {
+        let (_d, p) = load_upload_plugin(
+            &upload_wat(
+                r#"{"url":"https://files.example/a.png","delete_url":"https://files.example/d/1"}"#,
+                0,
+            ),
+            &["destination"],
+        );
+        assert!(p.is_upload_destination());
+        let result = p.call_upload_hook("a.png", "image/png", b"png").unwrap();
+        assert_eq!(result.url, "https://files.example/a.png");
+        assert_eq!(
+            result.delete_url.as_deref(),
+            Some("https://files.example/d/1")
+        );
+    }
+
+    #[test]
+    fn upload_hook_errors_and_bad_replies_fail_the_upload() {
+        let (_d, p) = load_upload_plugin(
+            &upload_wat(r#"{"error":"quota reached"}"#, 0),
+            &["destination"],
+        );
+        let error = p
+            .call_upload_hook("a.png", "image/png", b"png")
+            .unwrap_err();
+        assert!(error.to_string().contains("quota reached"), "{error}");
+
+        let out_of_bounds = (1i64 << 52) | 16;
+        let (_d, p) = load_upload_plugin(&upload_wat("", out_of_bounds), &["destination"]);
+        let error = p
+            .call_upload_hook("a.png", "image/png", b"png")
+            .unwrap_err();
+        assert!(error.to_string().contains("out of bounds"), "{error}");
+
+        let (_d, p) = load_upload_plugin(&upload_wat("", -1), &["destination"]);
+        assert!(p.call_upload_hook("a.png", "image/png", b"png").is_err());
+    }
+
+    #[test]
+    fn upload_hook_needs_the_destination_capability() {
+        let (_d, p) = load_upload_plugin(&upload_wat(r#"{"url":"https://x.example/a"}"#, 0), &[]);
+        assert!(!p.is_upload_destination());
+        assert!(p.call_upload_hook("a.png", "image/png", b"png").is_err());
+    }
+
+    #[test]
+    fn upload_blob_prefixes_name_and_mime() {
+        let blob = upload_blob("a.gif", "image/gif", b"GIF89a");
+        assert_eq!(&blob[..4], &5u32.to_le_bytes());
+        assert_eq!(&blob[4..9], b"a.gif");
+        assert_eq!(&blob[9..13], &9u32.to_le_bytes());
+        assert_eq!(&blob[13..22], b"image/gif");
+        assert_eq!(&blob[22..], b"GIF89a");
     }
 
     // a 2x2 region capture blob: [w=2][h=2][mode=2][16 rgba bytes]

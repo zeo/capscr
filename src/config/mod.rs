@@ -627,7 +627,12 @@ pub enum UploadDestination {
     Custom,
     Sftp,
     S3,
+    /// the plugin named by `UploadConfig::plugin`
+    Plugin,
 }
+
+/// tray ids for plugin destinations; the plugin id follows the prefix
+pub const PLUGIN_MENU_PREFIX: &str = "dest_plugin:";
 
 impl UploadDestination {
     pub fn all() -> &'static [UploadDestination] {
@@ -645,6 +650,7 @@ impl UploadDestination {
             UploadDestination::Custom => "Custom HTTP",
             UploadDestination::Sftp => "SFTP",
             UploadDestination::S3 => "S3 Compatible",
+            UploadDestination::Plugin => "Plugin",
         }
     }
 
@@ -680,6 +686,8 @@ pub struct UploadConfig {
     pub sftp: SftpUploadConfig,
     #[serde(default)]
     pub s3: S3UploadConfig,
+    /// plugin id used when the destination is Plugin
+    pub plugin: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -721,6 +729,7 @@ impl Default for UploadConfig {
             imgur_client_id: default_imgur_client_id(),
             sftp: SftpUploadConfig::default(),
             s3: S3UploadConfig::default(),
+            plugin: String::new(),
         }
     }
 }
@@ -1889,6 +1898,25 @@ mod tests {
             );
         }
         assert_eq!(UploadDestination::from_menu_id("dest_ftp"), None);
+        assert_eq!(UploadDestination::from_menu_id("dest_plugin"), None);
+        assert_eq!(
+            UploadDestination::from_menu_id(&format!("{PLUGIN_MENU_PREFIX}imgur")),
+            None
+        );
+    }
+
+    #[test]
+    fn plugin_destination_round_trips_and_old_configs_still_load() {
+        let mut config = Config::default();
+        config.upload.destination = UploadDestination::Plugin;
+        config.upload.plugin = "my-uploader".into();
+        let back: Config = toml::from_str(&toml::to_string(&config).unwrap()).unwrap();
+        assert_eq!(back.upload.destination, UploadDestination::Plugin);
+        assert_eq!(back.upload.plugin, "my-uploader");
+
+        let old: Config = toml::from_str("[upload]\ndestination = \"S3\"\n").unwrap();
+        assert_eq!(old.upload.destination, UploadDestination::S3);
+        assert_eq!(old.upload.plugin, "");
     }
 
     #[test]

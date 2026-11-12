@@ -7,7 +7,7 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr, ToSocketAddrs};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
-const MAX_UPLOAD_SIZE: usize = 32 * 1024 * 1024;
+pub const MAX_UPLOAD_SIZE: usize = 32 * 1024 * 1024;
 const UPLOAD_TIMEOUT_SECS: u64 = 60;
 const MAX_URL_LEN: usize = 2048;
 const MAX_RESPONSE_SIZE: usize = 1024 * 1024;
@@ -26,6 +26,8 @@ pub enum UploadService {
     Custom(CustomUploader),
     Sftp(SftpTarget),
     S3(S3Target),
+    /// id of the plugin whose upload hook takes the file
+    Plugin(String),
 }
 
 impl UploadService {
@@ -36,8 +38,18 @@ impl UploadService {
             UploadService::Custom(_) => "custom",
             UploadService::Sftp(_) => "sftp",
             UploadService::S3(_) => "s3",
+            UploadService::Plugin(_) => "plugin",
         }
     }
+}
+
+/// (plugin id, bytes, mime, file name), registered once the app state exists
+type PluginUpload = dyn Fn(&str, &[u8], &str, &str) -> Result<UploadResult> + Send + Sync;
+
+static PLUGIN_UPLOAD: OnceLock<Box<PluginUpload>> = OnceLock::new();
+
+pub fn set_plugin_upload(upload: Box<PluginUpload>) {
+    let _ = PLUGIN_UPLOAD.set(upload);
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -404,11 +416,15 @@ impl ImageUploader {
                 UploadService::Custom(config) => self.upload_custom(data, mime, file_name, config),
                 UploadService::Sftp(target) => upload_sftp(data, file_name, target),
                 UploadService::S3(target) => upload_s3(data, file_name, target),
+                UploadService::Plugin(id) => upload_plugin(id, data, mime, file_name),
             };
             match result {
                 Ok(r) => return Ok(r),
                 Err(e) => {
-                    let transient = is_transient_upload_error(&e);
+                    // a plugin may already have sent the file before failing, so
+                    // a retry could post it twice
+                    let transient = !matches!(service, UploadService::Plugin(_))
+                        && is_transient_upload_error(&e);
                     if !transient || attempt + 1 == attempts {
                         return Err(e);
                     }
@@ -627,6 +643,26 @@ impl ImageUploader {
 
         Err(anyhow!("Could not extract URL from response"))
     }
+}
+
+fn upload_plugin(id: &str, data: &[u8], mime: &str, file_name: &str) -> Result<UploadResult> {
+    if id.is_empty() {
+        return Err(anyhow!("no upload plugin is selected"));
+    }
+    let upload = PLUGIN_UPLOAD
+        .get()
+        .ok_or_else(|| anyhow!("plugins are not loaded yet"))?;
+    let result = upload(id, data, mime, file_name)?;
+    for url in std::iter::once(&result.url).chain(&result.delete_url) {
+        if url.len() > MAX_URL_LEN {
+            return Err(anyhow!(
+                "upload plugin '{id}' returned a URL that is too long"
+            ));
+        }
+        ImageUploader::validate_returned_url(url)
+            .map_err(|e| anyhow!("upload plugin '{id}' returned a bad URL: {e}"))?;
+    }
+    Ok(result)
 }
 
 pub fn shared_uploader() -> Result<&'static ImageUploader> {

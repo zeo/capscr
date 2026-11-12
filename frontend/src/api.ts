@@ -83,7 +83,7 @@ export interface S3Config {
 }
 
 export interface UploadConfig {
-  destination: "Imgur" | "Custom" | "Sftp" | "S3";
+  destination: "Imgur" | "Custom" | "Sftp" | "S3" | "Plugin";
   copy_url_to_clipboard: boolean;
   custom_url: string;
   custom_form_name: string;
@@ -91,6 +91,12 @@ export interface UploadConfig {
   imgur_client_id: string;
   sftp: SftpConfig;
   s3: S3Config;
+  plugin: string;
+}
+
+export interface UploadPlugin {
+  id: string;
+  name: string;
 }
 
 export interface UiConfig {
@@ -291,6 +297,7 @@ export const api = {
     invoke<string>("trim_mp4", { path, startSecs, endSecs, fast }),
 
   listInstalledPlugins: () => invoke<InstalledPlugin[]>("list_installed_plugins"),
+  listUploadPlugins: () => invoke<UploadPlugin[]>("list_upload_plugins"),
   pluginLoadErrors: () => invoke<string[]>("plugin_load_errors"),
   reloadPlugins: () => invoke<string[]>("reload_plugins"),
   pluginSettings: (id: string) => invoke<PluginSettings>("plugin_settings", { id }),

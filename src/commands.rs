@@ -1119,6 +1119,7 @@ fn build_upload_service_for_target(
             }),
             UploadDestination::Sftp => build_sftp_service(config),
             UploadDestination::S3 => build_s3_service(config),
+            UploadDestination::Plugin => UploadService::Plugin(config.upload.plugin.clone()),
         },
         Some(TaskUploadTarget::Imgur) => build_imgur_service(config),
         Some(TaskUploadTarget::Custom) => UploadService::Custom(CustomUploader {
@@ -4649,10 +4650,16 @@ pub fn plugin_load_errors(state: State<AppState>) -> Vec<String> {
 }
 
 #[tauri::command]
+pub fn list_upload_plugins(state: State<AppState>) -> Vec<crate::plugin::UploadPlugin> {
+    state.plugin_manager.read().unwrap().upload_destinations()
+}
+
+#[tauri::command]
 pub async fn reload_plugins(app: AppHandle) -> Result<Vec<String>, String> {
     tokio::task::spawn_blocking(move || {
         let state = app.state::<AppState>();
         state.load_plugins();
+        crate::rebuild_tray_menu(&app);
         let errors = state.plugin_load_errors.lock().unwrap().clone();
         errors
     })
@@ -4681,6 +4688,7 @@ pub async fn set_plugin_settings(
         let _pending_mutation = pending_mutation;
         crate::marketplace::set_plugin_settings(&plugins, &id, &values)?;
         app.state::<AppState>().load_plugins();
+        crate::rebuild_tray_menu(&app);
         Ok(())
     })
     .await
@@ -4746,6 +4754,7 @@ pub async fn marketplace_install(id: String, app: AppHandle) -> Result<bool, Str
             .ok_or_else(|| anyhow::anyhow!("plugin '{}' not in registry", id))?;
         let installed = crate::marketplace::install_plugin(&plugins, entry)?;
         app.state::<AppState>().load_plugins();
+        crate::rebuild_tray_menu(&app);
         Ok(installed)
     })
     .await
@@ -4761,6 +4770,7 @@ pub async fn marketplace_uninstall(id: String, app: AppHandle) -> Result<(), Str
         let _pending_mutation = pending_mutation;
         crate::marketplace::uninstall_plugin(&plugins, &id)?;
         app.state::<AppState>().load_plugins();
+        crate::rebuild_tray_menu(&app);
         Ok(())
     })
     .await
@@ -4780,6 +4790,7 @@ pub async fn toggle_plugin_enabled(
         let _pending_mutation = pending_mutation;
         crate::marketplace::set_plugin_enabled(&plugins, &id, enabled)?;
         app.state::<AppState>().load_plugins();
+        crate::rebuild_tray_menu(&app);
         Ok(())
     })
     .await
@@ -5267,6 +5278,9 @@ pub async fn test_upload_connection(
             }
             UploadService::Custom(uploader) => crate::upload::test_connection_custom(uploader),
             UploadService::S3(target) => crate::upload::test_connection_s3(target),
+            UploadService::Plugin(_) => Err(anyhow::anyhow!(
+                "plugin destinations have no connection test"
+            )),
         }
         .map_err(|e| e.to_string())
     })

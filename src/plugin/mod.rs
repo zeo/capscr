@@ -106,6 +106,13 @@ pub enum CaptureType {
     Gif,
 }
 
+/// a loaded plugin that takes uploads
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct UploadPlugin {
+    pub id: String,
+    pub name: String,
+}
+
 #[derive(Debug, Clone)]
 pub enum PluginResponse {
     Continue,
@@ -263,6 +270,51 @@ impl PluginManager {
     #[cfg(not(feature = "plugin-runtime"))]
     pub fn dispatch(&self, _event: &PluginEvent) -> PluginResponse {
         PluginResponse::Continue
+    }
+
+    #[cfg(feature = "plugin-runtime")]
+    pub fn upload_destinations(&self) -> Vec<UploadPlugin> {
+        self.loaded
+            .iter()
+            .filter(|plugin| plugin.is_upload_destination())
+            .map(|plugin| UploadPlugin {
+                id: plugin.id.clone(),
+                name: plugin.name.clone(),
+            })
+            .collect()
+    }
+
+    #[cfg(not(feature = "plugin-runtime"))]
+    pub fn upload_destinations(&self) -> Vec<UploadPlugin> {
+        Vec::new()
+    }
+
+    #[cfg(feature = "plugin-runtime")]
+    pub fn upload(
+        &self,
+        id: &str,
+        data: &[u8],
+        mime: &str,
+        file_name: &str,
+    ) -> anyhow::Result<crate::upload::UploadResult> {
+        self.loaded
+            .iter()
+            .find(|plugin| plugin.id == id && plugin.is_upload_destination())
+            .ok_or_else(|| anyhow::anyhow!("upload plugin '{id}' is not installed or disabled"))?
+            .call_upload_hook(file_name, mime, data)
+    }
+
+    #[cfg(not(feature = "plugin-runtime"))]
+    pub fn upload(
+        &self,
+        id: &str,
+        _data: &[u8],
+        _mime: &str,
+        _file_name: &str,
+    ) -> anyhow::Result<crate::upload::UploadResult> {
+        Err(anyhow::anyhow!(
+            "upload plugin '{id}' needs a build with the plugin runtime"
+        ))
     }
 }
 

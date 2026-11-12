@@ -49,6 +49,7 @@ notifications  = ["show"]
 fetch          = ["https://api.example.com/*"]
 image          = ["read", "modify"]   # gates the on_capture hook
 upload         = ["delete_url"]       # adds delete_url to json upload payloads
+                                      # "destination" gates the upload hook
 ```
 
 Plugins without a `[runtime]` section stay metadata-only — they appear in
@@ -62,6 +63,7 @@ the Marketplace tab but the host doesn't instantiate them. A plugin with
 | `on_capture`        | binary image blob (see below)    | `(ptr: i32, len: i32) -> i64`    |
 | `on_capture_saved`  | absolute path of the file (utf-8)| `(ptr: i32, len: i32) -> ()`     |
 | `on_upload_success` | result URL (utf-8)               | `(ptr: i32, len: i32) -> ()`     |
+| `upload`            | file blob (see below)            | `(ptr: i32, len: i32) -> i64`    |
 
 For the two notify hooks the host writes the UTF-8 payload into the plugin's
 linear memory at a region allocated via the exported
@@ -106,7 +108,7 @@ doesn't know for a save is `null`; still captures have no `task` or
 }
 ```
 
-`destination` is one of `imgur`, `custom`, `sftp` or `s3`. `path` is `null`
+`destination` is one of `imgur`, `custom`, `sftp`, `s3` or `plugin`. `path` is `null`
 when no file on disk backs the upload: an editor upload, or the Upload action
 with history saving turned off.
 `delete_url` is present only when the host returned one and the manifest
@@ -148,6 +150,43 @@ Capability gating:
 
 When several plugins subscribe, a replacement from one feeds the next, so
 image filters compose in load order.
+
+### `upload` (plugin as a destination)
+
+A plugin that maps `upload = "<export>"` under `[hooks]` and declares
+`upload = ["destination"]` under `[capabilities]` shows up as an upload
+destination in the tray menu and in Destinations, next to imgur, custom http,
+sftp and S3. When the user picks it, every upload goes to this hook instead of
+a built-in host.
+
+```
+input blob:  [name_len: u32 LE][file name][mime_len: u32 LE][mime][file bytes…]
+```
+
+The hook posts the file itself, usually through `fetch_post`, then returns a
+packed `(ptr << 32) | len` pointing at a UTF-8 JSON reply of at most 64 KiB:
+
+```json
+{ "url": "https://files.example.com/abc.png", "delete_url": "https://files.example.com/delete/abc" }
+```
+
+or, to fail the upload with a message the user sees:
+
+```json
+{ "error": "quota reached" }
+```
+
+`delete_url` is optional. Both URLs pass the same checks as a custom http
+host's reply: an http or https URL with a host, no control characters, and a
+length cap. A return of `0` or less, a trap,
+or a reply that isn't valid JSON fails the upload. The host never retries a
+plugin upload, since the plugin may already have sent the file.
+
+While the `upload` hook runs, `fetch_post` accepts bodies up to 33 MiB (the
+32 MiB upload cap plus room for form encoding), each call may take 60s, and the
+whole hook gets 120s. Files up to 32 MiB arrive in guest memory, so an upload
+plugin should raise `memory_max_bytes` to fit the file, its encoded body and
+the plugin's own heap, e.g. `memory_max_bytes = 134217728` (128 MiB).
 
 ## host imports (module `capscr`)
 
@@ -332,8 +371,8 @@ on the plugins tab (or restart capscr) to load it.
 - host imports today: `log`, `clipboard_write_text`, `notify`, `fetch`,
   `fetch_post`, `config_get`. more arrive incrementally
 - `on_capture` receives full pixels and can cancel/replace; `fetch`/`fetch_post`
-  cover HTTP(S) GET/POST (no custom headers beyond content-type yet)
-  (POST for webhook-style plugins is not yet exposed)
+  cover HTTP(S) GET/POST (no custom headers beyond content-type yet, so
+  upload plugins pass auth tokens in the URL or form fields)
 - capabilities for `clipboard`, `notifications`, `fetch`, `image` and
   `upload` are enforced; other declared capabilities are still informational
 - per-hook fuel limit and epoch-deadline trap are active; `time_slice_ms`
