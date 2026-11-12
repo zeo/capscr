@@ -160,6 +160,14 @@ export interface HistoryEntry {
   is_gif: boolean;
   is_mp4: boolean;
   has_hdr: boolean;
+  uploads: UploadSummary[];
+}
+
+export interface UploadSummary {
+  url: string;
+  destination: string;
+  uploaded_unix: number;
+  deletable: boolean;
 }
 
 export interface InstalledPlugin {
@@ -290,6 +298,8 @@ export const api = {
   deleteCapture: (path: string) => invoke<void>("delete_capture", { path }),
   copyCaptureToClipboard: (path: string) =>
     invoke<void>("copy_capture_to_clipboard", { path }),
+  deleteRemoteUpload: (path: string, url: string) =>
+    invoke<boolean>("delete_remote_upload", { path, url }),
   reuploadCapture: (path: string) =>
     invoke<{ url: string; delete_url: string | null }>("reupload_capture", { path }),
   openInExplorer: (path: string) => invoke<void>("open_in_explorer", { path }),

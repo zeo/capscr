@@ -11,6 +11,8 @@ import { listen, UnlistenFn } from "@tauri-apps/api/event";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import {
   Copy,
+  CloudOff,
+  Link,
   RefreshCw,
   ExternalLink,
   Trash2,
@@ -39,6 +41,8 @@ const FILTER_PILLS = () =>
 // scope render blank
 // gif and mp4 would lose their motion in the editor, and the image crate
 // decodes neither avif nor jxl, so these open and copy as plain files
+const latestUpload = (e: HistoryEntry) => e.uploads[e.uploads.length - 1];
+
 const fileOnly = (e: HistoryEntry) =>
   e.is_gif || e.is_mp4 || /\.(avif|jxl)$/i.test(e.path);
 
@@ -248,8 +252,28 @@ export function History() {
   const doReupload = (path: string) => {
     showFlash("ok", "uploading...");
     api.reuploadCapture(path)
-      .then(() => showFlash("ok", "re-uploaded"))
+      .then(() => {
+        showFlash("ok", "re-uploaded");
+        refetch();
+      })
       .catch((e: unknown) => showFlash("err", `upload failed: ${e}`));
+  };
+  const doCopyLink = (url: string) => {
+    navigator.clipboard.writeText(url)
+      .then(() => showFlash("ok", "link copied"))
+      .catch(() => showFlash("err", "failed to copy to clipboard"));
+  };
+  const [deletingRemote, setDeletingRemote] = createSignal<string | null>(null);
+  const doDeleteRemote = (path: string, url: string) => {
+    setDeletingRemote(path);
+    api.deleteRemoteUpload(path, url)
+      .then((deleted) => {
+        if (!deleted) return;
+        showFlash("ok", "deleted from host");
+        refetch();
+      })
+      .catch((e: unknown) => showFlash("err", `host delete failed: ${e}`))
+      .finally(() => setDeletingRemote(null));
   };
   const doCopy = (path: string) => {
     api.copyCaptureToClipboard(path)
@@ -443,6 +467,16 @@ export function History() {
                           HDR
                         </span>
                       </Show>
+                      <Show when={latestUpload(e)}>
+                        {(upload) => (
+                          <>
+                            <span>·</span>
+                            <span class="tile-tag" title={upload().url}>
+                              uploaded
+                            </span>
+                          </>
+                        )}
+                      </Show>
                     </div>
                   </div>
                 </button>
@@ -486,6 +520,29 @@ export function History() {
                   >
                     <UploadCloud size={12} stroke-width={1.5} />
                   </button>
+                  <Show when={latestUpload(e)}>
+                    {(upload) => (
+                      <>
+                        <button
+                          class="icon-btn"
+                          title={`copy link: ${upload().url}`}
+                          onClick={() => doCopyLink(upload().url)}
+                        >
+                          <Link size={12} stroke-width={1.5} />
+                        </button>
+                        <Show when={upload().deletable}>
+                          <button
+                            class="icon-btn"
+                            title={`delete from ${upload().destination}`}
+                            disabled={deletingRemote() === e.path}
+                            onClick={() => doDeleteRemote(e.path, upload().url)}
+                          >
+                            <CloudOff size={12} stroke-width={1.5} />
+                          </button>
+                        </Show>
+                      </>
+                    )}
+                  </Show>
                   <button
                     class="icon-btn"
                     title="open in os viewer"

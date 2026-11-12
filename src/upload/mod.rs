@@ -1,4 +1,5 @@
 pub mod known_hosts;
+pub mod records;
 
 use anyhow::{anyhow, Result};
 use image::RgbaImage;
@@ -97,6 +98,7 @@ impl Default for CustomUploader {
 pub struct UploadResult {
     pub url: String,
     pub delete_url: Option<String>,
+    pub remote: records::RemoteRef,
 }
 
 pub struct ImageUploader {
@@ -516,14 +518,32 @@ impl ImageUploader {
         let delete_hash = json
             .get("data")
             .and_then(|d| d.get("deletehash"))
-            .and_then(|h| h.as_str());
-
-        let delete_url = delete_hash.map(|hash| format!("https://imgur.com/delete/{}", hash));
+            .and_then(|h| h.as_str())
+            .filter(|hash| {
+                (1..=64).contains(&hash.len()) && hash.bytes().all(|b| b.is_ascii_alphanumeric())
+            });
 
         Ok(UploadResult {
             url: link.to_string(),
-            delete_url,
+            delete_url: delete_hash.map(|hash| format!("https://imgur.com/delete/{hash}")),
+            remote: delete_hash.map_or(records::RemoteRef::Url, |hash| records::RemoteRef::Imgur {
+                delete_hash: hash.to_string(),
+            }),
         })
+    }
+
+    pub fn delete_imgur(&self, delete_hash: &str, client_id: &str) -> Result<()> {
+        let response = self
+            .client
+            .delete(format!("https://api.imgur.com/3/image/{delete_hash}"))
+            .header("Authorization", format!("Client-ID {client_id}"))
+            .send()?;
+        let status = response.status();
+        // a 404 means the image is already gone, which is what the user wanted
+        if !status.is_success() && status != reqwest::StatusCode::NOT_FOUND {
+            return Err(anyhow!("Imgur delete failed with status: {status}"));
+        }
+        Ok(())
     }
 
     fn upload_custom(
@@ -586,6 +606,7 @@ impl ImageUploader {
         Ok(UploadResult {
             url,
             delete_url: None,
+            remote: records::RemoteRef::Url,
         })
     }
 
@@ -1239,7 +1260,70 @@ pub fn test_connection_custom(uploader: &CustomUploader) -> Result<Vec<TestStep>
 }
 
 #[cfg(feature = "sftp")]
+enum SftpOp {
+    Write { path: String, data: Vec<u8> },
+    Remove { path: String },
+}
+
+#[cfg(feature = "sftp")]
+fn sftp_remote_path(remote_dir: &str, filename: &str) -> String {
+    if remote_dir.is_empty() {
+        filename.to_string()
+    } else {
+        format!("{}/{}", remote_dir.trim_end_matches('/'), filename)
+    }
+}
+
+#[cfg(feature = "sftp")]
 pub fn upload_sftp(data: &[u8], file_name: &str, target: &SftpTarget) -> Result<UploadResult> {
+    validate_remote_dir(&target.remote_dir)?;
+    let filename = uniquify_remote_filename(&sanitize_remote_filename(file_name));
+    let remote_path = sftp_remote_path(&target.remote_dir, &filename);
+    run_sftp(
+        target,
+        SftpOp::Write {
+            path: remote_path.clone(),
+            data: data.to_vec(),
+        },
+    )?;
+    Ok(UploadResult {
+        url: build_url(&target.public_url_template, &filename)?,
+        delete_url: None,
+        remote: records::RemoteRef::Sftp {
+            host: target.host.clone(),
+            port: target.port.max(1),
+            username: target.username.clone(),
+            remote_path,
+        },
+    })
+}
+
+#[cfg(feature = "sftp")]
+pub fn delete_sftp(target: &SftpTarget, remote: &records::RemoteRef) -> Result<()> {
+    let records::RemoteRef::Sftp {
+        host,
+        port,
+        username,
+        remote_path,
+    } = remote
+    else {
+        return Err(anyhow!("not an SFTP upload"));
+    };
+    if *host != target.host || *port != target.port.max(1) || *username != target.username {
+        return Err(anyhow!(
+            "the SFTP server settings changed since this upload; remove {remote_path} on {host} by hand"
+        ));
+    }
+    run_sftp(
+        target,
+        SftpOp::Remove {
+            path: remote_path.clone(),
+        },
+    )
+}
+
+#[cfg(feature = "sftp")]
+fn run_sftp(target: &SftpTarget, op: SftpOp) -> Result<()> {
     use russh::client;
     use russh::keys::HashAlg;
     use russh_sftp::client::SftpSession;
@@ -1248,20 +1332,14 @@ pub fn upload_sftp(data: &[u8], file_name: &str, target: &SftpTarget) -> Result<
     use tokio::io::AsyncWriteExt;
 
     validate_host(&target.host)?;
-    validate_remote_dir(&target.remote_dir)?;
     let addrs = validate_resolved_host(&target.host, target.port.max(1))?;
 
-    let safe = sanitize_remote_filename(file_name);
-    let filename = uniquify_remote_filename(&safe);
     let host = target.host.clone();
     let port = target.port.max(1);
     let username = target.username.clone();
     let password = target.password.clone();
-    let remote_dir = target.remote_dir.clone();
-    let url_template = target.public_url_template.clone();
     let target_key_path = target.private_key_path.clone();
     let target_key_passphrase = target.private_key_passphrase.clone();
-    let data_owned = data.to_vec();
 
     // uploads only talk to pinned host keys: an unseen key is refused because no
     // one may be watching (hotkey capture), and a changed key aborts until the
@@ -1300,7 +1378,6 @@ pub fn upload_sftp(data: &[u8], file_name: &str, target: &SftpTarget) -> Result<
         .map_err(|e| anyhow!("SFTP runtime init failed: {e}"))?;
 
     let host_port = known_hosts::host_key(&host, port);
-    let upload_filename = filename.clone();
     let mismatch_error_for_handler = Arc::clone(&mismatch_error);
     let connect_result: Result<()> = runtime.block_on(async move {
         let handler = VerifyHostKey {
@@ -1370,30 +1447,37 @@ pub fn upload_sftp(data: &[u8], file_name: &str, target: &SftpTarget) -> Result<
             .await
             .map_err(|e| anyhow!("SFTP session init failed: {e}"))?;
 
-        let target_path = if remote_dir.is_empty() {
-            upload_filename.clone()
-        } else {
-            let trimmed = remote_dir.trim_end_matches('/');
-            format!("{}/{}", trimmed, upload_filename)
-        };
+        match op {
+            SftpOp::Write { path, data } => {
+                let mut file = sftp
+                    .open_with_flags(
+                        &path,
+                        OpenFlags::CREATE | OpenFlags::TRUNCATE | OpenFlags::WRITE,
+                    )
+                    .await
+                    .map_err(|e| anyhow!("SFTP open '{}' for write failed: {e}", path))?;
 
-        let mut file = sftp
-            .open_with_flags(
-                &target_path,
-                OpenFlags::CREATE | OpenFlags::TRUNCATE | OpenFlags::WRITE,
-            )
-            .await
-            .map_err(|e| anyhow!("SFTP open '{}' for write failed: {e}", target_path))?;
-
-        if let Err(e) = file.write_all(&data_owned).await {
-            // best-effort cleanup so a partial upload doesn't leave a 0-byte
-            // or truncated file on the server.
-            let _ = file.shutdown().await;
-            let _ = sftp.remove_file(&target_path).await;
-            return Err(anyhow!("SFTP write_all failed: {e}"));
-        }
-        if let Err(e) = file.shutdown().await {
-            return Err(anyhow!("SFTP file close failed: {e}"));
+                if let Err(e) = file.write_all(&data).await {
+                    // best-effort cleanup so a partial upload doesn't leave a 0-byte
+                    // or truncated file on the server.
+                    let _ = file.shutdown().await;
+                    let _ = sftp.remove_file(&path).await;
+                    return Err(anyhow!("SFTP write_all failed: {e}"));
+                }
+                if let Err(e) = file.shutdown().await {
+                    return Err(anyhow!("SFTP file close failed: {e}"));
+                }
+            }
+            SftpOp::Remove { path } => match sftp.remove_file(&path).await {
+                Ok(()) => {}
+                // already gone counts as deleted
+                Err(russh_sftp::client::error::Error::Status(status))
+                    if matches!(
+                        status.status_code,
+                        russh_sftp::protocol::StatusCode::NoSuchFile
+                    ) => {}
+                Err(e) => return Err(anyhow!("SFTP remove '{path}' failed: {e}")),
+            },
         }
 
         Ok(())
@@ -1414,13 +1498,12 @@ pub fn upload_sftp(data: &[u8], file_name: &str, target: &SftpTarget) -> Result<
         Some(HostKeyRefusal::Rejected(msg)) => return Err(anyhow!("{msg}")),
         None => {}
     }
-    connect_result?;
+    connect_result
+}
 
-    let url = build_url(&url_template, &filename)?;
-    Ok(UploadResult {
-        url,
-        delete_url: None,
-    })
+#[cfg(not(feature = "sftp"))]
+pub fn delete_sftp(_target: &SftpTarget, _remote: &records::RemoteRef) -> Result<()> {
+    Err(anyhow!("SFTP support not compiled in"))
 }
 
 #[cfg(not(feature = "sftp"))]
@@ -1597,11 +1680,7 @@ fn validate_s3_target(target: &S3Target) -> Result<()> {
     Ok(())
 }
 
-pub fn upload_s3(data: &[u8], file_name: &str, target: &S3Target) -> Result<UploadResult> {
-    validate_s3_target(target)?;
-    let safe = sanitize_remote_filename(file_name);
-    let filename = uniquify_remote_filename(&safe);
-
+fn s3_object_url(target: &S3Target, filename: &str) -> Result<url::Url> {
     let request_url_str = if target.endpoint.is_empty() {
         format!(
             "https://{}.s3.{}.amazonaws.com/{}",
@@ -1619,13 +1698,86 @@ pub fn upload_s3(data: &[u8], file_name: &str, target: &S3Target) -> Result<Uplo
                 .path_segments_mut()
                 .map_err(|_| anyhow!("cannot modify path of endpoint"))?;
             path_segments.push(&target.bucket);
-            path_segments.push(&filename);
+            path_segments.push(filename);
         }
         url.to_string()
     };
 
     let request_url = url::Url::parse(&request_url_str)?;
     validate_outbound_url(request_url.as_str())?;
+    Ok(request_url)
+}
+
+fn s3_client() -> Result<reqwest::blocking::Client> {
+    Ok(reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(UPLOAD_TIMEOUT_SECS))
+        .user_agent("capscr/1.0")
+        .https_only(true)
+        .no_proxy()
+        .dns_resolver(ssrf_validating_resolver())
+        .redirect(reqwest::redirect::Policy::none())
+        .build()?)
+}
+
+fn s3_failure(what: &str, response: reqwest::blocking::Response) -> Result<anyhow::Error> {
+    let status = response.status();
+    let mut err_body = Vec::new();
+    response
+        .take(MAX_RESPONSE_SIZE as u64 + 1)
+        .read_to_end(&mut err_body)?;
+    let truncated = err_body.len() > MAX_RESPONSE_SIZE;
+    err_body.truncate(MAX_RESPONSE_SIZE);
+    let mut err_body = String::from_utf8_lossy(&err_body).into_owned();
+    if truncated {
+        err_body.push_str("...");
+    }
+    Ok(anyhow!("S3 {what} failed with status {status}: {err_body}"))
+}
+
+/// sha256 of an empty body, the payload hash a DELETE signs
+const EMPTY_SHA256: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+
+pub fn delete_s3(target: &S3Target, remote: &records::RemoteRef) -> Result<()> {
+    let records::RemoteRef::S3 { object_url, key } = remote else {
+        return Err(anyhow!("not an S3 upload"));
+    };
+    validate_s3_target(target)?;
+    let request_url = s3_object_url(target, key)?;
+    // the stored url must be what the current settings would sign, so the
+    // current credentials never go to a bucket they weren't uploaded with
+    if request_url.as_str() != object_url {
+        return Err(anyhow!(
+            "the S3 bucket or endpoint changed since this upload; remove {key} there by hand"
+        ));
+    }
+    let date_utc = chrono::Utc::now();
+    let auth_header = sign_s3_request(
+        "DELETE",
+        &request_url,
+        &target.region,
+        &target.access_key_id,
+        &target.secret_access_key,
+        EMPTY_SHA256,
+        date_utc,
+    )?;
+    let response = s3_client()?
+        .delete(request_url)
+        .header("Authorization", auth_header)
+        .header("x-amz-date", date_utc.format("%Y%m%dT%H%M%SZ").to_string())
+        .header("x-amz-content-sha256", EMPTY_SHA256)
+        .send()
+        .map_err(|e| anyhow!("S3 delete request failed: {e}"))?;
+    if !response.status().is_success() {
+        return Err(s3_failure("delete", response)?);
+    }
+    Ok(())
+}
+
+pub fn upload_s3(data: &[u8], file_name: &str, target: &S3Target) -> Result<UploadResult> {
+    validate_s3_target(target)?;
+    let safe = sanitize_remote_filename(file_name);
+    let filename = uniquify_remote_filename(&safe);
+    let request_url = s3_object_url(target, &filename)?;
 
     let mut hasher = Sha256::new();
     hasher.update(data);
@@ -1644,16 +1796,7 @@ pub fn upload_s3(data: &[u8], file_name: &str, target: &S3Target) -> Result<Uplo
         date_utc,
     )?;
 
-    let client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(UPLOAD_TIMEOUT_SECS))
-        .user_agent("capscr/1.0")
-        .https_only(true)
-        .no_proxy()
-        .dns_resolver(ssrf_validating_resolver())
-        .redirect(reqwest::redirect::Policy::none())
-        .build()?;
-
-    let response = client
+    let response = s3_client()?
         .put(request_url.clone())
         .header("Authorization", auth_header)
         .header("x-amz-date", date_str)
@@ -1662,23 +1805,8 @@ pub fn upload_s3(data: &[u8], file_name: &str, target: &S3Target) -> Result<Uplo
         .send()
         .map_err(|e| anyhow!("S3 upload request failed: {e}"))?;
 
-    let status = response.status();
-    if !status.is_success() {
-        let mut err_body = Vec::new();
-        response
-            .take(MAX_RESPONSE_SIZE as u64 + 1)
-            .read_to_end(&mut err_body)?;
-        let truncated = err_body.len() > MAX_RESPONSE_SIZE;
-        err_body.truncate(MAX_RESPONSE_SIZE);
-        let mut err_body = String::from_utf8_lossy(&err_body).into_owned();
-        if truncated {
-            err_body.push_str("...");
-        }
-        return Err(anyhow!(
-            "S3 upload failed with status {}: {}",
-            status,
-            err_body
-        ));
+    if !response.status().is_success() {
+        return Err(s3_failure("upload", response)?);
     }
 
     let public_url = if !target.public_url_template.is_empty() {
@@ -1695,6 +1823,10 @@ pub fn upload_s3(data: &[u8], file_name: &str, target: &S3Target) -> Result<Uplo
     Ok(UploadResult {
         url: public_url,
         delete_url: None,
+        remote: records::RemoteRef::S3 {
+            object_url: request_url.to_string(),
+            key: filename,
+        },
     })
 }
 
@@ -1826,6 +1958,74 @@ mod tests {
             .contains("Credential=AKIAIOSFODNN7EXAMPLE/20130524/us-east-1/s3/aws4_request"));
         assert!(auth_header.contains("SignedHeaders=host;x-amz-content-sha256;x-amz-date"));
         assert!(auth_header.contains("Signature="));
+    }
+
+    #[test]
+    fn s3_delete_signature_matches_an_independent_sigv4() {
+        // reference value from a separate sigv4 implementation that reproduces
+        // the aws "GET Object" example signature
+        let request_url =
+            url::Url::parse("https://my-bucket.s3.us-east-1.amazonaws.com/test_file.png").unwrap();
+        let date_utc = chrono::DateTime::parse_from_rfc3339("2013-05-24T15:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let auth_header = sign_s3_request(
+            "DELETE",
+            &request_url,
+            "us-east-1",
+            "AKIAIOSFODNN7EXAMPLE",
+            "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+            EMPTY_SHA256,
+            date_utc,
+        )
+        .unwrap();
+        assert!(auth_header.ends_with(
+            "Signature=ea5a29147eae1a3b3444f40af42d3767a080650c17eadf16b08a945974574551"
+        ));
+    }
+
+    #[test]
+    fn s3_delete_refuses_a_bucket_the_upload_did_not_use() {
+        let target = S3Target {
+            bucket: "new-bucket".into(),
+            region: "us-east-1".into(),
+            ..Default::default()
+        };
+        let remote = records::RemoteRef::S3 {
+            object_url: "https://old-bucket.s3.us-east-1.amazonaws.com/a.png".into(),
+            key: "a.png".into(),
+        };
+        let error = delete_s3(&target, &remote).unwrap_err();
+        assert!(
+            error.to_string().contains("changed since this upload"),
+            "{error}"
+        );
+    }
+
+    #[cfg(feature = "sftp")]
+    #[test]
+    fn sftp_delete_refuses_a_server_the_upload_did_not_use() {
+        let target = SftpTarget {
+            host: "new.example".into(),
+            port: 22,
+            username: "me".into(),
+            password: String::new(),
+            remote_dir: String::new(),
+            public_url_template: String::new(),
+            private_key_path: String::new(),
+            private_key_passphrase: String::new(),
+        };
+        let remote = records::RemoteRef::Sftp {
+            host: "old.example".into(),
+            port: 22,
+            username: "me".into(),
+            remote_path: "a.png".into(),
+        };
+        let error = delete_sftp(&target, &remote).unwrap_err();
+        assert!(
+            error.to_string().contains("changed since this upload"),
+            "{error}"
+        );
     }
 
     #[test]

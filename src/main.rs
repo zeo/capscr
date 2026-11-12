@@ -342,6 +342,7 @@ fn main() {
             commands::plugin_load_errors,
             commands::reload_plugins,
             commands::list_upload_plugins,
+            commands::delete_remote_upload,
             commands::plugin_settings,
             commands::set_plugin_settings,
             commands::take_startup_notices,

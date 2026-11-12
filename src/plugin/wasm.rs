@@ -819,6 +819,7 @@ fn parse_upload_reply(reply: &[u8]) -> Result<crate::upload::UploadResult> {
     Ok(crate::upload::UploadResult {
         url,
         delete_url: reply.delete_url,
+        remote: crate::upload::records::RemoteRef::Url,
     })
 }
 

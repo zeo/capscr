@@ -1,6 +1,7 @@
 use crate::config::{CaptureTask, Config};
 use crate::plugin::PluginManager;
 use crate::recording::{GifRecorder, RecordingState};
+use crate::upload::records::UploadRecords;
 use crossbeam_channel::Sender;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -64,6 +65,7 @@ pub struct AppState {
     pub last_save: Mutex<Option<PathBuf>>,
     pub last_upload: Mutex<Option<UploadRecord>>,
     pub recent_uploads: Mutex<VecDeque<UploadRecord>>,
+    upload_records: Mutex<Option<UploadRecords>>,
     pub editor_image_path: Mutex<Option<String>>,
     pub capture_in_progress: AtomicBool,
     pub pending_file_mutations: AtomicUsize,
@@ -126,6 +128,7 @@ impl AppState {
             last_save: Mutex::new(None),
             last_upload: Mutex::new(None),
             recent_uploads: Mutex::new(VecDeque::with_capacity(RECENT_UPLOADS_CAP)),
+            upload_records: Mutex::new(None),
             editor_image_path: Mutex::new(None),
             capture_in_progress: AtomicBool::new(false),
             pending_file_mutations: AtomicUsize::new(0),
@@ -222,5 +225,18 @@ impl AppState {
         while recent.len() > RECENT_UPLOADS_CAP {
             recent.pop_back();
         }
+    }
+
+    /// the per-capture upload records, read from disk on first use. None when
+    /// the platform has no app data dir
+    pub fn with_upload_records<T>(&self, f: impl FnOnce(&mut UploadRecords) -> T) -> Option<T> {
+        let mut records = self.upload_records.lock().unwrap();
+        if records.is_none() {
+            let file = crate::config::project_dirs()?
+                .data_dir()
+                .join("uploads.json");
+            *records = Some(UploadRecords::load(file));
+        }
+        records.as_mut().map(f)
     }
 }

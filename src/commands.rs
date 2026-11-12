@@ -66,6 +66,15 @@ pub struct HistoryEntry {
     pub is_gif: bool,
     pub is_mp4: bool,
     pub has_hdr: bool,
+    pub uploads: Vec<UploadSummary>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct UploadSummary {
+    pub url: String,
+    pub destination: String,
+    pub uploaded_unix: u64,
+    pub deletable: bool,
 }
 
 #[tauri::command]
@@ -1065,18 +1074,26 @@ fn run_capture_pipeline_inner(
 }
 
 fn build_s3_service(config: &Config) -> UploadService {
-    UploadService::S3(crate::upload::S3Target {
+    UploadService::S3(s3_target(config))
+}
+
+fn s3_target(config: &Config) -> crate::upload::S3Target {
+    crate::upload::S3Target {
         bucket: config.upload.s3.bucket.clone(),
         region: config.upload.s3.region.clone(),
         endpoint: config.upload.s3.endpoint.clone(),
         access_key_id: config.upload.s3.access_key_id.clone(),
         secret_access_key: config.upload.s3.secret_access_key_plaintext(),
         public_url_template: config.upload.s3.public_url_template.clone(),
-    })
+    }
 }
 
 fn build_sftp_service(config: &Config) -> UploadService {
-    UploadService::Sftp(crate::upload::SftpTarget {
+    UploadService::Sftp(sftp_target(config))
+}
+
+fn sftp_target(config: &Config) -> crate::upload::SftpTarget {
+    crate::upload::SftpTarget {
         host: config.upload.sftp.host.clone(),
         port: config.upload.sftp.port,
         username: config.upload.sftp.username.clone(),
@@ -1085,7 +1102,7 @@ fn build_sftp_service(config: &Config) -> UploadService {
         public_url_template: config.upload.sftp.public_url_template.clone(),
         private_key_path: config.upload.sftp.private_key_path.clone(),
         private_key_passphrase: config.upload.sftp.private_key_passphrase_plaintext(),
-    })
+    }
 }
 
 fn build_imgur_service(config: &Config) -> UploadService {
@@ -1685,11 +1702,26 @@ pub fn list_captures(state: State<AppState>) -> Result<Vec<HistoryEntry>, String
             is_gif: ext == "gif",
             is_mp4,
             has_hdr,
+            uploads: Vec::new(),
         });
     }
 
     entries.sort_by_key(|e| std::cmp::Reverse(e.modified_unix));
     entries.truncate(1000);
+    state.with_upload_records(|records| {
+        for entry in &mut entries {
+            entry.uploads = records
+                .entries(&entry.path)
+                .iter()
+                .map(|upload| UploadSummary {
+                    url: upload.url.clone(),
+                    destination: upload.destination.clone(),
+                    uploaded_unix: upload.uploaded_unix,
+                    deletable: upload.remote != crate::upload::records::RemoteRef::Url,
+                })
+                .collect();
+        }
+    });
     tracing::info!(
         "list_captures: {} entries collected (output: {}, history cache)",
         entries.len(),
@@ -1881,6 +1913,23 @@ fn finish_upload(
     app.state::<AppState>().record_upload(UploadRecord {
         url: result.url.clone(),
     });
+    if let Some(path) = path {
+        let entry = crate::upload::records::UploadEntry {
+            url: result.url.clone(),
+            destination: destination.to_string(),
+            uploaded_unix: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs()),
+            remote: result.remote.clone(),
+        };
+        let key = crate::upload::records::record_key(path);
+        if let Some(Err(error)) = app
+            .state::<AppState>()
+            .with_upload_records(|records| records.add(key, entry))
+        {
+            tracing::warn!("upload record not saved: {error}");
+        }
+    }
     crate::rebuild_tray_menu(app);
     if config.upload.copy_url_to_clipboard {
         let _ = crate::upload::copy_url_to_clipboard(&result.url);
@@ -1894,6 +1943,86 @@ fn finish_upload(
             delete_url: result.delete_url.clone(),
         },
     );
+}
+
+/// delete one recorded upload from its host after a native confirm. Ok(false)
+/// when the user keeps it
+#[tauri::command]
+pub async fn delete_remote_upload(
+    path: String,
+    url: String,
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+) -> Result<bool, String> {
+    use crate::upload::records::RemoteRef;
+    let key = crate::upload::records::record_key(std::path::Path::new(&path));
+    let entry = app
+        .state::<AppState>()
+        .with_upload_records(|records| {
+            records
+                .entries(&key)
+                .iter()
+                .find(|entry| entry.url == url)
+                .cloned()
+        })
+        .flatten()
+        .ok_or("this capture has no record of that upload")?;
+    if entry.remote == RemoteRef::Url {
+        return Err(format!(
+            "{} has no delete api; remove the upload there by hand",
+            entry.destination
+        ));
+    }
+    let config = app.state::<AppState>().config.lock().unwrap().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+        let host = url::Url::parse(&entry.url)
+            .ok()
+            .and_then(|url| url.host_str().map(str::to_string))
+            .unwrap_or_else(|| entry.destination.clone());
+        let confirmed = app
+            .dialog()
+            .message(format!(
+                "Delete {} from {host}? This can't be undone.",
+                entry.url
+            ))
+            .title("delete from host")
+            .kind(MessageDialogKind::Warning)
+            .buttons(MessageDialogButtons::OkCancelCustom(
+                "delete".into(),
+                "keep".into(),
+            ))
+            .parent(&window)
+            .blocking_show();
+        if !confirmed {
+            return Ok(false);
+        }
+        match &entry.remote {
+            RemoteRef::Imgur { delete_hash } => {
+                let client_id = match config.upload.imgur_client_id.trim() {
+                    "" => crate::upload::BUILTIN_IMGUR_CLIENT_ID,
+                    id => id,
+                };
+                crate::upload::shared_uploader()
+                    .and_then(|uploader| uploader.delete_imgur(delete_hash, client_id))
+            }
+            RemoteRef::S3 { .. } => crate::upload::delete_s3(&s3_target(&config), &entry.remote),
+            RemoteRef::Sftp { .. } => {
+                crate::upload::delete_sftp(&sftp_target(&config), &entry.remote)
+            }
+            RemoteRef::Url => Err(anyhow::anyhow!("this host has no delete api")),
+        }
+        .map_err(|e| e.to_string())?;
+        if let Some(Err(error)) = app
+            .state::<AppState>()
+            .with_upload_records(|records| records.remove(&key, &entry.url))
+        {
+            tracing::warn!("upload record not updated after delete: {error}");
+        }
+        Ok(true)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[derive(Debug, Clone, Serialize)]
