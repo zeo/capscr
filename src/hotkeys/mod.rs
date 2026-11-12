@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 #[cfg(windows)]
 pub mod ll_hook;
 
@@ -386,12 +384,6 @@ impl HotkeyManager {
         })
     }
 
-    pub fn register(&mut self, task_id: impl Into<String>, hotkey_str: &str) -> Result<()> {
-        let task_id = task_id.into();
-        let label = task_id.clone();
-        self.register_labeled(task_id, hotkey_str, &label)
-    }
-
     // label is what shows up in desktop-side shortcut UIs (the portal's
     // approval dialog, kde's shortcuts settings), so callers pass the task's
     // display name where they have one
@@ -424,12 +416,6 @@ impl HotkeyManager {
         Ok(())
     }
 
-    pub fn try_register(&mut self, task_id: impl Into<String>, hotkey_str: &str) {
-        let task_id = task_id.into();
-        let label = task_id.clone();
-        self.try_register_labeled(task_id, hotkey_str, &label);
-    }
-
     pub fn try_register_labeled(
         &mut self,
         task_id: impl Into<String>,
@@ -454,10 +440,6 @@ impl HotkeyManager {
 
     pub fn take_errors(&mut self) -> Vec<HotkeyRegistrationError> {
         std::mem::take(&mut self.registration_errors)
-    }
-
-    pub fn has_errors(&self) -> bool {
-        !self.registration_errors.is_empty()
     }
 
     pub fn registered_task_ids(&self) -> Vec<String> {
@@ -719,14 +701,6 @@ pub fn is_risky_bare(s: &str) -> bool {
     !safe
 }
 
-pub fn format_hotkey_string(s: &str) -> String {
-    if let Ok(hotkey) = parse_hotkey(s) {
-        format_hotkey(hotkey.mods, hotkey.key)
-    } else {
-        s.to_string()
-    }
-}
-
 pub fn parse_hotkey(s: &str) -> Result<HotKey> {
     let parts: Vec<&str> = s.split('+').map(|p| p.trim()).collect();
     if parts.is_empty() {
@@ -852,6 +826,7 @@ fn parse_key_code(s: &str) -> Result<Code> {
     Ok(code)
 }
 
+#[cfg(test)]
 pub fn format_hotkey(modifiers: Modifiers, code: Code) -> String {
     let mut parts = Vec::new();
     if modifiers.contains(Modifiers::CONTROL) {
@@ -870,6 +845,7 @@ pub fn format_hotkey(modifiers: Modifiers, code: Code) -> String {
     parts.join("+")
 }
 
+#[cfg(test)]
 pub fn format_code(code: Code) -> &'static str {
     match code {
         Code::KeyA => "A",
@@ -1033,11 +1009,11 @@ mod tests {
 
     #[test]
     fn test_empty_hotkey_skipped_silently() {
-        // try_register with "" must not push to registration_errors — tasks
+        // an empty hotkey must not push to registration_errors: tasks
         // with no hotkey assigned are valid (user chose not to bind them)
         // and must not trigger the startup-conflict notification.
         let mut hm = HotkeyManager::new().expect("manager");
-        hm.try_register("task-no-key", "");
+        hm.try_register_labeled("task-no-key", "", "task-no-key");
         assert!(
             hm.take_errors().is_empty(),
             "empty hotkey must not produce an error"

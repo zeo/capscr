@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 pub mod known_hosts;
 
 use anyhow::{anyhow, Result};
@@ -302,6 +300,7 @@ impl ImageUploader {
         Ok(())
     }
 
+    #[cfg(any(feature = "sftp", feature = "plugin-runtime"))]
     pub(crate) fn is_private_ip_string(host: &str) -> bool {
         // url::Url::host_str() wraps IPv6 in brackets; strip before pattern matching
         let host = host.trim_matches(|c| c == '[' || c == ']');
@@ -635,13 +634,7 @@ pub fn copy_url_to_clipboard(url: &str) -> Result<()> {
     crate::clipboard::ClipboardManager::new()?.copy_text(url)
 }
 
-fn generate_remote_filename() -> String {
-    let now = chrono::Local::now();
-    let ts = now.format("%Y%m%d_%H%M%S").to_string();
-    let uuid = uuid::Uuid::new_v4();
-    format!("capscr_{}_{}.png", ts, &uuid.as_simple().to_string()[..8])
-}
-
+#[cfg(feature = "sftp")]
 fn build_url(template: &str, filename: &str) -> Result<String> {
     if template.is_empty() {
         return Err(anyhow!(
@@ -660,6 +653,7 @@ fn build_url(template: &str, filename: &str) -> Result<String> {
     Ok(url)
 }
 
+#[cfg(feature = "sftp")]
 fn validate_remote_dir(dir: &str) -> Result<()> {
     if dir.contains("..") {
         return Err(anyhow!("remote_dir cannot contain '..'"));
@@ -670,6 +664,7 @@ fn validate_remote_dir(dir: &str) -> Result<()> {
     Ok(())
 }
 
+#[cfg(feature = "sftp")]
 fn validate_host(host: &str) -> Result<()> {
     if host.is_empty() {
         return Err(anyhow!("host is empty"));
@@ -686,6 +681,7 @@ fn validate_host(host: &str) -> Result<()> {
     Ok(())
 }
 
+#[cfg(any(feature = "sftp", feature = "plugin-runtime"))]
 const BLOCKED_HOSTS: &[&str] = &[
     "localhost",
     "127.0.0.1",
@@ -704,6 +700,7 @@ const BLOCKED_HOSTS: &[&str] = &[
 /// exact addresses rather than re-resolving the hostname: a rebinding resolver
 /// can hand a public IP to a validation-only lookup and a private one to the
 /// real connect, so pinning the checked address is what actually closes the gap.
+#[cfg(any(feature = "sftp", feature = "plugin-runtime"))]
 pub(crate) fn validate_resolved_host(host: &str, port: u16) -> Result<Vec<SocketAddr>> {
     let host_lower = host.to_lowercase();
     for blocked in BLOCKED_HOSTS {

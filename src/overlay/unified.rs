@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use crate::capture::Rectangle;
 #[cfg(target_os = "linux")]
 use image::RgbaImage;

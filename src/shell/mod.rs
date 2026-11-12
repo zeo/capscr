@@ -1,7 +1,3 @@
-// consumers arrive with the capture-chain, hotkey-portal, and tray phases;
-// drop this once they land
-#![allow(dead_code)]
-
 // one home for "what can this desktop do for us". every probe is lazy and
 // cached for the life of the process, so nothing here costs anything unless a
 // caller asks, and repeat callers never pay the bus or registry roundtrip

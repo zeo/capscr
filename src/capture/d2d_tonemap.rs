@@ -82,10 +82,6 @@ impl TmVariant {
     };
 }
 
-pub fn capture_hdr_to_sdr(target: Option<(i32, i32)>) -> Result<RgbaImage> {
-    capture_hdr_to_sdr_variant(target, TmVariant::DEFAULT)
-}
-
 pub fn capture_hdr_to_sdr_variant(
     target: Option<(i32, i32)>,
     variant: TmVariant,

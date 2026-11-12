@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use crate::capture::{Capture, Rectangle, RegionCapture, ScreenCapture, WindowCapture};
 use crate::clipboard::{get_unique_filepath, save_image, show_notification, ClipboardManager};
 use crate::config::{
@@ -1583,42 +1581,6 @@ fn run_post_action(
     }
 }
 
-pub fn open_in_default_image_editor(path: &std::path::Path) -> anyhow::Result<()> {
-    #[cfg(windows)]
-    {
-        use std::os::windows::ffi::OsStrExt;
-        use windows::core::{w, PCWSTR};
-        use windows::Win32::Foundation::HWND;
-        use windows::Win32::UI::Shell::ShellExecuteW;
-        use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
-
-        let path_wide: Vec<u16> = path
-            .as_os_str()
-            .encode_wide()
-            .chain(std::iter::once(0))
-            .collect();
-        let outcome = unsafe {
-            ShellExecuteW(
-                HWND::default(),
-                w!("open"),
-                PCWSTR(path_wide.as_ptr()),
-                PCWSTR::null(),
-                PCWSTR::null(),
-                SW_SHOWNORMAL,
-            )
-        };
-        let status = outcome.0 as isize;
-        if status <= 32 {
-            anyhow::bail!("ShellExecuteW failed with code {status}");
-        }
-    }
-    #[cfg(not(windows))]
-    {
-        std::process::Command::new("xdg-open").arg(path).spawn()?;
-    }
-    Ok(())
-}
-
 #[tauri::command]
 pub fn list_captures(state: State<AppState>) -> Result<Vec<HistoryEntry>, String> {
     let config = state.config.lock().unwrap().clone();
@@ -1899,7 +1861,6 @@ async fn upload_path(
 fn finish_upload(app: &AppHandle, config: &Config, result: &crate::upload::UploadResult) {
     app.state::<AppState>().record_upload(UploadRecord {
         url: result.url.clone(),
-        delete_url: result.delete_url.clone(),
     });
     crate::rebuild_tray_menu(app);
     if config.upload.copy_url_to_clipboard {

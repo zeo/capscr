@@ -3,8 +3,6 @@ use image::RgbaImage;
 use xcap::Window;
 
 use super::Capture;
-#[cfg(test)]
-use super::WindowInfo;
 
 pub struct WindowCapture {
     window_id: u32,
@@ -49,33 +47,6 @@ impl WindowCapture {
             .find(|w| w.id().map(|i| i == self.window_id).unwrap_or(false))
             .ok_or_else(|| anyhow!("Window {} not found", self.window_id))
     }
-
-    #[cfg(test)]
-    pub fn list_application_windows() -> Result<Vec<WindowInfo>> {
-        let windows = Window::all()?;
-        let mut app_windows: Vec<WindowInfo> = windows
-            .into_iter()
-            .filter_map(|w| {
-                let title = w.title().ok()?;
-                let (width, height) = (w.width().ok()?, w.height().ok()?);
-                if title.is_empty() || width <= 50 || height <= 50 || w.is_minimized().ok()? {
-                    return None;
-                }
-                Some(WindowInfo {
-                    id: w.id().ok()?,
-                    title,
-                    app_name: w.app_name().ok()?,
-                    x: w.x().ok()?,
-                    y: w.y().ok()?,
-                    width,
-                    height,
-                })
-            })
-            .collect();
-
-        app_windows.sort_by(|a, b| a.title.cmp(&b.title));
-        Ok(app_windows)
-    }
 }
 
 impl Capture for WindowCapture {
@@ -83,11 +54,10 @@ impl Capture for WindowCapture {
         tracing::info!("WindowCapture::capture entry: window_id={}", self.window_id);
 
         // capture path priority for window captures:
-        //   1. CAPSCR_HDR_AWARE=1 + HDR display -> custom CPU tonemap
-        //      via screen-region capture (slow, tunable look)
-        //   2. HDR display -> WGC for the window's HWND
+        //   1. HDR display + CAPSCR_USE_WGC=1 -> WGC for the window's HWND
         //      (instant, OS-side tonemap)
-        //   3. default -> xcap's GDI BitBlt (instant, overblown on HDR)
+        //   2. HDR display -> CPU tonemap via screen-region capture
+        //   3. SDR display -> xcap's GDI BitBlt
         #[cfg(windows)]
         {
             use windows::Win32::Foundation::{HWND, RECT};

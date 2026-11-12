@@ -14,7 +14,6 @@ export type PostAction =
 export interface HdrConfig {
   brightness_nits: number;
   user_brightness_scale: number;
-  use_p99_max_cll: boolean;
   output_format: "pq" | "hlg";
 }
 

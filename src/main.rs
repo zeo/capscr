@@ -38,7 +38,6 @@ pub fn install_hdr_runtime_from_config(config: &config::Config) {
     capture::install_tonemap_params(TonemapParams {
         sdr_white_nits_override: config.capture.hdr.brightness_nits,
         user_brightness_scale: config.capture.hdr.user_brightness_scale,
-        use_p99_max_cll: config.capture.hdr.use_p99_max_cll,
     });
 }
 

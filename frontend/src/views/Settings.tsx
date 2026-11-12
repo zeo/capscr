@@ -829,31 +829,6 @@ function HdrPane(props: { c: AppConfig; patch: Patch }) {
         </div>
       </div>
       <div class="field">
-        <label class="field-label">p99 maxcll</label>
-        <div class="field-control">
-          <label class="check">
-            <input
-              type="checkbox"
-              checked={c().capture.hdr.use_p99_max_cll}
-              onChange={(e) =>
-                props.patch("capture", {
-                  ...c().capture,
-                  hdr: {
-                    ...c().capture.hdr,
-                    use_p99_max_cll: e.currentTarget.checked,
-                  },
-                })
-              }
-            />
-            <span class="check-label">
-              {c().capture.hdr.use_p99_max_cll
-                ? "p99 (sky / lights ignored)"
-                : "pure max, every spike counted"}
-            </span>
-          </label>
-        </div>
-      </div>
-      <div class="field">
         <label class="field-label">preserve hdr</label>
         <div class="field-control">
           <label class="check">

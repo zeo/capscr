@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use crate::capture::{MonitorInfo, Rectangle};
 
 const LEFT: u8 = 1;

@@ -208,6 +208,7 @@ fn gif_delay_schedule(
 // ffmpeg consumes rawvideo at a constant input rate; each frame is written
 // once per tick of its slot so wall-clock timing survives dedup and slow
 // captures. 0 means the frame is skipped entirely
+#[cfg(test)]
 fn mp4_repeat_schedule(times: &[Duration], nominal: Duration, fps: u32) -> Vec<u64> {
     schedule_frames(times, nominal, None, fps as f64, 1, 60 * fps.max(1) as u64)
 }
@@ -589,10 +590,6 @@ impl GifRecorder {
                 last.1 = Some(at);
             }
         }
-    }
-
-    pub fn is_paused(&self) -> bool {
-        self.paused.load(Ordering::SeqCst)
     }
 
     #[allow(dead_code)]
@@ -1320,22 +1317,6 @@ impl GifRecorder {
         // reaching here with audio requested means the track was lost (no usable
         // wav, or the mux above failed and we fell through)
         Ok(self.settings.record_audio)
-    }
-
-    pub fn reset(&mut self) {
-        self.stop();
-        self.finish_audio();
-        // dropping the sink removes spool/stream temp files and reaps any
-        // live ffmpeg child; a mid-capture thread sees None and ends
-        *self.sink.lock().unwrap_or_else(|e| e.into_inner()) = None;
-        if let Ok(mut state) = self.state.lock() {
-            *state = RecordingState::Idle;
-        }
-        if let Some(ref wav_path) = self.audio_temp_path {
-            let _ = std::fs::remove_file(wav_path);
-        }
-        self.audio_temp_path = None;
-        self.audio_stop_tx = None;
     }
 }
 

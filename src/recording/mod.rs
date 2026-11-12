@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 mod gif_encoder;
 mod mp4_stream;
 mod spool;

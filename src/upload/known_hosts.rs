@@ -10,6 +10,7 @@ use std::sync::Mutex;
 
 static STORE_LOCK: Mutex<()> = Mutex::new(());
 
+#[cfg(feature = "sftp")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TrustDecision {
     Trusted,
@@ -65,10 +66,12 @@ impl KnownHosts {
         Ok(())
     }
 
+    #[cfg(feature = "sftp")]
     pub fn lookup(&self, host_port: &str) -> Option<&KnownHostEntry> {
         self.hosts.get(host_port)
     }
 
+    #[cfg(feature = "sftp")]
     pub fn insert(&mut self, host_port: String, fingerprint: String) {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -95,6 +98,7 @@ pub fn load_locked(path: &Path) -> Result<KnownHosts> {
     KnownHosts::load(path)
 }
 
+#[cfg(feature = "sftp")]
 pub fn verify_or_trust(path: &Path, host_port: &str, fingerprint: &str) -> Result<TrustDecision> {
     let _guard = STORE_LOCK
         .lock()
@@ -125,11 +129,12 @@ pub fn forget_locked(path: &Path, host_port: &str) -> Result<bool> {
     Ok(removed)
 }
 
+#[cfg(feature = "sftp")]
 pub fn host_key(host: &str, port: u16) -> String {
     format!("{host}:{port}")
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "sftp"))]
 mod tests {
     use super::*;
 

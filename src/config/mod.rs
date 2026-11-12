@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 #[cfg(target_os = "linux")]
 use anyhow::Context;
 use anyhow::{anyhow, Result};
@@ -18,8 +16,6 @@ const MAX_HOTKEY_LEN: usize = 64;
 const MAX_CUSTOM_URL_LEN: usize = 512;
 const MAX_FORM_NAME_LEN: usize = 64;
 const MAX_RESPONSE_PATH_LEN: usize = 128;
-const MIN_TICK_INTERVAL_MS: u32 = 16;
-const MAX_TICK_INTERVAL_MS: u32 = 500;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 // container-level default: any field absent from config.toml is filled from
@@ -38,8 +34,6 @@ pub struct Config {
     pub post_capture: PostCaptureConfig,
     #[serde(default)]
     pub upload: UploadConfig,
-    #[serde(default)]
-    pub performance: PerformanceConfig,
     #[serde(default)]
     pub marketplace: MarketplaceConfig,
     #[serde(default = "default_capture_tasks")]
@@ -441,7 +435,6 @@ pub struct HdrConfig {
     /// auto-detect via DISPLAYCONFIG_SDR_WHITE_LEVEL (with a DXGI fallback).
     pub brightness_nits: f32,
     pub user_brightness_scale: f32,
-    pub use_p99_max_cll: bool,
     /// HDR-preserving PNG transfer characteristic when preserve_hdr is on.
     /// applies only to HDR sources; SDR captures bypass the HDR encoder
     /// entirely
@@ -454,7 +447,6 @@ impl Default for HdrConfig {
         Self {
             brightness_nits: 0.0,
             user_brightness_scale: 1.0,
-            use_p99_max_cll: true,
             output_format: HdrOutputFormat::Pq,
         }
     }
@@ -870,60 +862,6 @@ impl std::fmt::Display for Theme {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
-#[serde(rename_all = "kebab-case")]
-pub enum RendererBackend {
-    #[default]
-    Wgpu,
-    TinySkia,
-}
-
-impl RendererBackend {
-    pub fn all() -> &'static [RendererBackend] {
-        &[RendererBackend::Wgpu, RendererBackend::TinySkia]
-    }
-
-    pub fn display_name(&self) -> &'static str {
-        match self {
-            RendererBackend::Wgpu => "WGPU",
-            RendererBackend::TinySkia => "Tiny Skia",
-        }
-    }
-
-    pub fn iced_backend_value(&self) -> &'static str {
-        match self {
-            RendererBackend::Wgpu => "wgpu",
-            RendererBackend::TinySkia => "tiny-skia",
-        }
-    }
-}
-
-impl std::fmt::Display for RendererBackend {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.display_name())
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
-pub struct PerformanceConfig {
-    pub tick_interval_ms: u32,
-    pub renderer: RendererBackend,
-    pub lazy_init_upload: bool,
-    pub lazy_init_plugins: bool,
-}
-
-impl Default for PerformanceConfig {
-    fn default() -> Self {
-        Self {
-            tick_interval_ms: 100,
-            renderer: RendererBackend::TinySkia,
-            lazy_init_upload: true,
-            lazy_init_plugins: true,
-        }
-    }
-}
-
 impl Config {
     pub fn validate(&self) -> Result<()> {
         if self.output.quality > MAX_QUALITY {
@@ -1037,15 +975,6 @@ impl Config {
             {
                 return Err(anyhow!("custom response path has invalid format"));
             }
-        }
-        if self.performance.tick_interval_ms < MIN_TICK_INTERVAL_MS
-            || self.performance.tick_interval_ms > MAX_TICK_INTERVAL_MS
-        {
-            return Err(anyhow!(
-                "tick_interval_ms must be between {} and {}",
-                MIN_TICK_INTERVAL_MS,
-                MAX_TICK_INTERVAL_MS
-            ));
         }
         if !self.capture.hdr.brightness_nits.is_finite()
             || self.capture.hdr.brightness_nits < 0.0
@@ -1174,11 +1103,6 @@ impl Config {
             }
         }
 
-        self.performance.tick_interval_ms = self
-            .performance
-            .tick_interval_ms
-            .clamp(MIN_TICK_INTERVAL_MS, MAX_TICK_INTERVAL_MS);
-
         // repair everything validate() would reject so a parseable config is
         // always salvageable in place: without this, one bad hdr value or one
         // duplicate task hotkey made load() throw away every setting (theme,
@@ -1253,7 +1177,6 @@ impl Default for Config {
             ui: UiConfig::default(),
             post_capture: PostCaptureConfig::default(),
             upload: UploadConfig::default(),
-            performance: PerformanceConfig::default(),
             marketplace: MarketplaceConfig::default(),
             capture_tasks: default_capture_tasks(),
         }
@@ -1655,15 +1578,6 @@ mod tests {
     }
 
     #[test]
-    fn test_default_performance_config() {
-        let config = Config::default();
-        assert_eq!(config.performance.tick_interval_ms, 100);
-        assert_eq!(config.performance.renderer, RendererBackend::TinySkia);
-        assert!(config.performance.lazy_init_upload);
-        assert!(config.performance.lazy_init_plugins);
-    }
-
-    #[test]
     fn video_quality_settings_default_and_repair() {
         let config = Config::default();
         assert_eq!(config.capture.video_fps, 30);
@@ -1700,15 +1614,6 @@ mod tests {
         assert_eq!(config.capture.gif.scale_percent, 10);
         assert_eq!(config.capture.gif.max_width, 16);
         assert!(config.validate().is_ok());
-    }
-
-    #[test]
-    fn test_validate_rejects_invalid_tick_interval() {
-        let mut config = Config::default();
-        config.performance.tick_interval_ms = 10;
-        assert!(config.validate().is_err());
-        config.performance.tick_interval_ms = 700;
-        assert!(config.validate().is_err());
     }
 
     #[test]
@@ -1758,22 +1663,22 @@ mod tests {
 
     #[test]
     fn load_tolerates_missing_field_and_unknown_key() {
-        // regression: a config that predates use_p99_max_cll and also carries a
+        // regression: a config that predates user_brightness_scale and also carries a
         // top-level key from a newer build must still parse — never wipe every
         // task and stored credential the way deny_unknown_fields + a required
         // field once did
         let full = toml::to_string(&Config::default()).unwrap();
-        assert!(full.contains("use_p99_max_cll"));
+        assert!(full.contains("user_brightness_scale"));
         let trimmed = full
             .lines()
-            .filter(|l| !l.contains("use_p99_max_cll"))
+            .filter(|l| !l.contains("user_brightness_scale"))
             .collect::<Vec<_>>()
             .join("\n");
         let doctored = format!("future_only_key = \"ignored\"\n{trimmed}");
         let parsed: Config =
             toml::from_str(&doctored).expect("partial + forward-versioned config must still parse");
-        assert!(
-            parsed.capture.hdr.use_p99_max_cll,
+        assert_eq!(
+            parsed.capture.hdr.user_brightness_scale, 1.0,
             "a missing field falls back to its default, not a wiped config"
         );
         assert_eq!(

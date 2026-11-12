@@ -2,9 +2,7 @@ use anyhow::{anyhow, Result};
 use image::RgbaImage;
 
 use super::current_tonemap_params;
-use super::tonemapping::{
-    hdr10_to_sdr_bt2390, hlg_to_sdr_bt2390, scrgb_to_sdr_bt2390, TonemapParams,
-};
+use super::tonemapping::{hdr10_to_sdr_bt2390, scrgb_to_sdr_bt2390, TonemapParams};
 
 const MAX_HDR_DIMENSION: u32 = 16384;
 const MAX_HDR_PIXELS: usize = 256 * 1024 * 1024;
@@ -78,15 +76,11 @@ pub enum HdrFormat {
     Sdr,
     Hdr10,
     ScRgb,
-    Hlg,
 }
 
 #[derive(Debug, Clone)]
 pub struct HdrDisplayInfo {
     pub is_hdr_enabled: bool,
-    pub format: HdrFormat,
-    pub max_luminance: f32,
-    pub min_luminance: f32,
     pub sdr_white_level: f32,
 }
 
@@ -94,9 +88,6 @@ impl Default for HdrDisplayInfo {
     fn default() -> Self {
         Self {
             is_hdr_enabled: false,
-            format: HdrFormat::Sdr,
-            max_luminance: 80.0,
-            min_luminance: 0.0,
             sdr_white_level: 80.0,
         }
     }
@@ -154,12 +145,9 @@ mod linux_hdr {
         if !output.is_hdr_signal() {
             return HdrDisplayInfo::default();
         }
-        let (_, max, reference) = output.luminance.unwrap_or((0.0, 1000.0, 203.0));
+        let (_, _, reference) = output.luminance.unwrap_or((0.0, 1000.0, 203.0));
         HdrDisplayInfo {
             is_hdr_enabled: true,
-            format: HdrFormat::Hdr10,
-            max_luminance: if max > 0.0 { max as f32 } else { 1000.0 },
-            min_luminance: 0.0,
             // wayland's reference luminance plays the role of windows'
             // SDR white level: what sdr-white content actually emits
             sdr_white_level: if reference > 0.0 { reference as f32 } else { 203.0 },
@@ -225,15 +213,6 @@ impl HdrCapture {
         }
     }
 
-    pub fn capture(&self) -> Result<RgbaImage> {
-        let (img, _hdr) = self.capture_with_hdr_at(None)?;
-        Ok(img)
-    }
-
-    pub fn capture_with_hdr(&self) -> Result<(RgbaImage, Option<crate::capture::HdrBitmap>)> {
-        self.capture_with_hdr_at(None)
-    }
-
     pub fn capture_with_hdr_at(
         &self,
         target: Option<(i32, i32)>,
@@ -278,7 +257,6 @@ impl HdrCapture {
                 height,
                 format,
                 data: raw_data,
-                max_luminance_nits: hdr_info.max_luminance,
             })
         };
         Ok((sdr_img, hdr_bitmap))
@@ -392,13 +370,6 @@ impl HdrCapture {
                 }
                 hdr10_to_sdr_bt2390(&u16_data, width, height, sdr_white, params)
             }
-            HdrFormat::Hlg => {
-                let expected_bytes = pixel_count.saturating_mul(4);
-                if raw_data.len() < expected_bytes {
-                    return RgbaImage::new(width, height);
-                }
-                hlg_to_sdr_bt2390(raw_data, width, height, sdr_white, params)
-            }
             HdrFormat::Sdr => {
                 let expected_bytes = pixel_count.saturating_mul(4);
                 if raw_data.len() < expected_bytes {
@@ -483,19 +454,8 @@ mod windows_hdr {
         );
         Some(HdrDisplayInfo {
             is_hdr_enabled: true,
-            format: match cs {
-                12 => HdrFormat::Hdr10,
-                13 => HdrFormat::Hlg,
-                _ => HdrFormat::ScRgb,
-            },
-            max_luminance: desc1.MaxLuminance,
-            min_luminance: desc1.MinLuminance,
             sdr_white_level,
         })
-    }
-
-    pub fn get_hdr_display_info() -> Result<HdrDisplayInfo> {
-        get_hdr_display_info_at(None)
     }
 
     // resolve HDR info for the output that contains `target`, not just the first
@@ -1186,7 +1146,6 @@ mod tests {
     fn test_hdr_display_info_default() {
         let info = HdrDisplayInfo::default();
         assert!(!info.is_hdr_enabled);
-        assert_eq!(info.format, HdrFormat::Sdr);
     }
 
     #[test]

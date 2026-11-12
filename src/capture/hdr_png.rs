@@ -31,10 +31,8 @@ pub struct HdrBitmap {
     ///   g 10-19, b 20-29, a 30-31), 4 bytes per pixel — DXGI
     ///   R10G10B10A2_UNORM and pipewire xBGR/ABGR_210LE share this layout.
     /// - `ScRgb`: R16G16B16A16 half-float, 8 bytes per pixel, little-endian.
-    /// - `Hlg`:   4 bytes per pixel (HLG-encoded BT.2020 8-bit per channel).
     /// - `Sdr`:   should never reach this struct — caller drops it.
     pub data: Vec<u8>,
-    pub max_luminance_nits: f32,
 }
 
 impl HdrBitmap {
@@ -65,9 +63,6 @@ pub fn encode_hdr_png(path: &Path, bitmap: &HdrBitmap, transfer: HdrTransfer) ->
         },
         HdrFormat::ScRgb => Err(anyhow!(
             "scRGB HDR encoding not supported (needs matrix + PQ pass); falling back to SDR"
-        )),
-        HdrFormat::Hlg => Err(anyhow!(
-            "HLG HDR encoding not supported (needs upsample to 16-bit); falling back to SDR"
         )),
         HdrFormat::Sdr => Err(anyhow!(
             "encode_hdr_png called with SDR bitmap — programmer error"
@@ -230,18 +225,14 @@ pub fn read_cicp(path: &Path) -> Option<CicpInfo> {
     parse_cicp(&bytes)
 }
 
+// colour primaries, transfer, matrix and full-range flag, in chunk order
 #[derive(Debug, Clone, Copy)]
-pub struct CicpInfo {
-    pub colour_primaries: u8,
-    pub transfer: u8,
-    pub matrix: u8,
-    pub full_range: u8,
-}
+pub struct CicpInfo(pub [u8; 4]);
 
 impl CicpInfo {
     pub fn is_hdr(&self) -> bool {
         // PQ (16) and HLG (18) are HDR transfers. Most other values are SDR.
-        matches!(self.transfer, 16 | 18)
+        matches!(self.0[1], 16 | 18)
     }
 }
 
@@ -263,12 +254,7 @@ fn parse_cicp(bytes: &[u8]) -> Option<CicpInfo> {
             if len < 4 {
                 return None;
             }
-            return Some(CicpInfo {
-                colour_primaries: bytes[data_start],
-                transfer: bytes[data_start + 1],
-                matrix: bytes[data_start + 2],
-                full_range: bytes[data_start + 3],
-            });
+            return Some(CicpInfo(bytes[data_start..data_start + 4].try_into().ok()?));
         }
         if typ == b"IDAT" || typ == b"IEND" {
             // cICP must appear before IDAT; if we hit IDAT we're done.
@@ -303,14 +289,10 @@ mod tests {
             height: 2,
             format: HdrFormat::Hdr10,
             data: vec![0u8; 16], // 4 pixels × 4 packed bytes
-            max_luminance_nits: 1000.0,
         };
         encode_hdr_png(&tmp, &bitmap, HdrTransfer::Pq).unwrap();
         let info = read_cicp(&tmp).expect("cICP chunk should be present");
-        assert_eq!(info.colour_primaries, 9);
-        assert_eq!(info.transfer, 16);
-        assert_eq!(info.matrix, 0);
-        assert_eq!(info.full_range, 1);
+        assert_eq!(info.0, [9, 16, 0, 1]);
         assert!(info.is_hdr());
         let _ = std::fs::remove_file(tmp);
     }
@@ -323,14 +305,10 @@ mod tests {
             height: 2,
             format: HdrFormat::Hdr10,
             data: vec![0u8; 16],
-            max_luminance_nits: 1000.0,
         };
         encode_hdr_png(&tmp, &bitmap, HdrTransfer::Hlg).unwrap();
         let info = read_cicp(&tmp).expect("cICP chunk should be present");
-        assert_eq!(info.colour_primaries, 9);
-        assert_eq!(info.transfer, 18);
-        assert_eq!(info.matrix, 0);
-        assert_eq!(info.full_range, 1);
+        assert_eq!(info.0, [9, 18, 0, 1]);
         assert!(info.is_hdr());
         let _ = std::fs::remove_file(tmp);
     }
@@ -356,7 +334,6 @@ mod tests {
             height: 1,
             format: HdrFormat::Hdr10,
             data: data.clone(),
-            max_luminance_nits: 1000.0,
         };
 
         let pq_u16: Vec<u16> = data
@@ -374,15 +351,7 @@ mod tests {
         let tmp = std::env::temp_dir().join("capscr-hdr10-pipeline-test.png");
         encode_hdr_png(&tmp, &bitmap, HdrTransfer::Pq).unwrap();
         let info = read_cicp(&tmp).expect("cICP chunk should be present");
-        assert_eq!(
-            (
-                info.colour_primaries,
-                info.transfer,
-                info.matrix,
-                info.full_range
-            ),
-            (9, 16, 0, 1)
-        );
+        assert_eq!(info.0, [9, 16, 0, 1]);
         assert!(info.is_hdr());
         let _ = std::fs::remove_file(tmp);
     }

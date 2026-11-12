@@ -20,6 +20,5 @@ build-*.log
 !/icons/installer-sidebar.bmp
 
 # the native installer wrapper builds independently of the app crate
-/setup/target
 
 redesigns/

@@ -95,6 +95,9 @@ jobs:
       - name: Run clippy
         run: cargo clippy --bin capscr --all-targets --locked -- -D warnings
 
+      - name: Lint without optional features
+        run: cargo clippy --bin capscr --locked --no-default-features -- -D warnings
+
   # headless-compositor smoke tests. advisory (continue-on-error) until they
   # have a week of green: the rigs depend on distro compositor/portal versions
   # that drift, and gnome/kwin headless can be flaky on shared runners. each

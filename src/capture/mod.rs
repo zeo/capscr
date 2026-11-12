@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 mod cursor;
 #[cfg(windows)]
 mod d2d_tonemap;
@@ -213,30 +211,11 @@ pub fn current_tonemap_params() -> TonemapParams {
     TONEMAP_OVERRIDE.get().copied().unwrap_or_default()
 }
 
-// Capture path gates. defaults match ShareX behaviour: plain GDI BitBlt
-// for everything, instant, SDR content identical to what Snipping Tool
-// produces, HDR content overblown (same as every other Windows screenshot
-// tool). two env vars opt into alternative paths:
-//   CAPSCR_HDR_AWARE=1 → CPU Reinhard tonemap on HDR pixels (slow,
-//                        tunable look, multi-second in debug builds)
-//   CAPSCR_USE_WGC=1   → Windows.Graphics.Capture with OS-side tonemap
-//                        (instant, OS-quality, but composes SDR content
-//                        via the HDR compositor on HDR displays which
-//                        can subtly shift SDR brightness vs GDI BitBlt)
-pub fn hdr_aware_enabled() -> bool {
-    static GATE: OnceLock<bool> = OnceLock::new();
-    *GATE.get_or_init(|| {
-        let raw = std::env::var("CAPSCR_HDR_AWARE").unwrap_or_else(|_| "<unset>".to_string());
-        let forced_on = matches!(raw.trim(), "1" | "true" | "TRUE" | "on");
-        tracing::info!(
-            "CAPSCR_HDR_AWARE env var = {:?} -> hdr_aware_enabled = {}",
-            raw,
-            forced_on,
-        );
-        forced_on
-    })
-}
-
+// capture path gate. SDR displays always take plain GDI BitBlt and HDR
+// displays take the CPU BT.2390 tonemap. CAPSCR_USE_WGC=1 swaps the HDR path
+// for Windows.Graphics.Capture with the OS-side tonemap: instant and OS
+// quality, but it composes SDR content through the HDR compositor, which can
+// shift SDR brightness against GDI BitBlt
 pub fn wgc_enabled() -> bool {
     static GATE: OnceLock<bool> = OnceLock::new();
     *GATE.get_or_init(|| {
@@ -398,13 +377,6 @@ fn current_monitor_rotation_at(x: i32, y: i32) -> MonitorRotation {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CaptureMode {
-    FullScreen,
-    Window,
-    Region,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Rectangle {
     pub x: i32,
     pub y: i32,
@@ -440,24 +412,14 @@ impl Rectangle {
 #[derive(Debug, Clone)]
 pub struct MonitorInfo {
     pub id: u32,
+    // only the linux grab paths match outputs by connector name
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub name: String,
     pub x: i32,
     pub y: i32,
     pub width: u32,
     pub height: u32,
     pub is_primary: bool,
-}
-
-#[cfg(test)]
-#[derive(Debug, Clone)]
-pub struct WindowInfo {
-    pub id: u32,
-    pub title: String,
-    pub app_name: String,
-    pub x: i32,
-    pub y: i32,
-    pub width: u32,
-    pub height: u32,
 }
 
 // map an xcap monitor into capscr's MonitorInfo. accessors return results
@@ -475,6 +437,7 @@ pub(crate) fn monitor_info(m: &xcap::Monitor) -> Result<MonitorInfo> {
     })
 }
 
+#[cfg(not(windows))]
 pub(crate) fn find_xcap_monitor(id: u32) -> Result<xcap::Monitor> {
     xcap::Monitor::all()?
         .into_iter()
@@ -1103,11 +1066,6 @@ mod tests {
     }
 
     #[test]
-    fn test_screen_capture_with_monitor() {
-        let _ = ScreenCapture::with_monitor(1).get_monitor_info();
-    }
-
-    #[test]
     fn capture_one_monitor_matches_reported_dimensions() {
         // no-ops headless (no display -> list_monitors errs); with a display it
         // proves the per-monitor grab returns pixels at the reported size
@@ -1166,7 +1124,6 @@ mod tests {
     fn test_window_capture_methods() {
         let _ = WindowCapture::focused();
         let _ = WindowCapture::from_title("nonexistent");
-        let _ = WindowCapture::list_application_windows();
     }
 
     #[test]

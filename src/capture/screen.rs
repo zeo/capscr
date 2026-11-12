@@ -13,12 +13,6 @@ impl ScreenCapture {
         Self { monitor_id: None }
     }
 
-    pub fn with_monitor(monitor_id: u32) -> Self {
-        Self {
-            monitor_id: Some(monitor_id),
-        }
-    }
-
     pub fn primary() -> Result<Self> {
         #[cfg(windows)]
         {

@@ -15,12 +15,6 @@ pub struct CursorShot {
     screen_y: i32,
 }
 
-impl CursorShot {
-    pub fn screen_pos(&self) -> (i32, i32) {
-        (self.screen_x, self.screen_y)
-    }
-}
-
 // snapshot the current system cursor. returns None if the cursor is hidden,
 // unresolvable, or any platform call fails — cursor capture must never take
 // down a screen capture
@@ -380,6 +374,7 @@ mod x11_impl {
 
 // global pointer position where the platform can answer it. wayland can't
 // (by design), which callers treat as "fall back to the primary monitor"
+#[cfg(not(windows))]
 pub fn pointer_position() -> Option<(i32, i32)> {
     #[cfg(target_os = "linux")]
     {

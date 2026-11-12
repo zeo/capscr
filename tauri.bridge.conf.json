@@ -1,7 +1,0 @@
-{
-  "bundle": {
-    "resources": {
-      "bridge/rot-installer.exe": "rot-installer.exe"
-    }
-  }
-}

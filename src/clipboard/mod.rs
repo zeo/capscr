@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use anyhow::{anyhow, Result};
 use arboard::Clipboard;
 use image::RgbaImage;
@@ -81,15 +79,6 @@ impl ClipboardManager {
             };
             clipboard.set_image(img_data)
         })
-    }
-
-    pub fn copy_file_path<P: AsRef<Path>>(&mut self, path: P) -> Result<()> {
-        let path_str = path.as_ref().to_string_lossy().to_string();
-        if path_str.len() > 4096 {
-            return Err(anyhow!("Path too long for clipboard"));
-        }
-
-        self.retry_with_backoff(|clipboard| clipboard.set_text(path_str.clone()))
     }
 
     pub fn copy_text(&mut self, text: &str) -> Result<()> {

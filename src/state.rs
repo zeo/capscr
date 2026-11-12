@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use crate::config::{CaptureTask, Config};
 use crate::plugin::PluginManager;
 use crate::recording::{GifRecorder, RecordingState};
@@ -101,7 +99,6 @@ const DROPPED_PATHS_CAP: usize = 4096;
 #[derive(Clone, Debug)]
 pub struct UploadRecord {
     pub url: String,
-    pub delete_url: Option<String>,
 }
 
 impl AppState {
@@ -170,9 +167,7 @@ impl AppState {
     /// takes the write lock and it's instant. Intended to run on a background
     /// thread spawned at startup so the tray isn't blocked.
     pub fn load_plugins(&self) {
-        let lazy = self.config.lock().unwrap().performance.lazy_init_plugins;
         let mut pm = PluginManager::new();
-        pm.set_lazy_loading(lazy);
         let errors = pm.load_all();
         for err in &errors {
             tracing::warn!("Plugin load error: {}", err);

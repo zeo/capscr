@@ -62,7 +62,6 @@ pub enum PluginResponse {
 }
 
 pub struct PluginManager {
-    lazy_loading: bool,
     plugins_dir: Option<PathBuf>,
     #[cfg(feature = "plugin-runtime")]
     host: Option<wasm::SharedWasmHost>,
@@ -73,17 +72,12 @@ pub struct PluginManager {
 impl PluginManager {
     pub fn new() -> Self {
         Self {
-            lazy_loading: true,
             plugins_dir: default_plugins_dir(),
             #[cfg(feature = "plugin-runtime")]
             host: None,
             #[cfg(feature = "plugin-runtime")]
             loaded: Vec::new(),
         }
-    }
-
-    pub fn set_lazy_loading(&mut self, lazy: bool) {
-        self.lazy_loading = lazy;
     }
 
     /// scan the plugins dir, parse every plugin.toml, and (under the

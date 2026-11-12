@@ -56,10 +56,6 @@ pub fn cancel_capture() {
     notify_hook_thread();
 }
 
-pub fn is_capturing() -> bool {
-    CAPTURE_REQUEST.load(Ordering::SeqCst)
-}
-
 struct HookRegistry {
     bindings: HashMap<HookBinding, String>,
     enabled: bool,
@@ -162,10 +158,12 @@ pub fn set_enabled(enabled: bool) {
     notify_hook_thread();
 }
 
+#[cfg(test)]
 pub fn current_enabled() -> bool {
     registry().lock().unwrap().enabled
 }
 
+#[cfg(test)]
 pub fn registered_bindings() -> Vec<(HookBinding, String)> {
     registry()
         .lock()

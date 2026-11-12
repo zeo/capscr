@@ -15,7 +15,7 @@
 //
 // inputs are first rescaled so the OS-reported SDR white level maps to 1.0
 // in working space — that way SDR-on-HDR pixels sit at exactly 1.0 and the
-// p99 of maxRGB is 1.0 whenever there is no HDR content, which makes the
+// sampled peak of maxRGB is 1.0 whenever there is no HDR content, which makes the
 // tonemap the identity and preserves SDR pixel-for-pixel.
 
 use image::RgbaImage;
@@ -38,11 +38,6 @@ pub struct TonemapParams {
     /// global exposure multiplier applied before tonemapping. 1.0 is the
     /// neutral pass-through.
     pub user_brightness_scale: f32,
-    /// when true, the source peak used by the EETF is the 99th percentile
-    /// of maxRGB across the frame; this drops a small fraction of extreme
-    /// outliers (specular glints, sun pixels) so the rest of the image
-    /// isn't crushed by their presence.
-    pub use_p99_max_cll: bool,
 }
 
 impl Default for TonemapParams {
@@ -50,7 +45,6 @@ impl Default for TonemapParams {
         Self {
             sdr_white_nits_override: 0.0,
             user_brightness_scale: 1.0,
-            use_p99_max_cll: true,
         }
     }
 }
@@ -64,16 +58,6 @@ pub fn pq_to_linear(pq: f32) -> f32 {
         0.0
     } else {
         10000.0 * (numerator / denominator).powf(1.0 / PQ_N)
-    }
-}
-
-pub fn hlg_to_linear(hlg: f32) -> f32 {
-    let b: f32 = 0.28466892;
-    let c: f32 = 0.5599107;
-    if hlg <= 0.5 {
-        (hlg * hlg) / 3.0
-    } else {
-        ((hlg - c).exp() + b) / 12.0
     }
 }
 
@@ -118,6 +102,7 @@ fn linear_to_srgb_u8(linear: f32) -> u8 {
 
 // normalized PQ encode: v in [0, 1] where 1.0 = 10000 nits absolute, output
 // in [0, 1] PQ-encoded.
+#[cfg(test)]
 fn linear_to_pq_norm(v: f32) -> f32 {
     let v = v.clamp(0.0, 1.0);
     if v <= 0.0 {
@@ -129,6 +114,7 @@ fn linear_to_pq_norm(v: f32) -> f32 {
 
 // normalized PQ decode: pq in [0, 1] PQ-encoded, output in [0, 1] where
 // 1.0 = 10000 nits absolute.
+#[cfg(test)]
 fn pq_to_linear_norm(pq: f32) -> f32 {
     let pq = pq.clamp(0.0, 1.0);
     if pq <= 0.0 {
@@ -363,45 +349,6 @@ pub fn hdr10_to_sdr_bt2390(
         dest[1] = pq_to_linear(g_pq) / 80.0;
         dest[2] = pq_to_linear(b_pq) / 80.0;
         dest[3] = a_pq;
-    }
-    scrgb_to_sdr_bt2390(&scrgb, width, height, sdr_white_nits, params)
-}
-
-#[allow(clippy::uninit_vec)]
-pub fn hlg_to_sdr_bt2390(
-    hlg_data: &[u8],
-    width: u32,
-    height: u32,
-    sdr_white_nits: f32,
-    params: TonemapParams,
-) -> RgbaImage {
-    if width == 0 || height == 0 || width > MAX_TONEMAP_DIMENSION || height > MAX_TONEMAP_DIMENSION
-    {
-        return RgbaImage::new(1, 1);
-    }
-    let pixel_count = match (width as usize).checked_mul(height as usize) {
-        Some(c) if c <= MAX_TONEMAP_PIXELS => c,
-        _ => return RgbaImage::new(1, 1),
-    };
-    if hlg_data.len() < pixel_count * 4 {
-        return RgbaImage::new(width, height);
-    }
-
-    // HLG reference white is roughly 0.75 signal -> 1.0 linear; bring the
-    // peak up to scRGB ~12 (1000 nits) before handing to the scRGB path.
-    let mut scrgb = Vec::with_capacity(pixel_count * 4);
-    unsafe {
-        scrgb.set_len(pixel_count * 4);
-    }
-    for (src, dest) in hlg_data.as_chunks::<4>().0.iter().zip(scrgb.as_chunks_mut::<4>().0) {
-        let r_hlg = src[0] as f32 / 255.0;
-        let g_hlg = src[1] as f32 / 255.0;
-        let b_hlg = src[2] as f32 / 255.0;
-        let a_hlg = src[3] as f32 / 255.0;
-        dest[0] = hlg_to_linear(r_hlg) * 12.0;
-        dest[1] = hlg_to_linear(g_hlg) * 12.0;
-        dest[2] = hlg_to_linear(b_hlg) * 12.0;
-        dest[3] = a_hlg;
     }
     scrgb_to_sdr_bt2390(&scrgb, width, height, sdr_white_nits, params)
 }

@@ -23,24 +23,6 @@ impl RegionCapture {
     pub fn region(&self) -> &Rectangle {
         &self.region
     }
-
-    fn get_virtual_screen_origin() -> (i32, i32) {
-        #[cfg(windows)]
-        {
-            if let Ok(monitors) = super::fast_list_monitors() {
-                let min_x = monitors.iter().map(|m| m.x).min().unwrap_or(0);
-                let min_y = monitors.iter().map(|m| m.y).min().unwrap_or(0);
-                return (min_x, min_y);
-            }
-        }
-        if let Ok(monitors) = super::list_monitors() {
-            let min_x = monitors.iter().map(|m| m.x).min().unwrap_or(0);
-            let min_y = monitors.iter().map(|m| m.y).min().unwrap_or(0);
-            (min_x, min_y)
-        } else {
-            (0, 0)
-        }
-    }
 }
 
 impl Capture for RegionCapture {
