@@ -282,6 +282,8 @@ pub struct CaptureConfig {
     #[serde(default = "default_record_audio")]
     pub record_audio: bool,
     #[serde(default)]
+    pub record_mic: bool,
+    #[serde(default)]
     pub gif: GifOptions,
     #[serde(default)]
     pub video_encoder: VideoEncoder,
@@ -390,6 +392,7 @@ impl Default for CaptureConfig {
             video_quality: VideoQuality::default(),
             hdr: HdrConfig::default(),
             record_audio: false,
+            record_mic: false,
             gif: GifOptions::default(),
             video_encoder: VideoEncoder::default(),
         }

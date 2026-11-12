@@ -34,6 +34,7 @@ export interface CaptureConfig {
   video_quality: "High" | "Balanced" | "Compact";
   hdr: HdrConfig;
   record_audio: boolean;
+  record_mic: boolean;
   gif: GifOptions;
   video_encoder: VideoEncoder;
 }

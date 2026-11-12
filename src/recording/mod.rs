@@ -3,7 +3,7 @@ mod mp4_stream;
 mod spool;
 
 pub(crate) use gif_encoder::PauseClock;
-pub use gif_encoder::{is_ffmpeg_available, GifRecorder};
+pub use gif_encoder::{is_ffmpeg_available, AudioSource, GifRecorder};
 pub use mp4_stream::{ffmpeg_command, hardware_encoders};
 
 use std::time::Duration;
@@ -61,6 +61,8 @@ pub struct RecordingSettings {
     // capture.show_cursor toggle used by still captures
     pub show_cursor: bool,
     pub record_audio: bool,
+    // mixed over the system audio as narration, mp4 only
+    pub record_mic: bool,
     // decides the frame sink: gif spools raw frames to disk for a post-stop
     // encode, mp4 streams into a live ffmpeg child
     pub format: RecordingFormat,
@@ -77,6 +79,7 @@ impl Default for RecordingSettings {
             video_crf: 23,
             show_cursor: false,
             record_audio: false,
+            record_mic: false,
             format: RecordingFormat::Gif,
             gif: Default::default(),
             video_encoder: Default::default(),
@@ -97,6 +100,7 @@ mod tests {
             video_crf: 18,
             show_cursor: false,
             record_audio: false,
+            record_mic: false,
             format: RecordingFormat::Mp4,
             gif: Default::default(),
             video_encoder: Default::default(),

@@ -3934,6 +3934,7 @@ pub(crate) fn start_gif_recording(
         video_crf: cfg.capture.video_quality.crf(),
         show_cursor: cfg.capture.show_cursor,
         record_audio: cfg.capture.record_audio,
+        record_mic: cfg.capture.record_mic,
         format: if is_mp4 {
             crate::recording::RecordingFormat::Mp4
         } else {
@@ -4078,24 +4079,19 @@ fn finalize_gif_recording(task: &CaptureTask, app: &AppHandle) {
         let save_result = if is_mp4 {
             rec.save_mp4(&path)
         } else {
-            rec.save(&path).map(|_| false)
+            rec.save(&path).map(|_| Vec::new())
         };
 
         match save_result {
-            Ok(audio_dropped) => {
+            Ok(lost_audio) => {
                 *state.last_save.lock().unwrap() = Some(path.clone());
                 Sound::Screenshot.play_if_enabled(cfg.post_capture.play_sound);
                 if cfg.ui.show_notifications {
                     let title = if is_mp4 { "Video saved" } else { "GIF saved" };
                     let _ = show_notification(title, &path.to_string_lossy());
                 }
-                // the user asked for system audio but the track was lost
-                if audio_dropped {
-                    emit_error(
-                        app,
-                        "recording",
-                        "saved without audio — the system-audio track couldn't be captured or muxed",
-                    );
+                if let Some(note) = audio_loss_note(&lost_audio) {
+                    emit_error(app, "recording", note);
                 }
                 // a stop the user didn't ask for deserves an explanation
                 let early_stop_note = match rec.stop_reason() {
@@ -4504,6 +4500,21 @@ mod recording_edit_tests {
         }
         let secs = gif_duration_secs(std::io::Cursor::new(bytes)).unwrap();
         assert!((secs - 0.35).abs() < 1e-9, "{secs}");
+    }
+}
+
+/// what to tell the user when requested audio tracks are missing from a recording
+fn audio_loss_note(lost: &[crate::recording::AudioSource]) -> Option<&'static str> {
+    use crate::recording::AudioSource;
+    match lost {
+        [] => None,
+        [AudioSource::System] => {
+            Some("saved without system audio: the track couldn't be captured or muxed")
+        }
+        [AudioSource::Mic] => Some(
+            "saved without narration: the microphone was unavailable or its track couldn't be muxed",
+        ),
+        _ => Some("saved without audio: neither system audio nor the microphone made it into the file"),
     }
 }
 

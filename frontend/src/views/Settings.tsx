@@ -733,6 +733,29 @@ function CapturePane(props: { c: AppConfig; patch: Patch }) {
             <span class="field-hint">captures system loopback audio for MP4 recordings</span>
           </div>
         </div>
+        <div class="field">
+          <label class="field-label">record microphone</label>
+          <div class="field-control">
+            <label class="check">
+              <input
+                type="checkbox"
+                checked={c().capture.record_mic}
+                onChange={(e) =>
+                  props.patch("capture", {
+                    ...c().capture,
+                    record_mic: e.currentTarget.checked,
+                  })
+                }
+              />
+              <span class="check-label">
+                {c().capture.record_mic ? "enabled" : "disabled"}
+              </span>
+            </label>
+            <span class="field-hint">
+              mixes the default microphone into MP4 recordings as narration
+            </span>
+          </div>
+        </div>
       </Section>
     </>
   );

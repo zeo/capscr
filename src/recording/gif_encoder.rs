@@ -138,9 +138,7 @@ pub struct GifRecorder {
     // read every tick so the frame can be moved and resized mid-recording
     region: Arc<Mutex<Option<Rectangle>>>,
     paused: Arc<AtomicBool>,
-    audio_temp_path: Option<std::path::PathBuf>,
-    audio_stop_tx: Option<Sender<()>>,
-    audio_thread: Mutex<Option<thread::JoinHandle<()>>>,
+    audio_tracks: Vec<AudioTrack>,
     audio_started: Option<Instant>,
     // paused stretches of the audio clock, cut from the track at mux time
     audio_pauses: Mutex<Vec<(Duration, Option<Duration>)>>,
@@ -406,9 +404,103 @@ fn crop_changed(
     )
 }
 
-// ffmpeg's gif muxer rounds each frame to whole centiseconds, so frames go in
-// at a rate that divides 100 and every tick lands exactly
-// the video skips paused time, so the system-audio track drops it too
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AudioSource {
+    System,
+    Mic,
+}
+
+struct AudioTrack {
+    source: AudioSource,
+    path: std::path::PathBuf,
+    stop_tx: Sender<()>,
+    thread: Mutex<Option<thread::JoinHandle<()>>>,
+}
+
+impl AudioTrack {
+    fn start(source: AudioSource) -> Self {
+        let path = std::env::temp_dir().join(format!(
+            "capscr_audio_{}.wav",
+            uuid::Uuid::new_v4().as_simple()
+        ));
+        let (stop_tx, stop_rx) = channel();
+        let wav = path.clone();
+        let thread = thread::spawn(move || {
+            if let Err(e) = record_audio_source(&wav, stop_rx, source) {
+                tracing::error!("{source:?} audio capture failed: {e}");
+            }
+        });
+        Self {
+            source,
+            path,
+            stop_tx,
+            thread: Mutex::new(Some(thread)),
+        }
+    }
+
+    /// stops the tap and waits until its wav header is final
+    fn finish(&self) {
+        let _ = self.stop_tx.send(());
+        let handle = self.thread.lock().unwrap_or_else(|e| e.into_inner()).take();
+        if handle.is_some_and(|handle| handle.join().is_err()) {
+            tracing::error!("{:?} audio capture thread panicked", self.source);
+        }
+    }
+
+    fn has_samples(&self) -> bool {
+        std::fs::metadata(&self.path).is_ok_and(|m| m.len() > 44)
+    }
+}
+
+impl Drop for AudioTrack {
+    fn drop(&mut self) {
+        self.finish();
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+/// ffmpeg arguments that mux `tracks` under the encoded `video`. several
+/// tracks are summed by amix without normalizing, so adding narration doesn't
+/// halve the system audio
+fn mux_args(
+    video: &Path,
+    tracks: &[&Path],
+    pauses: &[(Duration, Option<Duration>)],
+    out: &Path,
+) -> Vec<String> {
+    let mut args = vec!["-i".to_string(), video.to_string_lossy().into_owned()];
+    for track in tracks {
+        args.push("-i".into());
+        args.push(track.to_string_lossy().into_owned());
+    }
+    let pause = audio_pause_filter(pauses);
+    if tracks.len() > 1 {
+        let mut graph = String::new();
+        let mut labels = String::new();
+        for i in 1..=tracks.len() {
+            match &pause {
+                Some(filter) => {
+                    graph += &format!("[{i}:a]{filter}[a{i}];");
+                    labels += &format!("[a{i}]");
+                }
+                None => labels += &format!("[{i}:a]"),
+            }
+        }
+        graph += &format!(
+            "{labels}amix=inputs={}:duration=longest:normalize=0[a]",
+            tracks.len()
+        );
+        args.extend(["-filter_complex".into(), graph]);
+        args.extend(["-map", "0:v", "-map", "[a]"].map(String::from));
+    } else if let Some(filter) = pause {
+        args.extend(["-af".into(), filter]);
+    }
+    args.extend(["-c:v", "copy", "-c:a", "aac", "-shortest", "-y"].map(String::from));
+    args.push(out.to_string_lossy().into_owned());
+    args
+}
+
+// the video skips paused time, so every audio track drops it too
 fn audio_pause_filter(pauses: &[(Duration, Option<Duration>)]) -> Option<String> {
     if pauses.is_empty() {
         return None;
@@ -423,6 +515,8 @@ fn audio_pause_filter(pauses: &[(Duration, Option<Duration>)]) -> Option<String>
     Some(format!("aselect='not({})',asetpts=N/SR/TB", spans.join("+")))
 }
 
+// ffmpeg's gif muxer rounds each frame to whole centiseconds, so frames go in
+// at a rate that divides 100 and every tick lands exactly
 fn ffmpeg_gif_rate(fps: u32) -> u32 {
     [1, 2, 4, 5, 10, 20, 25, 50]
         .into_iter()
@@ -561,9 +655,7 @@ impl GifRecorder {
             stop_signal: None,
             region: Arc::new(Mutex::new(None)),
             paused: Arc::new(AtomicBool::new(false)),
-            audio_temp_path: None,
-            audio_stop_tx: None,
-            audio_thread: Mutex::new(None),
+            audio_tracks: Vec::new(),
             audio_started: None,
             audio_pauses: Mutex::new(Vec::new()),
         }
@@ -656,23 +748,16 @@ impl GifRecorder {
         let (tx, rx): (Sender<()>, Receiver<()>) = channel();
         self.stop_signal = Some(tx);
 
-        // gifs have no audio track; only mp4 recordings pay for the wasapi tap
-        if self.settings.record_audio && self.settings.format == RecordingFormat::Mp4 {
-            let temp_dir = std::env::temp_dir();
-            let audio_filename = format!("capscr_audio_{}.wav", uuid::Uuid::new_v4().as_simple());
-            let audio_path = temp_dir.join(audio_filename);
-            self.audio_temp_path = Some(audio_path.clone());
-
-            let (audio_tx, audio_rx) = channel();
-            self.audio_stop_tx = Some(audio_tx);
-            self.audio_started = Some(Instant::now());
-
-            let audio_thread = thread::spawn(move || {
-                if let Err(e) = record_loopback_audio(&audio_path, audio_rx) {
-                    tracing::error!("WASAPI Audio loopback record error: {e}");
-                }
-            });
-            self.audio_thread = Mutex::new(Some(audio_thread));
+        // gifs have no audio track; only mp4 recordings pay for the audio taps
+        if self.settings.format == RecordingFormat::Mp4 {
+            let sources = [
+                (self.settings.record_audio, AudioSource::System),
+                (self.settings.record_mic, AudioSource::Mic),
+            ];
+            for (_, source) in sources.into_iter().filter(|(wanted, _)| *wanted) {
+                self.audio_started.get_or_insert_with(Instant::now);
+                self.audio_tracks.push(AudioTrack::start(source));
+            }
         }
 
         let state = Arc::clone(&self.state);
@@ -1027,23 +1112,14 @@ impl GifRecorder {
         if let Some(tx) = self.stop_signal.take() {
             let _ = tx.send(());
         }
-        if let Some(tx) = self.audio_stop_tx.take() {
-            let _ = tx.send(());
+        for track in &self.audio_tracks {
+            let _ = track.stop_tx.send(());
         }
     }
 
-    /// stops the audio tap and waits until its wav header is final
     fn finish_audio(&self) {
-        if let Some(tx) = &self.audio_stop_tx {
-            let _ = tx.send(());
-        }
-        let handle = self
-            .audio_thread
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .take();
-        if handle.is_some_and(|handle| handle.join().is_err()) {
-            tracing::error!("audio capture thread panicked");
+        for track in &self.audio_tracks {
+            track.finish();
         }
     }
 
@@ -1235,17 +1311,17 @@ impl GifRecorder {
             }
         }
 
-        if let Some(ref wav_path) = self.audio_temp_path {
-            let _ = std::fs::remove_file(wav_path);
+        for track in &self.audio_tracks {
+            let _ = std::fs::remove_file(&track.path);
         }
 
         Ok(())
     }
 
-    /// Ok(true) means the recording saved but the system-audio track the user
-    /// asked for is missing (capture produced nothing usable, or the mux
-    /// failed) — the caller should tell them it saved without audio.
-    pub fn save_mp4<P: AsRef<Path>>(&self, path: P) -> Result<bool> {
+    /// saves the recording and returns the requested audio sources that
+    /// didn't make it into the file (nothing usable was captured, or the mux
+    /// failed), so the caller can say what's missing
+    pub fn save_mp4<P: AsRef<Path>>(&self, path: P) -> Result<Vec<AudioSource>> {
         let path = path.as_ref();
 
         let path_str = path.to_string_lossy();
@@ -1282,51 +1358,58 @@ impl GifRecorder {
         }
 
         self.finish_audio();
-        let audio_exists = self
-            .audio_temp_path
-            .as_ref()
-            .map(|p| p.exists() && std::fs::metadata(p).map(|m| m.len() > 44).unwrap_or(false))
-            .unwrap_or(false);
-
-        if audio_exists {
-            let wav_path = self.audio_temp_path.as_ref().unwrap();
-            let pauses = self.audio_pauses.lock().unwrap_or_else(|e| e.into_inner());
-            let mux_ok = ffmpeg_command()
-                .args([
-                    "-i",
-                    &temp_video.to_string_lossy(),
-                    "-i",
-                    &wav_path.to_string_lossy(),
-                ])
-                .args(
-                    audio_pause_filter(&pauses)
-                        .map(|filter| ["-af".to_string(), filter])
-                        .into_iter()
-                        .flatten(),
-                )
-                .args([
-                    "-c:v",
-                    "copy",
-                    "-c:a",
-                    "aac",
-                    "-shortest",
-                    "-y",
-                    &path.to_string_lossy(),
-                ])
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .status()
-                .map(|s| s.success())
-                .unwrap_or(false);
-            let _ = std::fs::remove_file(wav_path);
-            if mux_ok {
-                let _ = std::fs::remove_file(&temp_video);
-                return Ok(false);
-            }
-            // a broken wav must not cost the user their video — fall through
-            // and keep the silent recording
-            tracing::warn!("audio mux failed; saving recording without audio");
+        let usable: Vec<&AudioTrack> = self
+            .audio_tracks
+            .iter()
+            .filter(|t| t.has_samples())
+            .collect();
+        // the full mix first, then each track alone, so a broken wav costs only
+        // its own track and never the video
+        let mut attempts = vec![usable.clone()];
+        if usable.len() > 1 {
+            attempts.extend(usable.iter().map(|track| vec![*track]));
+        }
+        let pauses = self
+            .audio_pauses
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        let muxed = attempts
+            .into_iter()
+            .filter(|tracks| !tracks.is_empty())
+            .find(|tracks| {
+                let wavs: Vec<&Path> = tracks.iter().map(|t| t.path.as_path()).collect();
+                let ok = ffmpeg_command()
+                    .args(mux_args(&temp_video, &wavs, &pauses, path))
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .status()
+                    .is_ok_and(|s| s.success());
+                if !ok {
+                    let sources: Vec<AudioSource> = tracks.iter().map(|t| t.source).collect();
+                    tracing::warn!("audio mux failed for {sources:?}");
+                }
+                ok
+            });
+        for track in &self.audio_tracks {
+            let _ = std::fs::remove_file(&track.path);
+        }
+        let kept: Vec<AudioSource> = muxed
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .map(|t| t.source)
+            .collect();
+        let lost = self
+            .audio_tracks
+            .iter()
+            .map(|t| t.source)
+            .filter(|source| !kept.contains(source))
+            .collect();
+        if muxed.is_some() {
+            let _ = std::fs::remove_file(&temp_video);
+            return Ok(lost);
         }
 
         if std::fs::rename(&temp_video, path).is_err() {
@@ -1336,24 +1419,16 @@ impl GifRecorder {
             let _ = std::fs::remove_file(&temp_video);
         }
 
-        // reaching here with audio requested means the track was lost (no usable
-        // wav, or the mux above failed and we fell through)
-        Ok(self.settings.record_audio)
+        Ok(lost)
     }
 }
 
 impl Drop for GifRecorder {
     fn drop(&mut self) {
-        // save_mp4 removes the audio wav only on its mux path; its early error
-        // returns (no frames, bad path, stream finish failure) skip cleanup, so
-        // reap the temp wav here to hold the temp-hygiene invariant on every exit.
         // the capture thread is only signalled since a grab can take a frame
-        // interval, but the audio writer is joined so the wav isn't still open
+        // interval; each audio track joins its writer and removes its wav when
+        // dropped, which covers save_mp4's early error returns too
         self.stop();
-        self.finish_audio();
-        if let Some(ref wav_path) = self.audio_temp_path {
-            let _ = std::fs::remove_file(wav_path);
-        }
     }
 }
 
@@ -1465,13 +1540,18 @@ fn write_wav_header(
 }
 
 #[cfg(windows)]
-pub fn record_loopback_audio(wav_path: &Path, stop_rx: Receiver<()>) -> Result<()> {
+fn record_audio_source(wav_path: &Path, stop_rx: Receiver<()>, source: AudioSource) -> Result<()> {
     use std::io::{Seek, Write};
 
     let _ = wasapi::initialize_mta();
 
-    let device = wasapi::get_default_device(&wasapi::Direction::Render)
-        .map_err(|e| anyhow!("failed to get default render device: {e:?}"))?;
+    // opening a render device for capture is wasapi's loopback tap
+    let device_direction = match source {
+        AudioSource::System => wasapi::Direction::Render,
+        AudioSource::Mic => wasapi::Direction::Capture,
+    };
+    let device = wasapi::get_default_device(&device_direction)
+        .map_err(|e| anyhow!("failed to get default {device_direction:?} device: {e:?}"))?;
 
     let mut client = device
         .get_iaudioclient()
@@ -1567,13 +1647,17 @@ pub fn record_loopback_audio(wav_path: &Path, stop_rx: Receiver<()>) -> Result<(
 }
 
 // linux: pulseaudio (or pipewire-pulse) exposes the default output's monitor
-// as @DEFAULT_MONITOR@, and monitor sources deliver continuous silence while
-// nothing plays — the wall-clock alignment the wasapi path zero-fills for
-// comes free. a second ffmpeg child records it straight to the wav.
+// as @DEFAULT_MONITOR@ and the default input as @DEFAULT_SOURCE@; both deliver
+// continuous samples, silence included, so the wall-clock alignment the
+// wasapi path zero-fills for comes free. an ffmpeg child records each to a wav
 #[cfg(target_os = "linux")]
-pub fn record_loopback_audio(wav_path: &Path, stop_rx: Receiver<()>) -> Result<()> {
+fn record_audio_source(wav_path: &Path, stop_rx: Receiver<()>, source: AudioSource) -> Result<()> {
     use std::io::Write;
 
+    let input = match source {
+        AudioSource::System => "@DEFAULT_MONITOR@",
+        AudioSource::Mic => "@DEFAULT_SOURCE@",
+    };
     let mut child = ffmpeg_command()
         .args([
             "-hide_banner",
@@ -1582,7 +1666,7 @@ pub fn record_loopback_audio(wav_path: &Path, stop_rx: Receiver<()>) -> Result<(
             "-f",
             "pulse",
             "-i",
-            "@DEFAULT_MONITOR@",
+            input,
             "-ac",
             "2",
             "-ar",
@@ -1618,8 +1702,12 @@ pub fn record_loopback_audio(wav_path: &Path, stop_rx: Receiver<()>) -> Result<(
 }
 
 #[cfg(not(any(windows, target_os = "linux")))]
-pub fn record_loopback_audio(_wav_path: &Path, _stop_rx: Receiver<()>) -> Result<()> {
-    Err(anyhow!("loopback audio is not supported on this platform"))
+fn record_audio_source(
+    _wav_path: &Path,
+    _stop_rx: Receiver<()>,
+    _source: AudioSource,
+) -> Result<()> {
+    Err(anyhow!("audio capture is not supported on this platform"))
 }
 
 impl Default for GifRecorder {
@@ -2131,6 +2219,48 @@ mod tests {
             audio_pause_filter(&pauses).unwrap(),
             "aselect='not(between(t,1.000,2.500)+between(t,4.000,1000000000.000))',asetpts=N/SR/TB"
         );
+    }
+
+    #[test]
+    fn mux_args_mix_every_track() {
+        let (video, out) = (Path::new("v.mp4"), Path::new("out.mp4"));
+        let (system, mic) = (Path::new("s.wav"), Path::new("m.wav"));
+        let tail = ["-c:v", "copy", "-c:a", "aac", "-shortest", "-y", "out.mp4"];
+        assert_eq!(mux_args(video, &[], &[], out)[2..], tail);
+        assert_eq!(
+            mux_args(video, &[system], &[], out),
+            [&["-i", "v.mp4", "-i", "s.wav"][..], &tail].concat()
+        );
+        let pauses = [(Duration::from_secs(1), Some(Duration::from_secs(2)))];
+        let cut = audio_pause_filter(&pauses).unwrap();
+        assert_eq!(
+            mux_args(video, &[system], &pauses, out)[4..6],
+            ["-af", cut.as_str()]
+        );
+
+        let mixed = mux_args(video, &[system, mic], &[], out);
+        assert_eq!(
+            mixed[..8],
+            [
+                "-i",
+                "v.mp4",
+                "-i",
+                "s.wav",
+                "-i",
+                "m.wav",
+                "-filter_complex",
+                "[1:a][2:a]amix=inputs=2:duration=longest:normalize=0[a]"
+            ]
+        );
+        assert_eq!(mixed[8..12], ["-map", "0:v", "-map", "[a]"]);
+        assert_eq!(mixed[12..], tail);
+
+        let mixed = mux_args(video, &[system, mic], &pauses, out);
+        assert_eq!(
+            mixed[7],
+            format!("[1:a]{cut}[a1];[2:a]{cut}[a2];[a1][a2]amix=inputs=2:duration=longest:normalize=0[a]")
+        );
+        assert!(!mixed.contains(&"-af".to_string()));
     }
 
     #[test]
