@@ -49,6 +49,15 @@ impl Default for TonemapParams {
     }
 }
 
+// hdr10 carries bt.2020 primaries; linear-light matrix from itu-r bt.2407 section 2
+fn bt2020_to_bt709([r, g, b]: [f32; 3]) -> [f32; 3] {
+    [
+        1.6605 * r - 0.5876 * g - 0.0728 * b,
+        -0.1246 * r + 1.1329 * g - 0.0083 * b,
+        -0.0182 * r - 0.1006 * g + 1.1187 * b,
+    ]
+}
+
 pub fn pq_to_linear(pq: f32) -> f32 {
     let pq_clamped = pq.clamp(0.0, 1.0);
     let pq_pow = pq_clamped.powf(1.0 / PQ_M);
@@ -334,21 +343,19 @@ pub fn hdr10_to_sdr_bt2390(
         return RgbaImage::new(width, height);
     }
 
-    // decode PQ -> linear nits, then rescale into scRGB (1.0 = 80 nits)
-    // so we can hand off to the scRGB path.
+    // decode PQ -> linear nits, convert to bt.709 primaries, then rescale into
+    // scRGB (1.0 = 80 nits) so we can hand off to the scRGB path, which clamps
+    // the out-of-gamut negatives
     let mut scrgb = Vec::with_capacity(pixel_count * 4);
     unsafe {
         scrgb.set_len(pixel_count * 4);
     }
     for (src, dest) in pq_data.as_chunks::<4>().0.iter().zip(scrgb.as_chunks_mut::<4>().0) {
-        let r_pq = src[0] as f32 / 65535.0;
-        let g_pq = src[1] as f32 / 65535.0;
-        let b_pq = src[2] as f32 / 65535.0;
-        let a_pq = src[3] as f32 / 65535.0;
-        dest[0] = pq_to_linear(r_pq) / 80.0;
-        dest[1] = pq_to_linear(g_pq) / 80.0;
-        dest[2] = pq_to_linear(b_pq) / 80.0;
-        dest[3] = a_pq;
+        let [r, g, b] = bt2020_to_bt709([0, 1, 2].map(|i| pq_to_linear(src[i] as f32 / 65535.0)));
+        dest[0] = r / 80.0;
+        dest[1] = g / 80.0;
+        dest[2] = b / 80.0;
+        dest[3] = src[3] as f32 / 65535.0;
     }
     scrgb_to_sdr_bt2390(&scrgb, width, height, sdr_white_nits, params)
 }
@@ -606,6 +613,34 @@ mod tests {
         assert_eq!(p[0], 0);
         assert_eq!(p[1], 0);
         assert_eq!(p[2], 0);
+    }
+
+    #[test]
+    fn bt2020_matrix_keeps_white_and_pushes_green_out_of_gamut() {
+        for c in bt2020_to_bt709([1.0; 3]) {
+            assert!((c - 1.0).abs() < 2e-4, "{c}");
+        }
+        let [r, g, b] = bt2020_to_bt709([0.0, 1.0, 0.0]);
+        assert!(r < -0.58 && b < -0.1, "{r} {b}");
+        assert!((g - 1.1329).abs() < 1e-4, "{g}");
+    }
+
+    #[test]
+    fn hdr10_tonemap_applies_the_gamut_matrix_once() {
+        let g = (linear_to_pq_norm(100.0 / 10000.0) * 65535.0).round() as u16;
+        let img = hdr10_to_sdr_bt2390(&[0, g, 0, 65535], 1, 1, 250.0, TonemapParams::default());
+        let [r709, g709, b709] = bt2020_to_bt709([0.0, pq_to_linear(g as f32 / 65535.0), 0.0]);
+        let expected = scrgb_to_sdr_bt2390(
+            &[r709 / 80.0, g709 / 80.0, b709 / 80.0, 1.0],
+            1,
+            1,
+            250.0,
+            TonemapParams::default(),
+        );
+        let p = img.get_pixel(0, 0);
+        assert_eq!(p, expected.get_pixel(0, 0));
+        assert_eq!((p[0], p[2]), (0, 0));
+        assert!(p[1] > 0);
     }
 
     #[test]
