@@ -1212,6 +1212,22 @@ impl Config {
         }
     }
 
+    /// the saved tasks, read without the migration saves load() can make
+    pub fn peek_tasks() -> Result<Vec<CaptureTask>> {
+        let Some(path) = Self::config_path().filter(|path| path.exists()) else {
+            return Ok(default_capture_tasks());
+        };
+        Self::peek_tasks_from(&path)
+    }
+
+    fn peek_tasks_from(path: &Path) -> Result<Vec<CaptureTask>> {
+        let mut value: toml::Value = toml::from_str(&fs::read_to_string(path)?)?;
+        migrate_legacy_ftp(&mut value);
+        let mut config: Config = value.try_into()?;
+        config.sanitize();
+        Ok(config.capture_tasks)
+    }
+
     fn load_from(path: &Path) -> Result<(Self, Vec<String>)> {
         if !path.exists() {
             return Ok((Config::default(), Vec::new()));
@@ -1819,6 +1835,27 @@ mod tests {
     #[test]
     fn mistyped_config_falls_back_and_names_the_backup() {
         assert_reset_with_backup("[output]\nquality = \"high\"\n");
+    }
+
+    #[test]
+    fn peeking_tasks_migrates_in_memory_and_leaves_the_file_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let mut saved = Config::default();
+        saved.capture_tasks[0].target_destination = Some(TaskUploadTarget::Sftp);
+        let text = toml::to_string_pretty(&saved).unwrap().replace(
+            "target_destination = \"sftp\"",
+            "target_destination = \"ftp\"",
+        );
+        assert!(text.contains("\"ftp\""));
+        fs::write(&path, &text).unwrap();
+
+        let tasks = Config::peek_tasks_from(&path).unwrap();
+
+        assert_eq!(tasks[0].id, saved.capture_tasks[0].id);
+        assert_eq!(tasks[0].target_destination, Some(TaskUploadTarget::Sftp));
+        assert_eq!(fs::read_to_string(&path).unwrap(), text);
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
     }
 
     #[test]

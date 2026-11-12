@@ -1,6 +1,6 @@
 import { createResource, createSignal, For, onCleanup, Show } from "solid-js";
 import { listen } from "@tauri-apps/api/event";
-import { Plus, Trash2, Zap } from "lucide-solid";
+import { Plus, Terminal, Trash2, Zap } from "lucide-solid";
 import { api, type CaptureTask, type HotkeyDiagnostics } from "../api";
 import { HotkeyInput } from "../components/HotkeyInput";
 import {
@@ -88,6 +88,23 @@ export function Tasks() {
     armTimer = setTimeout(() => {
       if (confirmDelete() === id) setConfirmDelete(null);
     }, 4000);
+  };
+
+  let copyTimer: ReturnType<typeof setTimeout> | undefined;
+  onCleanup(() => clearTimeout(copyTimer));
+  const copyLaunchCommand = (id: string) => {
+    const command = `capscr --task=${id}`;
+    navigator.clipboard
+      .writeText(command)
+      .then(() => {
+        const copied = { tone: "ok", msg: `copied ${command}` };
+        setStatus(copied);
+        clearTimeout(copyTimer);
+        copyTimer = setTimeout(() => {
+          if (status() === copied) setStatus(null);
+        }, 3000);
+      })
+      .catch(() => setStatus({ tone: "err", msg: "failed to copy to clipboard" }));
   };
 
   const visibleStatus = () => {
@@ -421,6 +438,16 @@ export function Tasks() {
                         >
                           <Zap size={11} stroke-width={1.5} />
                           fire
+                        </button>
+                        <button
+                          class="btn"
+                          data-variant="ghost"
+                          data-size="xs"
+                          title={`copy the command that runs this task: capscr --task=${task.id}`}
+                          onClick={() => copyLaunchCommand(task.id)}
+                        >
+                          <Terminal size={11} stroke-width={1.5} />
+                          cli
                         </button>
                         <button
                           class="btn"

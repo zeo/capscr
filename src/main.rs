@@ -245,11 +245,14 @@ fn main() {
             // prewarm can start sooner. it only needs the AUMID (set early in
             // main) and current_exe, neither tied to the UI thread.
             #[cfg(windows)]
-            std::thread::spawn(|| {
-                if let Err(e) = jumplist::register() {
-                    tracing::warn!("jumplist register failed: {e}");
-                }
-            });
+            jumplist::refresh(
+                app.state::<state::AppState>()
+                    .config
+                    .lock()
+                    .unwrap()
+                    .capture_tasks
+                    .clone(),
+            );
             // make sure the asset:// protocol can reach the user's configured
             // output dir even if they moved it off the default $PICTURE/capscr.
             // the static scope in tauri.conf.json is the fallback; this widens
@@ -1080,9 +1083,32 @@ fn spawn_hotkey_thread(
     });
 }
 
+/// the first --jump=<kind> or --task=<id>, with a task id as the "task:<id>" kind
 fn parse_jump_arg<I: IntoIterator<Item = String>>(args: I) -> Option<String> {
-    args.into_iter()
-        .find_map(|a| a.strip_prefix("--jump=").map(String::from))
+    args.into_iter().find_map(|a| {
+        if let Some(kind) = a.strip_prefix("--jump=") {
+            return Some(kind.to_string());
+        }
+        a.strip_prefix("--task=")
+            .filter(|id| !id.is_empty())
+            .map(|id| format!("task:{id}"))
+    })
+}
+
+/// one "<id>\t<name>" line per task, with control characters in names blanked
+/// so every task stays on its own line
+fn format_task_list(tasks: &[config::CaptureTask]) -> String {
+    tasks
+        .iter()
+        .map(|task| {
+            let name: String = task
+                .name
+                .chars()
+                .map(|c| if c.is_control() { ' ' } else { c })
+                .collect();
+            format!("{}\t{name}\n", task.id)
+        })
+        .collect()
 }
 
 /// returns true when the process should exit immediately after writing to the
@@ -1092,12 +1118,14 @@ fn parse_jump_arg<I: IntoIterator<Item = String>>(args: I) -> Option<String> {
 fn handle_cli_short_circuit<I: IntoIterator<Item = String>>(args: I) -> bool {
     let mut want_version = false;
     let mut want_help = false;
+    let mut want_task_list = false;
     let mut want_wayland_diag = false;
     let mut sweep_dir: Option<String> = None;
     for a in args.into_iter().skip(1) {
         match a.as_str() {
             "--version" | "-V" => want_version = true,
             "--help" | "-h" => want_help = true,
+            "--list-tasks" => want_task_list = true,
             "--wayland-diag" => want_wayland_diag = true,
             s if s.starts_with("--d2d-sweep=") => {
                 sweep_dir = Some(s.trim_start_matches("--d2d-sweep=").to_string());
@@ -1141,11 +1169,16 @@ fn handle_cli_short_circuit<I: IntoIterator<Item = String>>(args: I) -> bool {
         }
         return true;
     }
-    if !want_version && !want_help {
+    if !want_version && !want_help && !want_task_list {
         return false;
     }
     attach_parent_console();
-    if want_version {
+    if want_task_list {
+        match config::Config::peek_tasks() {
+            Ok(tasks) => print!("{}", format_task_list(&tasks)),
+            Err(e) => eprintln!("could not read the saved tasks: {e:#}"),
+        }
+    } else if want_version {
         println!("capscr {}", env!("CARGO_PKG_VERSION"));
     } else {
         print_help();
@@ -1158,12 +1191,15 @@ fn print_help() {
         "capscr {} — modern HDR-aware screen capture\n\
         \n\
         Usage:\n  \
-          capscr [--jump=<kind>]\n  \
+          capscr [--jump=<kind> | --task=<id>]\n  \
+          capscr --list-tasks\n  \
           capscr --version | -V\n  \
           capscr --help | -h\n\
         \n\
         Options:\n  \
           --jump=<kind>   Trigger a one-shot action and exit. kinds: region, window, fullscreen, captures, hub\n  \
+          --task=<id>     Run a capture task by id, as its hotkey would\n  \
+          --list-tasks    Print each saved task as <id><tab><name> and exit\n  \
           --version       Print version and exit\n  \
           --help          Print this help and exit\n\
         \n\
@@ -1235,5 +1271,50 @@ fn dispatch_jump(app: &tauri::AppHandle, kind: Option<&str>) {
         other => {
             tracing::warn!("unknown --jump= kind: {other}");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn jump(args: &[&str]) -> Option<String> {
+        parse_jump_arg(
+            std::iter::once("capscr")
+                .chain(args.iter().copied())
+                .map(String::from),
+        )
+    }
+
+    #[test]
+    fn task_arg_becomes_a_task_jump() {
+        assert_eq!(jump(&["--task=gif-1"]).as_deref(), Some("task:gif-1"));
+        assert_eq!(jump(&["--jump=hub"]).as_deref(), Some("hub"));
+        assert_eq!(jump(&[]), None);
+        assert_eq!(jump(&["--task="]), None);
+        assert_eq!(
+            jump(&["--task=", "--task=b", "--jump=hub"]).as_deref(),
+            Some("task:b")
+        );
+    }
+
+    #[test]
+    fn task_list_is_one_line_per_task() {
+        let tasks = [
+            config::CaptureTask {
+                id: "a".into(),
+                name: "Region\tto clipboard".into(),
+                ..Default::default()
+            },
+            config::CaptureTask {
+                id: "b".into(),
+                name: "two\nlines".into(),
+                ..Default::default()
+            },
+        ];
+        assert_eq!(
+            format_task_list(&tasks),
+            "a\tRegion to clipboard\nb\ttwo lines\n"
+        );
     }
 }

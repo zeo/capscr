@@ -207,6 +207,8 @@ pub fn set_config(
         config.capture_tasks.clone()
     };
     state.send_hotkey_reload(tasks_to_register);
+    #[cfg(windows)]
+    crate::jumplist::refresh(config.capture_tasks.clone());
     allow_capture_dirs(&app, &config.output.directory);
     crate::rebuild_tray_menu(&app);
     let _ = app.emit("capscr://config-updated", ());
@@ -355,6 +357,8 @@ pub fn set_capture_tasks(
         saved_tasks.clone()
     };
     state.send_hotkey_reload(tasks_to_register);
+    #[cfg(windows)]
+    crate::jumplist::refresh(saved_tasks.clone());
     crate::rebuild_tray_menu(&app);
     let _ = app.emit("capscr://config-updated", ());
     Ok(saved_tasks)
@@ -3464,6 +3468,11 @@ pub fn trigger_task(app: &AppHandle, task_id: &str) {
     };
     let Some(task) = task else {
         tracing::warn!("hotkey fired for unknown task id: {task_id}");
+        emit_error(
+            app,
+            "task",
+            &format!("no capture task has the id {task_id}"),
+        );
         return;
     };
     let app_handle = app.clone();

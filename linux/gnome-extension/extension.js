@@ -17,6 +17,7 @@ import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
 
 Gio._promisify(Shell.Screenshot, 'composite_to_stream');
+Gio._promisify(Gio.Subprocess.prototype, 'communicate_utf8_async');
 
 const IFACE = `
 <node>
@@ -212,9 +213,47 @@ class CapscrIndicator extends PanelMenu.Button {
         for (const [action, label] of actions) {
             this.menu.addAction(label, () => this._launch(appInfo, action));
         }
+        this._executable = appInfo.get_executable();
+        this._cancellable = new Gio.Cancellable();
+        this._tasks = new PopupMenu.PopupSubMenuMenuItem('Tasks');
+        this._tasks.visible = false;
+        this.menu.addMenuItem(this._tasks);
+        this.menu.connect('open-state-changed', (_menu, open) => {
+            if (open)
+                this._refreshTasks().catch(e => console.warn(`capscr: task list failed: ${e}`));
+        });
         this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
         this.menu.addAction('Captures folder', () => this._launch(appInfo, 'open-captures'));
         this.menu.addAction('Open capscr', () => this._launch(appInfo, 'open-hub'));
+    }
+
+    destroy() {
+        this._cancellable.cancel();
+        super.destroy();
+    }
+
+    // capscr prints one "<id>\t<name>" line per saved task
+    async _refreshTasks() {
+        const proc = Gio.Subprocess.new(
+            [this._executable, '--list-tasks'], Gio.SubprocessFlags.STDOUT_PIPE);
+        let stdout;
+        try {
+            [stdout] = await proc.communicate_utf8_async(null, this._cancellable);
+        } catch (e) {
+            if (e.matches?.(Gio.IOErrorEnum, Gio.IOErrorEnum.CANCELLED))
+                return;
+            throw e;
+        }
+        const tasks = (stdout ?? '').split('\n')
+            .map(line => line.split('\t'))
+            .filter(([id, name]) => id && name);
+        this._tasks.menu.removeAll();
+        for (const [id, name] of tasks) {
+            this._tasks.menu.addAction(name, () => {
+                Gio.Subprocess.new([this._executable, `--task=${id}`], Gio.SubprocessFlags.NONE);
+            });
+        }
+        this._tasks.visible = tasks.length > 0;
     }
 
     _launch(appInfo, action) {

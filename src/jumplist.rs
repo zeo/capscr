@@ -6,8 +6,11 @@
 // the COM calls here are all best-effort: if any step fails, the jump list
 // silently stays as Windows' default. We never want this to block startup.
 
+use crate::config::CaptureTask;
 use std::ffi::OsStr;
 use std::os::windows::ffi::OsStrExt;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, PoisonError};
 use windows::core::{Interface, PCWSTR};
 use windows::Win32::System::Com::StructuredStorage::InitPropVariantFromStringVector;
 use windows::Win32::System::Com::{
@@ -71,7 +74,34 @@ pub fn set_app_user_model_id() {
     }
 }
 
-pub fn register() -> windows::core::Result<()> {
+static GENERATION: AtomicU64 = AtomicU64::new(0);
+static REGISTERING: Mutex<()> = Mutex::new(());
+
+/// rebuild the list with one entry per task, off the calling thread. a refresh
+/// still waiting when a newer one starts is skipped, so the last save wins
+pub fn refresh(tasks: Vec<CaptureTask>) {
+    let generation = GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
+    std::thread::spawn(move || {
+        let _registering = REGISTERING.lock().unwrap_or_else(PoisonError::into_inner);
+        if GENERATION.load(Ordering::SeqCst) != generation {
+            return;
+        }
+        if let Err(e) = register(&tasks) {
+            tracing::warn!("jumplist register failed: {e}");
+        }
+    });
+}
+
+fn register(tasks: &[CaptureTask]) -> windows::core::Result<()> {
+    // built-ins first: windows shows only as many entries as fit
+    let entries = TASKS
+        .iter()
+        .map(|t| (t.arg.to_string(), t.title.to_string(), t.desc.to_string()))
+        .chain(tasks.iter().map(|task| {
+            let arg = format!("--task={}", task.id);
+            let desc = format!("capscr {arg}");
+            (arg, task.name.clone(), desc)
+        }));
     unsafe {
         // COINIT_APARTMENTTHREADED matches what most desktop apps use; safe to
         // call repeatedly (returns RPC_E_CHANGED_MODE on conflict, which we
@@ -93,14 +123,14 @@ pub fn register() -> windows::core::Result<()> {
         let exe = std::env::current_exe().map_err(|_| windows::core::Error::from_win32())?;
         let exe_wide = wide_path(&exe);
 
-        for t in TASKS {
+        for (arg, title, desc) in entries {
             let link: IShellLinkW = CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER)?;
             link.SetPath(PCWSTR(exe_wide.as_ptr()))?;
 
-            let args = wide(t.arg);
+            let args = wide(&arg);
             link.SetArguments(PCWSTR(args.as_ptr()))?;
 
-            let desc = wide(t.desc);
+            let desc = wide(&desc);
             link.SetDescription(PCWSTR(desc.as_ptr()))?;
 
             // use the exe itself as the icon source (index 0 = first icon).
@@ -109,7 +139,7 @@ pub fn register() -> windows::core::Result<()> {
             // the visible label in the jump list comes from PKEY_Title on the
             // shell link's property store, not from SetDescription.
             let store: IPropertyStore = link.cast()?;
-            let title = wide(t.title);
+            let title = wide(&title);
             let title_ptr = PCWSTR(title.as_ptr());
             let prop = InitPropVariantFromStringVector(Some(&[title_ptr]))?;
             store.SetValue(&PKEY_TITLE, &prop)?;
