@@ -110,13 +110,13 @@ future versions will add a runtime hook table (WASM entry, hotkey hooks, etc.) �
 ## 4. install flow (what the client does)
 
 1. user clicks **install** in the Marketplace tab.
-2. client re-fetches the registry (defends against stale UI listing a plugin that's since been pulled).
+2. client re-fetches and verifies the registry (defends against stale UI listing a plugin that's since been pulled), and refuses the install when `min_capscr_version` is newer than the running capscr.
 3. client GETs `download_url` with a 120s timeout and 50 MB cap.
 4. client computes sha256 of the response body; compares to entry's `sha256` (case-insensitive). mismatch → abort.
-5. client extracts the zip into `%APPDATA%/com.capscr.capscr/data/plugins/.staging-<id>/`.
+5. client extracts the zip into `<plugins-dir>/.staging-<id>/`. the plugins dir is `%APPDATA%\capscr\capscr\data\plugins` on Windows and `~/.local/share/capscr/plugins` on Linux.
 6. client validates `plugin.toml` exists in the staging dir; if not → wipe staging, abort.
-7. client `std::fs::rename`s the staging dir to `%APPDATA%/com.capscr.capscr/data/plugins/<id>/` atomically.
-8. client refreshes the installed list — your plugin shows up in the "installed" section.
+7. client `std::fs::rename`s the staging dir to `<plugins-dir>/<id>/` atomically.
+8. client reloads its plugins and refreshes the installed list: your plugin shows up in the "installed" section and runs without a restart.
 
 if any step fails, the existing install (if any) is untouched.
 
@@ -130,7 +130,7 @@ if any step fails, the existing install (if any) is untouched.
 
 ## 6. mirroring
 
-anyone can run a mirror: serve a byte-for-byte copy of `registry.json` next to its `registry.json.minisig`. capscr only trusts the built-in key, so a registry with a different plugin list won't load. users override `marketplace.registry_url` in their `%APPDATA%/com.capscr.capscr/config/config.toml`:
+anyone can run a mirror: serve a byte-for-byte copy of `registry.json` next to its `registry.json.minisig`. capscr only trusts the built-in key, so a registry with a different plugin list won't load. users override `marketplace.registry_url` in their config file (`%APPDATA%\capscr\capscr\config\config.toml` on Windows, `~/.config/capscr/config.toml` on Linux):
 
 ```toml
 [marketplace]

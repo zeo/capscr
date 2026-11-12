@@ -6,28 +6,31 @@ short version: fork, branch, build, PR. read on for the specifics.
 
 - **bug fixes** with a reproduction (manual repro steps or a failing test).
 - **performance** improvements with a before/after measurement (RAM, CPU, latency, binary size).
-- **plugin format / marketplace** work — see [`README.md`](README.md) for the v0.4 plan.
-- **upload destinations** beyond imgur / custom http / ftp. one destination per PR.
+- **plugin host / marketplace** work. see [`docs/plugin-runtime.md`](docs/plugin-runtime.md) and [`docs/marketplace.md`](docs/marketplace.md).
+- **upload destinations** beyond imgur / custom http / sftp / s3, or as a plugin destination. one destination per PR.
 - **docs, screenshots, demo gifs.**
 
 ## what we'll usually decline
 
 - new big dependencies. capscr ships a small binary by design — adding `serde_yaml` to read a config that's already TOML is a no.
-- features that already have a plugin shape. e.g. "auto-OCR every capture" should land as a plugin once the host is ready (v0.4), not in core.
+- features that already have a plugin shape. e.g. "auto-OCR every capture" should land as a plugin, not in core.
 - code style refactors that don't change behaviour. land them with a feature change, not on their own.
 - migrations to other languages, build systems, or frontend frameworks. solid + tauri is what we have.
 
 ## dev loop
 
 ```bash
-# Rust
+# Rust, the same gates CI runs
 cargo check --bin capscr           # type-check (fast)
-cargo clippy --bin capscr --all-targets -- -D warnings
-cargo test --bin capscr
+cargo clippy --bin capscr --all-targets --locked -- -D warnings
+cargo clippy --bin capscr --locked --no-default-features -- -D warnings
+cargo test --bin capscr --all-targets --locked
+cargo audit
 
 # frontend
-npm --prefix frontend install
+npm --prefix frontend ci
 npm --prefix frontend run build    # tsc --noEmit && vite build
+npm --prefix frontend test         # vitest
 
 # dev run (Rust + Vite + HMR)
 cargo tauri dev
@@ -72,7 +75,7 @@ if your contribution starts looking like one of those, file an issue first so we
 ## getting help
 
 - bugs / feature requests: open an issue with the templates in [`.github/ISSUE_TEMPLATE/`](.github/ISSUE_TEMPLATE/).
-- security: see [`SECURITY.md`](SECURITY.md) if present, otherwise email the maintainer listed in `Cargo.toml`. don't file public issues for exploitable bugs.
+- security: see [`SECURITY.md`](SECURITY.md). don't file public issues for exploitable bugs.
 
 ## licensing
 

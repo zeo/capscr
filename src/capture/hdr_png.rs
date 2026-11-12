@@ -9,7 +9,7 @@
 // BEFORE IDAT, so we add it via `Writer::write_chunk` between header and
 // image data.
 //
-// scope: HDR10 source (R16G16B16A16 native PQ from D3D11 swapchain scanout).
+// scope: HDR10 source (packed R10G10B10A2 PQ from DXGI or PipeWire).
 // ScRgb (float linear) would need a per-pixel matrix + PQ-encode pass before
 // quantising to u16; until then those sources take the tonemapped SDR path.
 
@@ -313,8 +313,8 @@ mod tests {
         let _ = std::fs::remove_file(tmp);
     }
 
-    // linux has no HDR pixel source yet (see the note in hdr.rs), so this
-    // synthetic gradient stands in for a DXGI frame and proves the pipeline
+    // no HDR capture source runs in CI, so this synthetic gradient stands in
+    // for a DXGI or PipeWire frame and proves the pipeline
     // from raw HDR10 bytes through tonemapping and the cICP-preserving
     // encoder on every platform
     #[test]

@@ -1,14 +1,20 @@
-# plugin runtime — 0.4 author guide
+# plugin runtime: author guide
 
-capscr's plugin host loads WebAssembly modules at startup and dispatches
-capscr events (capture saved, upload success, …) to plugin-exported
-functions. The host is feature-gated behind `plugin-runtime` so the
-default build stays small while the API surface stabilises.
+capscr's plugin host loads WebAssembly modules and dispatches capscr events
+(capture saved, upload success, …) to plugin-exported functions. Plugins load
+at launch and reload after an install, an uninstall, an enable toggle, a
+settings save or the plugins tab's reload button, so no restart is needed.
+The host is the `plugin-runtime` cargo feature, on by default; a
+`--no-default-features` build leaves it out.
 
 ## on-disk layout
 
+The plugins folder is `%APPDATA%\capscr\capscr\data\plugins\` on Windows and
+`~/.local/share/capscr/plugins/` on Linux (`$XDG_DATA_HOME/capscr/plugins/`
+when that is set).
+
 ```
-%APPDATA%\com.capscr.capscr\data\plugins\
+<plugins-dir>\
     └─ <plugin-id>\
        ├─ plugin.toml      ; manifest, required
        ├─ plugin.wasm      ; module artefact, required when runtime.type = wasm
@@ -34,7 +40,7 @@ payload     = "json"                # optional, "text" (default) or "json"
 type             = "wasm"           # only "wasm" today
 file             = "plugin.wasm"    # relative path, must stay inside the plugin dir
 memory_max_bytes = 16777216         # optional, defaults to 64 MiB; host maximum is 256 MiB
-time_slice_ms    = 200              # optional, tunes the per-hook epoch budget (ms)
+time_slice_ms    = 200              # optional, per-hook epoch budget in ms, capped at 2000
 
 # map of capscr event → exported function name
 [hooks]
@@ -55,6 +61,10 @@ upload         = ["delete_url"]       # adds delete_url to json upload payloads
 Plugins without a `[runtime]` section stay metadata-only — they appear in
 the Marketplace tab but the host doesn't instantiate them. A plugin with
 `enabled = false` is listed but likewise not instantiated.
+
+A marketplace entry can require a minimum capscr with `min_capscr_version`;
+an older capscr greys out the install button and refuses the install. See
+[marketplace.md](marketplace.md).
 
 ## hooks
 
@@ -375,6 +385,7 @@ on the plugins tab (or restart capscr) to load it.
   upload plugins pass auth tokens in the URL or form fields)
 - capabilities for `clipboard`, `notifications`, `fetch`, `image` and
   `upload` are enforced; other declared capabilities are still informational
-- per-hook fuel limit and epoch-deadline trap are active; `time_slice_ms`
-  tunes the epoch budget (defaults to ~500ms)
+- per-hook fuel limit and epoch-deadline trap are active; fuel is fixed per
+  hook and `time_slice_ms` only tunes the epoch deadline (500 ms by default,
+  capped at 2000 ms)
 - only `runtime.type = "wasm"` accepted; a native loader is not planned
