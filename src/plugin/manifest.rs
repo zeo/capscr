@@ -49,8 +49,8 @@ pub struct RuntimeSpec {
     /// per-instantiation memory cap, in bytes; the host supplies a bounded default
     #[serde(default)]
     pub memory_max_bytes: Option<usize>,
-    /// tunes the per-hook epoch deadline (ms). None = ~500ms default. fuel is
-    /// always capped regardless of this value
+    /// tunes the per-hook epoch deadline (ms), capped at 2000. None = ~500ms
+    /// default. fuel is always capped regardless of this value
     #[serde(default)]
     pub time_slice_ms: Option<u64>,
 }

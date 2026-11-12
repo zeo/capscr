@@ -16,7 +16,7 @@
 // via the exported `capscr_alloc(size: i32) -> i32` function — plugins that
 // don't export `capscr_alloc` are skipped for hooks that need a payload.
 
-use super::manifest::PluginManifest;
+use super::manifest::{PluginManifest, RuntimeSpec};
 use anyhow::{anyhow, Result};
 use image::RgbaImage;
 use std::collections::HashMap;
@@ -143,6 +143,9 @@ const MAX_CAPTURE_DIM: u32 = 16384;
 const MAX_CONFIG_BYTES: u64 = 64 * 1024;
 const DEFAULT_PLUGIN_MEMORY_BYTES: usize = 64 * 1024 * 1024;
 const MAX_PLUGIN_MEMORY_BYTES: usize = 256 * 1024 * 1024;
+// host imports burn no fuel, so the epoch deadline is the only bound on a hook
+// that loops over them; a manifest can ask for more time, up to this
+const MAX_PLUGIN_TIME_SLICE_MS: u64 = 2000;
 /// ports a plugin fetch may not target, mirroring the custom-upload destination
 /// guard — non-web services where even a refused https probe leaks reachability
 const FETCH_BLOCKED_PORTS: &[u16] = &[0, 22, 23, 25, 110, 143, 445, 3306, 3389, 5432, 6379, 27017];
@@ -151,10 +154,17 @@ pub struct WasmHost {
     engine: Engine,
 }
 
-/// default fuel budget per hook call (~10ms of cranelift-compiled code on
-/// commodity hardware). manifest's `time_slice_ms` overrides — we treat
-/// the ms value as fuel units * a calibration factor.
+/// fuel budget per hook call (~10ms of cranelift-compiled code on commodity
+/// hardware). `time_slice_ms` sets the epoch deadline, not this
 const DEFAULT_HOOK_FUEL: u64 = 5_000_000;
+
+// the epoch bumper ticks every 10ms; 500ms when the manifest says nothing
+fn deadline_ticks(runtime: &RuntimeSpec) -> u64 {
+    runtime
+        .time_slice_ms
+        .map_or(50, |ms| (ms.min(MAX_PLUGIN_TIME_SLICE_MS) / 10).max(1))
+}
+
 impl WasmHost {
     pub fn new() -> Result<Self> {
         let mut cfg = wasmtime::Config::new();
@@ -199,10 +209,7 @@ impl WasmHost {
         let module = Module::from_file(&self.engine, &wasm_path)
             .map_err(|e| anyhow!("compiling {}: {e}", wasm_path.display()))?;
 
-        let deadline_ticks = runtime
-            .time_slice_ms
-            .map(|ms| (ms / 10).max(1))
-            .unwrap_or(50);
+        let deadline_ticks = deadline_ticks(runtime);
 
         let config = load_plugin_config(plugin_dir);
 
@@ -910,6 +917,20 @@ fn write_guest_response(caller: &mut Caller<'_, HostState>, body: &[u8]) -> i64 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn time_slice_is_capped_and_never_zero() {
+        let spec = |time_slice_ms| RuntimeSpec {
+            runtime_type: "wasm".into(),
+            file: "plugin.wasm".into(),
+            memory_max_bytes: None,
+            time_slice_ms,
+        };
+        assert_eq!(deadline_ticks(&spec(None)), 50);
+        assert_eq!(deadline_ticks(&spec(Some(0))), 1);
+        assert_eq!(deadline_ticks(&spec(Some(250))), 25);
+        assert_eq!(deadline_ticks(&spec(Some(u64::MAX))), 200);
+    }
 
     #[test]
     fn url_pattern_exact_and_wildcard() {
