@@ -177,13 +177,17 @@ impl WasmHost {
 
         // background bumper: increments the engine epoch every 10ms so
         // plugins that exceed their per-hook deadline trap promptly. one
-        // bumper covers every plugin sharing this engine.
-        let engine_clone = engine.clone();
+        // bumper covers every plugin sharing this engine. it holds a weak
+        // handle so a plugin reload that drops the old engine also ends it
+        let engine_weak = engine.weak();
         std::thread::Builder::new()
             .name("capscr-wasm-epoch".into())
             .spawn(move || loop {
                 std::thread::sleep(std::time::Duration::from_millis(10));
-                engine_clone.increment_epoch();
+                match engine_weak.upgrade() {
+                    Some(engine) => engine.increment_epoch(),
+                    None => break,
+                }
             })
             .ok();
 

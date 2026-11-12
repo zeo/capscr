@@ -4629,7 +4629,9 @@ pub async fn marketplace_install(id: String, app: AppHandle) -> Result<bool, Str
             .iter()
             .find(|p| p.id == id)
             .ok_or_else(|| anyhow::anyhow!("plugin '{}' not in registry", id))?;
-        crate::marketplace::install_plugin(&plugins, entry)
+        let installed = crate::marketplace::install_plugin(&plugins, entry)?;
+        app.state::<AppState>().load_plugins();
+        Ok(installed)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -4640,9 +4642,11 @@ pub async fn marketplace_install(id: String, app: AppHandle) -> Result<bool, Str
 pub async fn marketplace_uninstall(id: String, app: AppHandle) -> Result<(), String> {
     let plugins = plugins_dir()?;
     let pending_mutation = PendingFileMutation::begin(&app).map_err(|error| error.to_string())?;
-    tokio::task::spawn_blocking(move || {
+    tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
         let _pending_mutation = pending_mutation;
-        crate::marketplace::uninstall_plugin(&plugins, &id)
+        crate::marketplace::uninstall_plugin(&plugins, &id)?;
+        app.state::<AppState>().load_plugins();
+        Ok(())
     })
     .await
     .map_err(|error| error.to_string())?
@@ -4657,9 +4661,11 @@ pub async fn toggle_plugin_enabled(
 ) -> Result<(), String> {
     let plugins = plugins_dir()?;
     let pending_mutation = PendingFileMutation::begin(&app).map_err(|error| error.to_string())?;
-    tokio::task::spawn_blocking(move || {
+    tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
         let _pending_mutation = pending_mutation;
-        crate::marketplace::set_plugin_enabled(&plugins, &id, enabled)
+        crate::marketplace::set_plugin_enabled(&plugins, &id, enabled)?;
+        app.state::<AppState>().load_plugins();
+        Ok(())
     })
     .await
     .map_err(|error| error.to_string())?

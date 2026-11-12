@@ -243,3 +243,40 @@ fn default_plugins_dir() -> Option<PathBuf> {
     let pd = directories::ProjectDirs::from("com", "capscr", "capscr")?;
     Some(pd.data_dir().join("plugins"))
 }
+
+#[cfg(all(test, feature = "plugin-runtime"))]
+mod tests {
+    use super::*;
+
+    fn manager_for(dir: &Path) -> PluginManager {
+        let mut pm = PluginManager::new();
+        pm.plugins_dir = Some(dir.to_path_buf());
+        assert!(pm.load_all().is_empty());
+        pm
+    }
+
+    #[test]
+    fn reload_drops_a_disabled_plugin() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let plugin_dir = root.path().join("sample");
+        std::fs::create_dir(&plugin_dir).expect("plugin dir");
+        std::fs::write(
+            plugin_dir.join("plugin.toml"),
+            "[plugin]\nid = \"sample\"\nname = \"Sample\"\nversion = \"1.0.0\"\n\n[runtime]\ntype = \"wasm\"\n",
+        )
+        .expect("manifest");
+        let wasm = wat::parse_str(
+            r#"(module
+                 (memory (export "memory") 1)
+                 (func (export "capscr_alloc") (param i32) (result i32) (i32.const 1024)))"#,
+        )
+        .expect("wat");
+        std::fs::write(plugin_dir.join("plugin.wasm"), wasm).expect("wasm");
+
+        assert_eq!(manager_for(root.path()).loaded.len(), 1);
+        crate::marketplace::set_plugin_enabled(root.path(), "sample", false).expect("disable");
+        assert_eq!(manager_for(root.path()).loaded.len(), 0);
+        crate::marketplace::set_plugin_enabled(root.path(), "sample", true).expect("enable");
+        assert_eq!(manager_for(root.path()).loaded.len(), 1);
+    }
+}
