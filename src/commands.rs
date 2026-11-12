@@ -3271,9 +3271,18 @@ const LINUX_FFMPEG_URL: &str = "https://rot.lt/capscr/ffmpeg/ffmpeg-linux-x64.zi
 const LINUX_FFMPEG_SHA256: &str =
     "98aaf9bae2daf2f731aa1b1bc4b22eb458caa3d89061c5b94e1e3c39e41a61e8";
 
-// download a zip over TLS, verify it against an expected sha256, extract the
-// ffmpeg binary into data_dir, and mark it executable. shared by the windows
-// (gyan.dev, sidecar hash) and linux (rot.lt, embedded hash) paths.
+// gyan.dev's versioned essentials build, cross-checked against its published
+// sha256 and the GyanD/codexffmpeg release digest. gyan.dev prunes old
+// packages, so a 404 here means the pin needs a bump: update both together
+#[cfg(windows)]
+const WINDOWS_FFMPEG_URL: &str =
+    "https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-9.0.2-essentials_build.zip";
+#[cfg(windows)]
+const WINDOWS_FFMPEG_SHA256: &str =
+    "60f467265b1e312373dbcd92200c2618a74850f98d3d078e94296bb3fa2047ba";
+
+// download a zip over TLS, verify it against a sha256 pinned in this build,
+// extract the ffmpeg binary into data_dir, and mark it executable
 #[cfg(any(windows, target_os = "linux"))]
 fn ffmpeg_redirect_allowed(url: &url::Url, previous: usize) -> bool {
     url.scheme() == "https" && previous < MAX_FFMPEG_REDIRECTS
@@ -3327,25 +3336,10 @@ fn download_verified_ffmpeg(
         return Err(anyhow::anyhow!("ffmpeg archive exceeds download size cap"));
     }
 
-    // the payload is verified against a sha256 before we write and later
-    // execute it, so a truncated, corrupted, or mirror-tampered download is
-    // rejected. windows resolves the expected hash from the vendor's sidecar;
-    // linux pins it in the binary, which makes the mirror untrusted storage.
-    let expected = if expected_sha256.is_empty() {
-        let response = client
-            .get(format!("{url}.sha256"))
-            .send()?
-            .error_for_status()?;
-        let mut sidecar = String::new();
-        std::io::Read::take(response, 4096).read_to_string(&mut sidecar)?;
-        sidecar
-            .split_whitespace()
-            .next()
-            .unwrap_or_default()
-            .to_lowercase()
-    } else {
-        expected_sha256.to_lowercase()
-    };
+    // the payload is verified against a sha256 pinned in the binary before we
+    // write and later execute it, so a truncated, corrupted, or tampered
+    // download is rejected and the server is untrusted storage
+    let expected = expected_sha256.to_lowercase();
     if expected.len() != 64 || !expected.chars().all(|c| c.is_ascii_hexdigit()) {
         return Err(anyhow::anyhow!(
             "ffmpeg checksum missing or malformed; refusing to install unverified binary"
@@ -3407,11 +3401,7 @@ fn download_verified_ffmpeg(
 
 #[cfg(windows)]
 fn perform_ffmpeg_download() -> anyhow::Result<()> {
-    download_verified_ffmpeg(
-        "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip",
-        "",
-        "ffmpeg.exe",
-    )
+    download_verified_ffmpeg(WINDOWS_FFMPEG_URL, WINDOWS_FFMPEG_SHA256, "ffmpeg.exe")
 }
 
 // linux prefers a distro ffmpeg (find_ffmpeg checks PATH first and the
