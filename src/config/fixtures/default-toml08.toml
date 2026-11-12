@@ -1,0 +1,113 @@
+[output]
+directory = "/captures"
+format = "Png"
+quality = 90
+filename_template = "capture_%Y%m%d_%H%M%S"
+preserve_hdr = false
+
+[capture]
+show_cursor = true
+delay_ms = 0
+gif_fps = 15
+gif_max_duration_secs = 30
+video_fps = 30
+video_quality = "High"
+record_audio = false
+video_encoder = "Auto"
+
+[capture.hdr]
+brightness_nits = 0.0
+user_brightness_scale = 1.0
+use_p99_max_cll = true
+output_format = "pq"
+
+[capture.gif]
+scale_percent = 100
+max_width = 0
+colors = 256
+dither = true
+palette = "Global"
+diff_frames = true
+engine = "Builtin"
+
+[hotkeys]
+screenshot = "Ctrl+Shift+S"
+record_gif = "Ctrl+Shift+G"
+pause_recording = ""
+disabled_globally = false
+
+[ui]
+theme = "Dark"
+show_notifications = true
+copy_to_clipboard = true
+close_behavior = "minimize-to-tray"
+auto_start = false
+check_updates_on_launch = true
+save_clipboard_to_history = false
+tray_hint_dismissed = false
+free_memory_when_hidden = false
+grown_windows = []
+
+[post_capture]
+action = "save-and-clipboard"
+open_file_after_save = false
+play_sound = true
+
+[upload]
+destination = "Imgur"
+copy_url_to_clipboard = true
+custom_url = ""
+custom_form_name = "file"
+custom_response_path = "url"
+imgur_client_id = ""
+
+[upload.sftp]
+host = ""
+port = 0
+username = ""
+password = ""
+password_encrypted = ""
+remote_dir = ""
+public_url_template = ""
+private_key_path = ""
+private_key_passphrase = ""
+private_key_passphrase_encrypted = ""
+
+[upload.s3]
+bucket = ""
+region = ""
+endpoint = ""
+access_key_id = ""
+secret_access_key = ""
+secret_access_key_encrypted = ""
+public_url_template = ""
+
+[performance]
+tick_interval_ms = 100
+renderer = "tiny-skia"
+lazy_init_upload = true
+lazy_init_plugins = true
+
+[marketplace]
+registry_url = "https://rot.lt/capscr/registry.json"
+
+[[capture_tasks]]
+id = "screenshot-save-clipboard"
+name = "Screenshot, save + clipboard"
+hotkey = ""
+capture_mode = "region"
+post_action = "save-and-clipboard"
+
+[[capture_tasks]]
+id = "gif-save"
+name = "Region GIF to file"
+hotkey = "Ctrl+Shift+G"
+capture_mode = "region-gif"
+post_action = "save-file"
+
+[[capture_tasks]]
+id = "mp4-save"
+name = "Region MP4 to file"
+hotkey = "Ctrl+Shift+V"
+capture_mode = "region-mp4"
+post_action = "save-file"

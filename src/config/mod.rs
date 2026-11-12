@@ -1605,6 +1605,25 @@ mod tests {
     use super::*;
 
     #[test]
+    fn default_config_round_trips_and_reads_files_written_by_toml_08() {
+        let mut expected = Config::default();
+        let text = toml::to_string_pretty(&expected).unwrap();
+        let reparsed: Config = toml::from_str(&text).unwrap();
+        assert_eq!(toml::to_string_pretty(&reparsed).unwrap(), text);
+
+        // the fixture is Config::default() as toml 0.8 wrote it, with the
+        // machine-specific folder and the shared client id swapped out
+        expected.output.directory = PathBuf::from("/captures");
+        expected.upload.imgur_client_id.clear();
+        expected.capture_tasks[0].name = "Screenshot, save + clipboard".into();
+        let old: Config = toml::from_str(include_str!("fixtures/default-toml08.toml")).unwrap();
+        assert_eq!(
+            toml::to_string_pretty(&old).unwrap(),
+            toml::to_string_pretty(&expected).unwrap()
+        );
+    }
+
+    #[test]
     fn validate_rejects_bad_template_specifiers() {
         for bad in ["cap_%", "cap_%Q", "%Y%"] {
             let mut config = Config::default();

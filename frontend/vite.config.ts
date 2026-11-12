@@ -31,7 +31,7 @@ export default defineConfig({
     target: "esnext",
     minify: "esbuild",
     sourcemap: false,
-    rollupOptions: {
+    rolldownOptions: {
       input: {
         // the recording bar loads its own minimal page so no shared boot
         // splash or hub chrome can ever paint behind the pill
