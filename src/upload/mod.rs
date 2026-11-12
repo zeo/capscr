@@ -344,10 +344,7 @@ impl ImageUploader {
                 }
             }
         }
-        if host.starts_with("fc") || host.starts_with("fd") || host.starts_with("fe80") {
-            return true;
-        }
-        false
+        host.starts_with("fc") || host.starts_with("fd") || host.starts_with("fe80")
     }
 
     fn validate_form_name(name: &str) -> Result<()> {
