@@ -207,7 +207,8 @@ plugin reading its own user-authored config is benign.
 
 The config lives at `<plugins-dir>/<plugin-id>/config.toml`, a flat table the
 **user** edits (the sandbox has no filesystem, so this is how a plugin receives
-settings — webhook URLs, styling, thresholds). The host reads it once at load
+settings such as webhook URLs, styling and thresholds). The host reads it every time
+plugins load (at launch, on the plugins tab's reload, and after a settings save)
 and stringifies scalar values, e.g.:
 
 ```toml
@@ -219,6 +220,34 @@ enabled     = true    # -> "true"
 Only scalars (string / integer / float / boolean) are exposed; arrays and
 sub-tables are skipped. The file is capped at 64 KiB; missing or unparseable
 config just means every key reads as absent.
+
+### settings page
+
+Declare `[[settings]]` in `plugin.toml` and the plugins tab shows a settings
+button for the plugin. capscr renders the fields itself and writes the answers
+into `config.toml`, so the plugin reads them with `config_get` as usual:
+
+```toml
+[[settings]]
+key = "webhook_url"    # [a-z0-9_], 1-48 chars; the config.toml key
+label = "Webhook URL"
+type = "string"        # string | bool | number | choice
+default = ""           # optional; must match the type
+secret = true          # masked input; still plain text in config.toml
+
+[[settings]]
+key = "size"
+label = "Thumbnail size"
+type = "choice"
+choices = ["small", "large"]   # required for choice
+default = "small"
+```
+
+A plugin declares at most 32 settings. A bad key, an unknown type, a choice
+setting without choices or a default of the wrong type makes the plugin fail to
+load, and the error shows on the plugins tab. Saving keeps any hand-written
+keys already in `config.toml`, then reloads every plugin so the next hook sees
+the new values.
 
 ## minimal Rust example
 
@@ -249,8 +278,8 @@ pub extern "C" fn capscr_on_capture_saved(ptr: i32, len: i32) {
 
 Build with `cargo build --release --target wasm32-unknown-unknown`,
 copy `target/wasm32-unknown-unknown/release/your_crate.wasm` to
-`<plugins-dir>/<id>/plugin.wasm`, write the `plugin.toml`, and capscr
-will load it at next launch.
+`<plugins-dir>/<id>/plugin.wasm`, write the `plugin.toml`, then press reload
+on the plugins tab (or restart capscr) to load it.
 
 ## current limits + roadmap
 

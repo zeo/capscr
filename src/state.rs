@@ -46,10 +46,12 @@ pub struct AppState {
     // dispatches share a read lock — a slow hook can't block another event's
     // dispatch. load_all runs once at startup before this lock is constructed.
     pub plugin_manager: RwLock<PluginManager>,
-    // human-readable plugin load failures captured at startup (load_all runs
-    // once in new()); surfaced to the plugins tab via the plugin_load_errors
-    // command so a broken plugin isn't a silent no-op
+    // human-readable failures from the latest load_plugins pass, surfaced to the
+    // plugins tab via the plugin_load_errors command so a broken plugin isn't a
+    // silent no-op
     pub plugin_load_errors: Mutex<Vec<String>>,
+    // one load at a time, so the last swap always reflects the newest disk state
+    plugin_load: Mutex<()>,
     // flipped true once the background plugin load (load_plugins) finishes its
     // swap. capture dispatch briefly waits on this so a capture fired right
     // after launch (e.g. a jump-list/hotkey shot) still runs on_capture hooks
@@ -115,6 +117,7 @@ impl AppState {
             config: Mutex::new(config),
             plugin_manager: RwLock::new(plugin_manager),
             plugin_load_errors: Mutex::new(Vec::new()),
+            plugin_load: Mutex::new(()),
             plugins_ready: AtomicBool::new(false),
             hotkey_tx: Mutex::new(None),
             gif_recorder: Mutex::new(None),
@@ -167,6 +170,7 @@ impl AppState {
     /// takes the write lock and it's instant. Intended to run on a background
     /// thread spawned at startup so the tray isn't blocked.
     pub fn load_plugins(&self) {
+        let _loading = self.plugin_load.lock().unwrap();
         let mut pm = PluginManager::new();
         let errors = pm.load_all();
         for err in &errors {

@@ -1602,6 +1602,20 @@ button.btn,
   margin-top: 7px;
 }
 
+.plugin-settings {
+  margin-top: 10px;
+  padding-top: 4px;
+  border-top: 1px solid var(--rule);
+}
+
+.plugin-settings .field {
+  grid-template-columns: 140px minmax(0, 1fr);
+}
+
+.plugin-settings .btn-row {
+  margin-top: 8px;
+}
+
 .perm-label {
   font-size: 10px;
   text-transform: uppercase;

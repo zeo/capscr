@@ -1,8 +1,118 @@
 import { createMemo, createResource, createSignal, For, Show } from "solid-js";
-import { FolderOpen, RefreshCw, Power, Download, Trash2, ExternalLink } from "lucide-solid";
+import {
+  FolderOpen,
+  RefreshCw,
+  Power,
+  Download,
+  Trash2,
+  ExternalLink,
+  SlidersHorizontal,
+} from "lucide-solid";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { Section } from "../components/Section";
-import { api, InstalledPlugin, RegistryEntry } from "../api";
+import {
+  api,
+  InstalledPlugin,
+  PluginSettingSpec,
+  PluginSettingValue,
+  RegistryEntry,
+} from "../api";
+
+type Status = { tone: string; msg: string };
+
+function PluginSettingsPanel(props: { plugin: InstalledPlugin; setStatus: (s: Status) => void }) {
+  const [settings] = createResource(() => props.plugin.id, api.pluginSettings);
+  const [edits, setEdits] = createSignal<Record<string, PluginSettingValue>>({});
+  const [saving, setSaving] = createSignal(false);
+  const value = (key: string) => edits()[key] ?? settings()?.values[key];
+  const edit = (key: string, next: PluginSettingValue) =>
+    setEdits((current) => ({ ...current, [key]: next }));
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      await api.setPluginSettings(props.plugin.id, { ...settings()!.values, ...edits() });
+      props.setStatus({ tone: "ok", msg: `saved ${props.plugin.name} settings.` });
+    } catch (e) {
+      props.setStatus({ tone: "err", msg: `couldn't save settings: ${e}` });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const field = (spec: PluginSettingSpec) => {
+    switch (spec.type) {
+      case "bool":
+        return (
+          <label class="check">
+            <input
+              type="checkbox"
+              checked={value(spec.key) === true}
+              onChange={(e) => edit(spec.key, e.currentTarget.checked)}
+            />
+            {value(spec.key) === true ? "on" : "off"}
+          </label>
+        );
+      case "number":
+        return (
+          <input
+            type="number"
+            value={String(value(spec.key) ?? "")}
+            onChange={(e) => {
+              const next = e.currentTarget.valueAsNumber;
+              if (Number.isFinite(next)) edit(spec.key, next);
+              else e.currentTarget.value = String(value(spec.key) ?? "");
+            }}
+          />
+        );
+      case "choice":
+        return (
+          <select
+            value={String(value(spec.key) ?? "")}
+            onChange={(e) => edit(spec.key, e.currentTarget.value)}
+          >
+            <For each={spec.choices}>{(choice) => <option value={choice}>{choice}</option>}</For>
+          </select>
+        );
+      default:
+        return (
+          <input
+            type={spec.secret ? "password" : "text"}
+            autocomplete="off"
+            value={String(value(spec.key) ?? "")}
+            onInput={(e) => edit(spec.key, e.currentTarget.value)}
+          />
+        );
+    }
+  };
+
+  return (
+    <div class="plugin-settings">
+      <Show
+        when={settings()}
+        fallback={
+          <div class="muted">
+            {settings.error ? `couldn't read settings: ${settings.error}` : "loading..."}
+          </div>
+        }
+      >
+        <For each={settings()!.specs}>
+          {(spec) => (
+            <div class="field">
+              <label class="field-label">{spec.label}</label>
+              <div class="field-control">{field(spec)}</div>
+            </div>
+          )}
+        </For>
+        <div class="btn-row">
+          <button class="btn" data-size="xs" disabled={saving()} onClick={save}>
+            {saving() ? "saving..." : "save"}
+          </button>
+        </div>
+      </Show>
+    </div>
+  );
+}
 
 function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -32,14 +142,14 @@ export function Marketplace() {
       return [];
     }
   });
-  const [status, setStatus] = createSignal<{ tone: string; msg: string } | null>(
-    null,
-  );
+  const [status, setStatus] = createSignal<Status | null>(null);
   const [busyId, setBusyId] = createSignal<string | null>(null);
+  const [settingsId, setSettingsId] = createSignal<string | null>(null);
 
   const reload = async () => {
-    setStatus({ tone: "", msg: "re-scanning..." });
+    setStatus({ tone: "", msg: "reloading plugins..." });
     try {
+      await api.reloadPlugins();
       await Promise.all([refetchInstalled(), refetchRegistry(), refetchErrors()]);
       setStatus({ tone: "ok", msg: "done." });
     } catch (e) {
@@ -86,7 +196,7 @@ export function Marketplace() {
     try {
       await api.togglePluginEnabled(entry.id, next);
       setStatus({ tone: "ok", msg: `${entry.name} ${next ? "enabled" : "disabled"}.` });
-      await refetchInstalled();
+      await Promise.all([refetchInstalled(), refetchErrors()]);
     } catch (e) {
       setStatus({ tone: "err", msg: `toggle failed: ${e}` });
     } finally {
@@ -158,7 +268,7 @@ export function Marketplace() {
               <For each={loadErrors()!}>{(err) => <li>{err}</li>}</For>
             </ul>
             <div class="muted" style="margin-top: 6px;">
-              load runs at launch — restart capscr after fixing a plugin.
+              fix the plugin, then press reload.
             </div>
           </div>
         </Show>
@@ -215,8 +325,23 @@ export function Marketplace() {
                           </For>
                         </div>
                       </Show>
+                      <Show when={settingsId() === p.id}>
+                        <PluginSettingsPanel plugin={p} setStatus={setStatus} />
+                      </Show>
                     </div>
                     <div class="list-item-actions">
+                      <Show when={p.has_settings}>
+                        <button
+                          class="btn"
+                          data-variant="ghost"
+                          data-size="xs"
+                          aria-expanded={settingsId() === p.id}
+                          onClick={() => setSettingsId(settingsId() === p.id ? null : p.id)}
+                        >
+                          <SlidersHorizontal size={11} stroke-width={1.5} />
+                          settings
+                        </button>
+                      </Show>
                       <button
                         class="btn"
                         data-variant="ghost"

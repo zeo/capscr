@@ -3,9 +3,11 @@
 // PluginManager::load_all.
 
 use anyhow::{anyhow, bail, Result};
-use serde::Deserialize;
-use std::collections::HashMap;
+use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
+
+const MAX_SETTINGS: usize = 32;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct PluginManifest {
@@ -21,6 +23,53 @@ pub struct PluginManifest {
     /// key load normally; when false the host must not instantiate the plugin
     #[serde(default = "default_enabled")]
     pub enabled: bool,
+    #[serde(default)]
+    pub settings: Vec<SettingSpec>,
+}
+
+// one field on the plugin's settings page, stored as a top-level key in config.toml
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct SettingSpec {
+    pub key: String,
+    pub label: String,
+    #[serde(rename = "type")]
+    pub kind: SettingKind,
+    #[serde(default)]
+    pub default: Option<toml::Value>,
+    #[serde(default)]
+    pub choices: Vec<String>,
+    #[serde(default)]
+    pub secret: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SettingKind {
+    String,
+    Bool,
+    Number,
+    Choice,
+}
+
+impl SettingSpec {
+    pub fn accepts(&self, value: &toml::Value) -> bool {
+        match (self.kind, value) {
+            (SettingKind::String, toml::Value::String(_))
+            | (SettingKind::Bool, toml::Value::Boolean(_))
+            | (SettingKind::Number, toml::Value::Integer(_) | toml::Value::Float(_)) => true,
+            (SettingKind::Choice, toml::Value::String(choice)) => self.choices.contains(choice),
+            _ => false,
+        }
+    }
+
+    pub fn default_value(&self) -> toml::Value {
+        self.default.clone().unwrap_or_else(|| match self.kind {
+            SettingKind::String => toml::Value::String(String::new()),
+            SettingKind::Bool => toml::Value::Boolean(false),
+            SettingKind::Number => toml::Value::Integer(0),
+            SettingKind::Choice => toml::Value::String(self.choices[0].clone()),
+        })
+    }
 }
 
 fn default_enabled() -> bool {
@@ -126,7 +175,7 @@ impl PluginManifest {
                 validate_fetch_pattern(pattern)?;
             }
         }
-        Ok(())
+        validate_settings(&self.settings)
     }
 
     /// returns true if this plugin should be instantiated by the WASM host.
@@ -138,6 +187,38 @@ impl PluginManifest {
             .map(|r| r.runtime_type == "wasm")
             .unwrap_or(false)
     }
+}
+
+fn validate_settings(settings: &[SettingSpec]) -> Result<()> {
+    if settings.len() > MAX_SETTINGS {
+        bail!("a plugin declares at most {MAX_SETTINGS} settings");
+    }
+    let mut seen = HashSet::new();
+    for spec in settings {
+        let key = &spec.key;
+        if key.is_empty()
+            || key.len() > 48
+            || !key
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+        {
+            bail!("setting key '{key}' must match [a-z0-9_]{{1,48}}");
+        }
+        if !seen.insert(key) {
+            bail!("setting key '{key}' is declared twice");
+        }
+        if spec.kind == SettingKind::Choice && spec.choices.is_empty() {
+            bail!("choice setting '{key}' needs at least one choice");
+        }
+        if spec
+            .default
+            .as_ref()
+            .is_some_and(|value| !spec.accepts(value))
+        {
+            bail!("setting '{key}' has a default that doesn't match its type");
+        }
+    }
+    Ok(())
 }
 
 /// a fetch capability entry must name a concrete https host, optionally with a
@@ -190,7 +271,64 @@ mod tests {
             hooks: HashMap::new(),
             capabilities: HashMap::new(),
             enabled: true,
+            settings: Vec::new(),
         }
+    }
+
+    fn manifest_with_settings(settings: &str) -> Result<PluginManifest> {
+        let body = format!("[plugin]\nid=\"x\"\nname=\"X\"\nversion=\"1.0.0\"\n{settings}");
+        let manifest: PluginManifest = toml::from_str(&body)?;
+        manifest.validate()?;
+        Ok(manifest)
+    }
+
+    #[test]
+    fn settings_parse_with_defaults_and_choices() {
+        let manifest = manifest_with_settings(
+            r#"
+[[settings]]
+key = "webhook"
+label = "Webhook URL"
+type = "string"
+secret = true
+
+[[settings]]
+key = "size"
+label = "Size"
+type = "choice"
+choices = ["small", "large"]
+default = "large"
+"#,
+        )
+        .unwrap();
+        let [webhook, size] = &manifest.settings[..] else {
+            panic!("expected two settings");
+        };
+        assert!(webhook.secret);
+        assert_eq!(webhook.default_value(), toml::Value::String(String::new()));
+        assert_eq!(size.default_value(), toml::Value::String("large".into()));
+    }
+
+    #[test]
+    fn malformed_settings_fail_the_load() {
+        let spec = |body: &str| manifest_with_settings(&format!("[[settings]]\n{body}\n"));
+        assert!(spec("key=\"Bad Key\"\nlabel=\"x\"\ntype=\"string\"").is_err());
+        assert!(spec("key=\"k\"\nlabel=\"x\"\ntype=\"colour\"").is_err());
+        assert!(spec("key=\"k\"\nlabel=\"x\"\ntype=\"choice\"").is_err());
+        assert!(spec("key=\"k\"\nlabel=\"x\"\ntype=\"bool\"\ndefault=\"yes\"").is_err());
+        assert!(
+            spec("key=\"k\"\nlabel=\"x\"\ntype=\"choice\"\nchoices=[\"a\"]\ndefault=\"b\"")
+                .is_err()
+        );
+        assert!(spec("key=\"k\"\nlabel=\"x\"\ntype=\"number\"\ndefault=2.5").is_ok());
+        let twice = "[[settings]]\nkey=\"k\"\nlabel=\"x\"\ntype=\"bool\"\n";
+        assert!(manifest_with_settings(&twice.repeat(2)).is_err());
+        assert!(manifest_with_settings(
+            &(0..33)
+                .map(|i| format!("[[settings]]\nkey=\"k{i}\"\nlabel=\"x\"\ntype=\"bool\"\n"))
+                .collect::<String>()
+        )
+        .is_err());
     }
 
     #[test]

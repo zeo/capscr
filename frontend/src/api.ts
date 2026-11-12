@@ -162,7 +162,24 @@ export interface InstalledPlugin {
   version: string;
   description: string;
   enabled: boolean;
+  has_settings: boolean;
   capabilities: string[];
+}
+
+export type PluginSettingValue = string | number | boolean;
+
+export interface PluginSettingSpec {
+  key: string;
+  label: string;
+  type: "string" | "bool" | "number" | "choice";
+  default: PluginSettingValue | null;
+  choices: string[];
+  secret: boolean;
+}
+
+export interface PluginSettings {
+  specs: PluginSettingSpec[];
+  values: Record<string, PluginSettingValue>;
 }
 
 export interface RegistryEntry {
@@ -274,6 +291,10 @@ export const api = {
 
   listInstalledPlugins: () => invoke<InstalledPlugin[]>("list_installed_plugins"),
   pluginLoadErrors: () => invoke<string[]>("plugin_load_errors"),
+  reloadPlugins: () => invoke<string[]>("reload_plugins"),
+  pluginSettings: (id: string) => invoke<PluginSettings>("plugin_settings", { id }),
+  setPluginSettings: (id: string, values: Record<string, PluginSettingValue>) =>
+    invoke<void>("set_plugin_settings", { id, values }),
   pickOutputDir: () => invoke<AppConfig | null>("pick_output_dir"),
   setOutputDir: (path: string) => invoke<AppConfig | null>("set_output_dir", { path }),
   takeStartupNotices: () => invoke<string[]>("take_startup_notices"),

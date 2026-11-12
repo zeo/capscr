@@ -17,6 +17,7 @@
 // don't export `capscr_alloc` are skipped for hooks that need a payload.
 
 use super::manifest::{PluginManifest, RuntimeSpec};
+use super::MAX_CONFIG_BYTES;
 use anyhow::{anyhow, Result};
 use image::RgbaImage;
 use std::collections::HashMap;
@@ -138,9 +139,6 @@ const FETCH_MAX_BYTES: usize = 1 << 20;
 const MAX_CAPTURE_BLOB_BYTES: usize = 256 * 1024 * 1024;
 /// max width/height for a plugin-returned replacement image
 const MAX_CAPTURE_DIM: u32 = 16384;
-/// cap on <plugin_dir>/config.toml so a malicious marketplace plugin can't ship
-/// a huge config to bloat host memory at load
-const MAX_CONFIG_BYTES: u64 = 64 * 1024;
 const DEFAULT_PLUGIN_MEMORY_BYTES: usize = 64 * 1024 * 1024;
 const MAX_PLUGIN_MEMORY_BYTES: usize = 256 * 1024 * 1024;
 // host imports burn no fuel, so the epoch deadline is the only bound on a hook
@@ -468,7 +466,7 @@ impl WasmHost {
             .map_err(|e| anyhow!("link capscr.fetch_post: {e}"))?;
 
         // host import: capscr.config_get(key_ptr, key_len) -> i64
-        // looks up a key in the plugin's config.toml (loaded at startup) and
+        // looks up a key in the plugin's config.toml (read on each plugin load) and
         // writes the value into guest memory via capscr_alloc, returning the
         // packed (ptr<<32)|len. 0 if the key is absent or args are bad. always
         // available — a plugin reading its own user-authored config is benign.
@@ -1075,6 +1073,7 @@ mod tests {
             .collect(),
             capabilities: caps,
             enabled: true,
+            settings: Vec::new(),
         };
         let host = WasmHost::new().expect("host");
         let plugin = host.load(dir.path(), &manifest).expect("load");
@@ -1274,6 +1273,7 @@ mod tests {
                 .collect(),
             capabilities: caps,
             enabled: true,
+            settings: Vec::new(),
         };
         let host = WasmHost::new().expect("host");
         let plugin = host.load(dir.path(), &manifest).expect("load");
@@ -1436,6 +1436,7 @@ mod tests {
             .collect(),
             capabilities: HashMap::new(),
             enabled: true,
+            settings: Vec::new(),
         };
         let host = WasmHost::new().expect("host");
         let plugin = host.load(dir.path(), &manifest).expect("load");
@@ -1487,6 +1488,7 @@ mod tests {
             .collect(),
             capabilities: HashMap::new(),
             enabled: true,
+            settings: Vec::new(),
         };
         let host = WasmHost::new().expect("host");
         let plugin = host.load(dir.path(), &manifest).expect("load");

@@ -4,7 +4,11 @@ mod manifest;
 #[cfg(feature = "plugin-runtime")]
 mod wasm;
 
-pub use manifest::PluginManifest;
+pub use manifest::{PluginManifest, SettingSpec};
+
+/// cap on <plugin_dir>/config.toml so a malicious marketplace plugin can't ship
+/// a huge config to bloat host memory at load
+pub const MAX_CONFIG_BYTES: u64 = 64 * 1024;
 
 use image::RgbaImage;
 use std::path::{Path, PathBuf};

@@ -4356,6 +4356,7 @@ pub struct InstalledPlugin {
     pub version: String,
     pub description: String,
     pub enabled: bool,
+    pub has_settings: bool,
     // human-readable "area:grant" strings (e.g. "image:read", "fetch:api.x.com")
     // so the plugins tab can show what a plugin was granted at install time
     pub capabilities: Vec<String>,
@@ -4383,6 +4384,7 @@ struct PluginListing {
     version: String,
     description: String,
     enabled: bool,
+    has_settings: bool,
     capabilities: Vec<String>,
 }
 
@@ -4409,6 +4411,7 @@ fn read_plugin_listing(body: &str) -> Option<PluginListing> {
             version: m.plugin.version,
             description: m.plugin.description.unwrap_or_default(),
             enabled: m.enabled,
+            has_settings: !m.settings.is_empty(),
             capabilities: flatten_capabilities(&m.capabilities),
         });
     }
@@ -4418,6 +4421,7 @@ fn read_plugin_listing(body: &str) -> Option<PluginListing> {
             version: m.version,
             description: m.description,
             enabled: m.enabled,
+            has_settings: false,
             capabilities: Vec::new(),
         });
     }
@@ -4581,6 +4585,7 @@ pub fn list_installed_plugins() -> Result<Vec<InstalledPlugin>, String> {
             version: listing.version,
             description: listing.description,
             enabled: listing.enabled,
+            has_settings: listing.has_settings,
             capabilities: listing.capabilities,
         });
     }
@@ -4588,12 +4593,50 @@ pub fn list_installed_plugins() -> Result<Vec<InstalledPlugin>, String> {
     Ok(out)
 }
 
-// plugin load failures captured at startup, surfaced to the plugins tab. the
-// runtime loads plugins once at launch, so this reflects that pass — a restart
-// re-evaluates after the user fixes a plugin
+// failures from the latest plugin load pass, surfaced to the plugins tab
 #[tauri::command]
 pub fn plugin_load_errors(state: State<AppState>) -> Vec<String> {
     state.plugin_load_errors.lock().unwrap().clone()
+}
+
+#[tauri::command]
+pub async fn reload_plugins(app: AppHandle) -> Result<Vec<String>, String> {
+    tokio::task::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        state.load_plugins();
+        let errors = state.plugin_load_errors.lock().unwrap().clone();
+        errors
+    })
+    .await
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn plugin_settings(id: String) -> Result<crate::marketplace::PluginSettings, String> {
+    let plugins = plugins_dir()?;
+    tokio::task::spawn_blocking(move || crate::marketplace::plugin_settings(&plugins, &id))
+        .await
+        .map_err(|error| error.to_string())?
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn set_plugin_settings(
+    id: String,
+    values: serde_json::Map<String, serde_json::Value>,
+    app: AppHandle,
+) -> Result<(), String> {
+    let plugins = plugins_dir()?;
+    let pending_mutation = PendingFileMutation::begin(&app).map_err(|error| error.to_string())?;
+    tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+        let _pending_mutation = pending_mutation;
+        crate::marketplace::set_plugin_settings(&plugins, &id, &values)?;
+        app.state::<AppState>().load_plugins();
+        Ok(())
+    })
+    .await
+    .map_err(|error| error.to_string())?
+    .map_err(|error| error.to_string())
 }
 
 #[tauri::command]

@@ -42,6 +42,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
+use crate::plugin::{PluginManifest, SettingSpec, MAX_CONFIG_BYTES};
+
 const REGISTRY_FETCH_TIMEOUT: Duration = Duration::from_secs(15);
 const PLUGIN_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(120);
 const MAX_REGISTRY_BYTES: usize = 2 * 1024 * 1024; // 2 MB — generous for a few hundred plugins
@@ -436,6 +438,117 @@ pub fn uninstall_plugin(plugins_dir: &Path, id: &str) -> Result<()> {
 pub fn set_plugin_enabled(plugins_dir: &Path, id: &str, enabled: bool) -> Result<()> {
     validate_id(id)?;
     let _mutation_guard = lock_plugin_mutations()?;
+    let manifest_path = installed_plugin_dir(plugins_dir, id)?.join("plugin.toml");
+    if !std::fs::symlink_metadata(&manifest_path)?
+        .file_type()
+        .is_file()
+    {
+        bail!("plugin manifest must be a regular file");
+    }
+    let body = std::fs::read_to_string(&manifest_path)?;
+    let mut table: toml::Table = toml::from_str(&body)?;
+    table.insert("enabled".to_string(), toml::Value::Boolean(enabled));
+    replace_file_atomically(&manifest_path, toml::to_string(&table)?.as_bytes())?;
+    Ok(())
+}
+
+#[derive(Debug, Serialize)]
+pub struct PluginSettings {
+    pub specs: Vec<SettingSpec>,
+    pub values: serde_json::Map<String, serde_json::Value>,
+}
+
+pub fn plugin_settings(plugins_dir: &Path, id: &str) -> Result<PluginSettings> {
+    validate_id(id)?;
+    let dir = installed_plugin_dir(plugins_dir, id)?;
+    let specs = PluginManifest::load(&dir)?.settings;
+    let values = settings_values(&specs, &read_plugin_config(&dir)?);
+    Ok(PluginSettings { specs, values })
+}
+
+pub fn set_plugin_settings(
+    plugins_dir: &Path,
+    id: &str,
+    incoming: &serde_json::Map<String, serde_json::Value>,
+) -> Result<()> {
+    validate_id(id)?;
+    let _mutation_guard = lock_plugin_mutations()?;
+    let dir = installed_plugin_dir(plugins_dir, id)?;
+    let specs = PluginManifest::load(&dir)?.settings;
+    let table = merge_settings(&specs, read_plugin_config(&dir)?, incoming)?;
+    replace_file_atomically(
+        &dir.join("config.toml"),
+        toml::to_string(&table)?.as_bytes(),
+    )
+}
+
+// stored values that still fit their spec, the declared default otherwise
+fn settings_values(
+    specs: &[SettingSpec],
+    config: &toml::Table,
+) -> serde_json::Map<String, serde_json::Value> {
+    specs
+        .iter()
+        .map(|spec| {
+            let value = config
+                .get(&spec.key)
+                .filter(|value| spec.accepts(value))
+                .cloned()
+                .unwrap_or_else(|| spec.default_value());
+            let json = serde_json::to_value(value).unwrap_or(serde_json::Value::Null);
+            (spec.key.clone(), json)
+        })
+        .collect()
+}
+
+// undeclared incoming keys are dropped; hand-written keys already in config.toml stay
+fn merge_settings(
+    specs: &[SettingSpec],
+    mut config: toml::Table,
+    incoming: &serde_json::Map<String, serde_json::Value>,
+) -> Result<toml::Table> {
+    for spec in specs {
+        let Some(value) = incoming.get(&spec.key) else {
+            continue;
+        };
+        let value = match value {
+            serde_json::Value::String(text) => Some(toml::Value::String(text.clone())),
+            serde_json::Value::Bool(flag) => Some(toml::Value::Boolean(*flag)),
+            serde_json::Value::Number(number) => number
+                .as_i64()
+                .map(toml::Value::Integer)
+                .or_else(|| number.as_f64().map(toml::Value::Float)),
+            _ => None,
+        }
+        .filter(|value| spec.accepts(value))
+        .ok_or_else(|| anyhow!("'{}' got a value of the wrong type", spec.label))?;
+        config.insert(spec.key.clone(), value);
+    }
+    if toml::to_string(&config)?.len() as u64 > MAX_CONFIG_BYTES {
+        bail!("plugin settings exceed {} KiB", MAX_CONFIG_BYTES / 1024);
+    }
+    Ok(config)
+}
+
+fn read_plugin_config(dir: &Path) -> Result<toml::Table> {
+    let path = dir.join("config.toml");
+    match std::fs::symlink_metadata(&path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(toml::Table::new()),
+        Err(error) => return Err(error.into()),
+        Ok(metadata) if !metadata.file_type().is_file() => {
+            bail!("plugin config.toml must be a regular file");
+        }
+        Ok(metadata) if metadata.len() > MAX_CONFIG_BYTES => {
+            bail!("plugin config.toml is over {} KiB", MAX_CONFIG_BYTES / 1024);
+        }
+        Ok(_) => {}
+    }
+    let body = std::fs::read_to_string(&path)?;
+    toml::from_str(&body).map_err(|error| anyhow!("parsing {}: {error}", path.display()))
+}
+
+// the plugin's own directory, refused when missing, a link, or outside the plugins dir
+fn installed_plugin_dir(plugins_dir: &Path, id: &str) -> Result<PathBuf> {
     let plugin_dir = plugins_dir.join(id);
     match std::fs::symlink_metadata(&plugin_dir) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -452,18 +565,7 @@ pub fn set_plugin_enabled(plugins_dir: &Path, id: &str, enabled: bool) -> Result
     if !canonical_plugin.starts_with(&canonical_plugins) {
         bail!("plugin path escapes plugins dir");
     }
-    let manifest_path = canonical_plugin.join("plugin.toml");
-    if !std::fs::symlink_metadata(&manifest_path)?
-        .file_type()
-        .is_file()
-    {
-        bail!("plugin manifest must be a regular file");
-    }
-    let body = std::fs::read_to_string(&manifest_path)?;
-    let mut table: toml::Table = toml::from_str(&body)?;
-    table.insert("enabled".to_string(), toml::Value::Boolean(enabled));
-    replace_file_atomically(&manifest_path, toml::to_string(&table)?.as_bytes())?;
-    Ok(())
+    Ok(canonical_plugin)
 }
 
 fn replace_file_atomically(path: &Path, contents: &[u8]) -> Result<()> {
@@ -479,11 +581,11 @@ fn replace_file_atomically_with(
         path.with_extension(format!("toml.{}.tmp", uuid::Uuid::new_v4().as_simple()));
     if let Err(error) = std::fs::write(&tmp, contents) {
         let _ = std::fs::remove_file(&tmp);
-        return Err(anyhow!("plugin manifest temp write failed: {error}"));
+        return Err(anyhow!("plugin file temp write failed: {error}"));
     }
     if let Err(error) = rename(&tmp, path) {
         let _ = std::fs::remove_file(&tmp);
-        return Err(anyhow!("plugin manifest atomic rename failed: {error}"));
+        return Err(anyhow!("plugin file atomic rename failed: {error}"));
     }
     Ok(())
 }
@@ -804,6 +906,94 @@ mod tests {
             std::fs::read(staging.join("plugin.wasm")).expect("read staged wasm"),
             b"new"
         );
+    }
+
+    const SETTINGS_MANIFEST: &str = r#"
+[plugin]
+id = "sample"
+name = "Sample"
+version = "1.0.0"
+
+[[settings]]
+key = "webhook"
+label = "Webhook URL"
+type = "string"
+
+[[settings]]
+key = "loud"
+label = "Loud"
+type = "bool"
+default = true
+
+[[settings]]
+key = "size"
+label = "Size"
+type = "choice"
+choices = ["small", "large"]
+"#;
+
+    fn sample_specs() -> Vec<SettingSpec> {
+        toml::from_str::<PluginManifest>(SETTINGS_MANIFEST)
+            .unwrap()
+            .settings
+    }
+
+    fn json(body: serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
+        body.as_object().unwrap().clone()
+    }
+
+    #[test]
+    fn merge_drops_undeclared_keys_and_keeps_hand_written_ones() {
+        let existing: toml::Table = toml::from_str("extra = 3\nloud = false\n").unwrap();
+        let incoming = json(serde_json::json!({ "webhook": "https://x.test/h", "other": 1 }));
+        let merged = merge_settings(&sample_specs(), existing, &incoming).unwrap();
+        assert_eq!(
+            merged.get("webhook").and_then(|v| v.as_str()),
+            Some("https://x.test/h")
+        );
+        assert_eq!(merged.get("extra").and_then(|v| v.as_integer()), Some(3));
+        assert_eq!(merged.get("loud").and_then(|v| v.as_bool()), Some(false));
+        assert!(!merged.contains_key("other"));
+    }
+
+    #[test]
+    fn merge_rejects_wrong_types_and_unknown_choices() {
+        let specs = sample_specs();
+        for bad in [
+            serde_json::json!({ "loud": "yes" }),
+            serde_json::json!({ "webhook": 5 }),
+            serde_json::json!({ "size": "huge" }),
+        ] {
+            assert!(merge_settings(&specs, toml::Table::new(), &json(bad)).is_err());
+        }
+    }
+
+    #[test]
+    fn merge_refuses_a_config_over_the_size_cap() {
+        let huge = "x".repeat(MAX_CONFIG_BYTES as usize);
+        let incoming = json(serde_json::json!({ "webhook": huge }));
+        assert!(merge_settings(&sample_specs(), toml::Table::new(), &incoming).is_err());
+    }
+
+    #[test]
+    fn settings_round_trip_through_config_toml() {
+        let dir = tempfile::tempdir().unwrap();
+        let plugin = dir.path().join("sample");
+        std::fs::create_dir(&plugin).unwrap();
+        std::fs::write(plugin.join("plugin.toml"), SETTINGS_MANIFEST).unwrap();
+        std::fs::write(plugin.join("config.toml"), "loud = \"not a bool\"\n").unwrap();
+
+        let before = plugin_settings(dir.path(), "sample").unwrap();
+        assert_eq!(before.values["loud"], serde_json::json!(true));
+        assert_eq!(before.values["size"], serde_json::json!("small"));
+
+        let incoming = json(serde_json::json!({ "loud": false, "size": "large" }));
+        set_plugin_settings(dir.path(), "sample", &incoming).unwrap();
+        let after = plugin_settings(dir.path(), "sample").unwrap();
+        assert_eq!(after.values["loud"], serde_json::json!(false));
+        assert_eq!(after.values["size"], serde_json::json!("large"));
+        assert_eq!(after.values["webhook"], serde_json::json!(""));
+        assert!(plugin_settings(dir.path(), "../sample").is_err());
     }
 
     #[test]
