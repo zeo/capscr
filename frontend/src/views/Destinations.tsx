@@ -103,7 +103,7 @@ export function Destinations() {
                   <div class="field-control">
                     <input
                       type="text"
-                      placeholder="546c25a59c58ad7"
+                      placeholder="built-in shared key"
                       value={c().upload.imgur_client_id}
                       onInput={(e) =>
                         patch({

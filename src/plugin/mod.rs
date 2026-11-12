@@ -240,7 +240,7 @@ impl Default for PluginManager {
 }
 
 fn default_plugins_dir() -> Option<PathBuf> {
-    let pd = directories::ProjectDirs::from("com", "capscr", "capscr")?;
+    let pd = crate::config::project_dirs()?;
     Some(pd.data_dir().join("plugins"))
 }
 

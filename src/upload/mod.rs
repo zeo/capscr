@@ -17,6 +17,9 @@ const MAX_REDIRECTS: usize = 5;
 const MAX_FORM_NAME_LEN: usize = 64;
 const MAX_RESPONSE_PATH_LEN: usize = 128;
 
+// public anonymous app id shared by every install; users can paste their own
+pub const BUILTIN_IMGUR_CLIENT_ID: &str = "546c25a59c58ad7";
+
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum UploadService {
     #[default]
@@ -381,7 +384,9 @@ impl ImageUploader {
         let mut last_err: Option<anyhow::Error> = None;
         for attempt in 0..attempts {
             let result = match service {
-                UploadService::Imgur => self.upload_imgur(data, mime, file_name, "546c25a59c58ad7"),
+                UploadService::Imgur => {
+                    self.upload_imgur(data, mime, file_name, BUILTIN_IMGUR_CLIENT_ID)
+                }
                 UploadService::ImgurWithClientId(cid) => {
                     self.upload_imgur(data, mime, file_name, cid)
                 }
@@ -1028,7 +1033,7 @@ pub fn test_connection_imgur(client_id: &str) -> Result<Vec<TestStep>> {
     let mut steps: Vec<TestStep> = Vec::new();
     let effective_cid = if client_id.trim().is_empty() {
         steps.push(TestStep::ok("client-id", "(shared bot key)".into()));
-        "546c25a59c58ad7"
+        BUILTIN_IMGUR_CLIENT_ID
     } else {
         steps.push(TestStep::ok("client-id", "(custom)".into()));
         client_id.trim()

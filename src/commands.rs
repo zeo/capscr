@@ -742,15 +742,13 @@ fn run_capture_pipeline_inner(
                 #[cfg(not(windows))]
                 let (min_x, min_y) = (0, 0);
 
-                let img_x = (rect.x - min_x).max(0) as u32;
-                let img_y = (rect.y - min_y).max(0) as u32;
-                let crop_width = rect.width.min(frozen.width().saturating_sub(img_x));
-                let crop_height = rect.height.min(frozen.height().saturating_sub(img_y));
-                if crop_width > 0 && crop_height > 0 {
-                    let cropped =
-                        image::imageops::crop_imm(&**frozen, img_x, img_y, crop_width, crop_height)
-                            .to_image();
-                    (cropped, None, Some((rect.x, rect.y)))
+                if let Some((cropped, at)) = crop_frozen(
+                    frozen,
+                    (min_x, min_y),
+                    (rect.x, rect.y),
+                    (rect.width, rect.height),
+                ) {
+                    (cropped, None, Some(at))
                 } else {
                     (
                         RegionCapture::new(rect).capture()?,
@@ -799,26 +797,14 @@ fn run_capture_pipeline_inner(
                                 (0, 0)
                             };
 
-                        let w_x = rect.left;
-                        let w_y = rect.top;
-                        let w_w = (rect.right - rect.left).max(0) as u32;
-                        let w_h = (rect.bottom - rect.top).max(0) as u32;
-
-                        let img_x = (w_x - min_x).max(0) as u32;
-                        let img_y = (w_y - min_y).max(0) as u32;
-                        let crop_width = w_w.min(frozen.width().saturating_sub(img_x));
-                        let crop_height = w_h.min(frozen.height().saturating_sub(img_y));
-
-                        if crop_width > 0 && crop_height > 0 {
-                            let cropped = image::imageops::crop_imm(
-                                &**frozen,
-                                img_x,
-                                img_y,
-                                crop_width,
-                                crop_height,
-                            )
-                            .to_image();
-                            (cropped, None, Some((w_x, w_y)))
+                        let size = (
+                            rect.right.saturating_sub(rect.left).max(0) as u32,
+                            rect.bottom.saturating_sub(rect.top).max(0) as u32,
+                        );
+                        if let Some((cropped, at)) =
+                            crop_frozen(frozen, (min_x, min_y), (rect.left, rect.top), size)
+                        {
+                            (cropped, None, Some(at))
                         } else {
                             let cap = WindowCapture::new(hwnd);
                             let img = cap.capture()?;
@@ -841,22 +827,8 @@ fn run_capture_pipeline_inner(
                         let monitors = crate::capture::list_monitors().unwrap_or_default();
                         let min_x = monitors.iter().map(|m| m.x).min().unwrap_or(0);
                         let min_y = monitors.iter().map(|m| m.y).min().unwrap_or(0);
-                        let img_x = (w_x - min_x).max(0) as u32;
-                        let img_y = (w_y - min_y).max(0) as u32;
-                        let crop_width = w_w.min(frozen.width().saturating_sub(img_x));
-                        let crop_height = w_h.min(frozen.height().saturating_sub(img_y));
-                        if crop_width == 0 || crop_height == 0 {
-                            return None;
-                        }
-                        let img = image::imageops::crop_imm(
-                            &**frozen,
-                            img_x,
-                            img_y,
-                            crop_width,
-                            crop_height,
-                        )
-                        .to_image();
-                        Some((img, None, Some((w_x, w_y))))
+                        crop_frozen(frozen, (min_x, min_y), (w_x, w_y), (w_w, w_h))
+                            .map(|(img, at)| (img, None, Some(at)))
                     });
                     match cropped {
                         Some(result) => result,
@@ -1118,7 +1090,7 @@ fn build_sftp_service(config: &Config) -> UploadService {
 
 fn build_imgur_service(config: &Config) -> UploadService {
     let cid = config.upload.imgur_client_id.trim();
-    if cid.is_empty() || cid == "546c25a59c58ad7" {
+    if cid.is_empty() || cid == crate::upload::BUILTIN_IMGUR_CLIENT_ID {
         UploadService::Imgur
     } else {
         UploadService::ImgurWithClientId(cid.to_string())
@@ -1253,6 +1225,71 @@ fn window_screen_origin(window_id: u32) -> Option<(i32, i32)> {
     Some((w.x().ok()?, w.y().ok()?))
 }
 
+// crops a desktop-space rect out of a frozen frame whose top-left pixel sits
+// at `origin`. a rect hanging past the top or left edge shrinks rather than
+// shifting, and the crop comes back with its own desktop-space top-left
+fn crop_frozen(
+    frozen: &RgbaImage,
+    origin: (i32, i32),
+    (x, y): (i32, i32),
+    (w, h): (u32, u32),
+) -> Option<(RgbaImage, (i32, i32))> {
+    let (left, top) = (x.max(origin.0), y.max(origin.1));
+    let img_x = left.abs_diff(origin.0);
+    let img_y = top.abs_diff(origin.1);
+    let w = w
+        .saturating_sub(left.abs_diff(x))
+        .min(frozen.width().saturating_sub(img_x));
+    let h = h
+        .saturating_sub(top.abs_diff(y))
+        .min(frozen.height().saturating_sub(img_y));
+    (w > 0 && h > 0).then(|| {
+        let crop = image::imageops::crop_imm(frozen, img_x, img_y, w, h).to_image();
+        (crop, (left, top))
+    })
+}
+
+#[cfg(test)]
+mod crop_frozen_tests {
+    use super::*;
+
+    fn desktop() -> RgbaImage {
+        RgbaImage::from_fn(4, 2, |x, y| image::Rgba([x as u8, y as u8, 0, 255]))
+    }
+
+    fn columns(img: &RgbaImage) -> Vec<(u8, u8)> {
+        img.pixels().map(|p| (p[0], p[1])).collect()
+    }
+
+    #[test]
+    fn crop_frozen_takes_a_rect_inside_the_frame() {
+        let (img, at) = crop_frozen(&desktop(), (-10, 5), (-9, 6), (2, 1)).unwrap();
+        assert_eq!(at, (-9, 6));
+        assert_eq!(columns(&img), [(1, 1), (2, 1)]);
+    }
+
+    #[test]
+    fn crop_frozen_shrinks_a_rect_left_of_the_origin() {
+        let (img, at) = crop_frozen(&desktop(), (-10, 5), (-12, 5), (4, 2)).unwrap();
+        assert_eq!(at, (-10, 5));
+        assert_eq!(columns(&img), [(0, 0), (1, 0), (0, 1), (1, 1)]);
+    }
+
+    #[test]
+    fn crop_frozen_clamps_a_rect_past_the_right_edge() {
+        let (img, at) = crop_frozen(&desktop(), (0, 0), (3, 0), (5, 9)).unwrap();
+        assert_eq!(at, (3, 0));
+        assert_eq!(columns(&img), [(3, 0), (3, 1)]);
+    }
+
+    #[test]
+    fn crop_frozen_rejects_a_rect_outside_the_frame() {
+        assert!(crop_frozen(&desktop(), (0, 0), (4, 0), (2, 2)).is_none());
+        assert!(crop_frozen(&desktop(), (0, 0), (-3, 0), (3, 2)).is_none());
+        assert!(crop_frozen(&desktop(), (0, 0), (0, 0), (0, 2)).is_none());
+    }
+}
+
 // full window rect from the compositor, used to crop a window capture out of
 // the frozen frame on platforms without DWM extended-frame bounds
 #[cfg(not(windows))]
@@ -3426,7 +3463,7 @@ fn download_verified_ffmpeg(
     if source.scheme() != "https" {
         return Err(anyhow::anyhow!("ffmpeg download URL must use https"));
     }
-    let proj_dirs = directories::ProjectDirs::from("com", "capscr", "capscr")
+    let proj_dirs = crate::config::project_dirs()
         .ok_or_else(|| anyhow::anyhow!("failed to locate app data directory"))?;
     let data_dir = proj_dirs.data_dir();
     std::fs::create_dir_all(data_dir)?;
@@ -4536,7 +4573,7 @@ mod window_size_tests {
 }
 
 fn plugins_dir() -> Result<PathBuf, String> {
-    let project = directories::ProjectDirs::from("com", "capscr", "capscr")
+    let project = crate::config::project_dirs()
         .ok_or_else(|| "cannot resolve plugins directory".to_string())?;
     Ok(project.data_dir().to_path_buf().join("plugins"))
 }

@@ -715,7 +715,7 @@ fn default_marketplace_registry_url() -> String {
 fn default_imgur_client_id() -> String {
     // built-in bot Client-ID. Power users who hit Imgur's per-app rate limit
     // (or want their own analytics) can paste a personal Client-ID over this.
-    "546c25a59c58ad7".to_string()
+    crate::upload::BUILTIN_IMGUR_CLIENT_ID.to_string()
 }
 
 impl Default for UploadConfig {
@@ -1260,9 +1260,13 @@ impl Default for Config {
     }
 }
 
+pub fn project_dirs() -> Option<ProjectDirs> {
+    ProjectDirs::from("com", "capscr", "capscr")
+}
+
 impl Config {
     pub fn config_dir() -> Option<PathBuf> {
-        ProjectDirs::from("com", "capscr", "capscr").map(|p| p.config_dir().to_path_buf())
+        project_dirs().map(|p| p.config_dir().to_path_buf())
     }
 
     pub fn config_path() -> Option<PathBuf> {

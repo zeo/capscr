@@ -60,7 +60,7 @@ mod linux_player {
     fn cue_path(sound: Sound) -> Option<PathBuf> {
         let dir = CUE_DIR
             .get_or_init(|| {
-                let dirs = directories::ProjectDirs::from("com", "capscr", "capscr")?;
+                let dirs = crate::config::project_dirs()?;
                 let dir = dirs.cache_dir().join("cues");
                 std::fs::create_dir_all(&dir).ok()?;
                 Some(dir)

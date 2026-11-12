@@ -1382,7 +1382,7 @@ pub fn find_ffmpeg() -> std::path::PathBuf {
         }
     }
 
-    if let Some(proj_dirs) = directories::ProjectDirs::from("com", "capscr", "capscr") {
+    if let Some(proj_dirs) = crate::config::project_dirs() {
         let app_data_ffmpeg = proj_dirs.data_dir().join("ffmpeg.exe");
         if app_data_ffmpeg.exists() {
             return app_data_ffmpeg;
