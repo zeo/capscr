@@ -108,9 +108,9 @@ sha2 = "0.10"
 hex = "0.4"
 
 # upload destinations: SFTP via russh under the `sftp` feature
-# russh 0.62.4 patches the current pre-auth denial-of-service advisories
+# russh 0.65 clears RUSTSEC-2026-0492 and RUSTSEC-2026-0495
 # it needs a crypto backend (ring or aws-lc-rs); ring avoids aws-lc-sys on MSVC
-russh = { version = "0.62.4", default-features = false, features = ["flate2", "ring"], optional = true }
+russh = { version = "0.65.1", default-features = false, features = ["flate2", "ring"], optional = true }
 russh-sftp = { version = "2", optional = true }
 
 # HDR-preserved output (Phase 10 will add JXL/AVIF; pure-rust PNG cICP is fine here)

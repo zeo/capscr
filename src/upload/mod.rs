@@ -870,9 +870,9 @@ pub fn test_connection_sftp(target: &SftpTarget) -> Result<Vec<TestStep>> {
         type Error = russh::Error;
         async fn check_server_key(
             &mut self,
-            key: &russh::keys::ssh_key::PublicKey,
+            key: &russh::keys::PublicKeyOrCertificate,
         ) -> std::result::Result<bool, Self::Error> {
-            let fp = key.fingerprint(HashAlg::Sha256).to_string();
+            let fp = key.public_key().fingerprint(HashAlg::Sha256).to_string();
             Ok(accept_sftp_host_key(
                 &self.known_hosts_path,
                 &self.host_port,
@@ -1209,9 +1209,9 @@ pub fn upload_sftp(data: &[u8], file_name: &str, target: &SftpTarget) -> Result<
         type Error = russh::Error;
         async fn check_server_key(
             &mut self,
-            key: &russh::keys::ssh_key::PublicKey,
+            key: &russh::keys::PublicKeyOrCertificate,
         ) -> std::result::Result<bool, Self::Error> {
-            let fp = key.fingerprint(HashAlg::Sha256).to_string();
+            let fp = key.public_key().fingerprint(HashAlg::Sha256).to_string();
             Ok(accept_sftp_host_key(
                 &self.known_hosts_path,
                 &self.host_port,
