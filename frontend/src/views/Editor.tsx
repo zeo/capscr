@@ -482,7 +482,7 @@ export function Editor() {
   };
 
   // annotate-before-save sessions stage under annotate-stage (see
-  // cleanup_annotate_stage in commands.rs); nothing exists outside the
+  // cleanup_annotate_stage in src/commands/editor.rs); nothing exists outside the
   // editor until Save mints the capture
   const isStagedSession = () => (imagePath() ?? "").includes("annotate-stage");
 
