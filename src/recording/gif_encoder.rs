@@ -112,6 +112,7 @@ const MAX_FRAMES: usize = 21600;
 const MAX_GIF_DIMENSION: u32 = 4096;
 const MAX_GIF_FILE_SIZE: u64 = 500 * 1024 * 1024;
 const MIN_FRAME_INTERVAL_MS: u64 = 16;
+#[cfg(windows)]
 const DIRECT_BLACK_RECHECK_FRAMES: u32 = 30;
 
 // where kept frames go during capture. RAM stays flat either way: gif frames
@@ -252,6 +253,7 @@ fn frames_match(previous: Option<&RgbaImage>, current: &RgbaImage) -> bool {
     })
 }
 
+#[cfg(windows)]
 fn should_probe_direct_black(cooldown: &mut u32, is_black: bool) -> bool {
     if !is_black {
         *cooldown = 0;
@@ -264,6 +266,7 @@ fn should_probe_direct_black(cooldown: &mut u32, is_black: bool) -> bool {
     false
 }
 
+#[cfg(windows)]
 fn is_exact_black(image: &RgbaImage) -> bool {
     image
         .as_raw()
@@ -1687,6 +1690,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn black_source_confirmation_expires_after_nonblack_frame() {
         let mut cooldown = 0;
 

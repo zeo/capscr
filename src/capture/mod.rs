@@ -216,6 +216,7 @@ pub fn current_tonemap_params() -> TonemapParams {
 // for Windows.Graphics.Capture with the OS-side tonemap: instant and OS
 // quality, but it composes SDR content through the HDR compositor, which can
 // shift SDR brightness against GDI BitBlt
+#[cfg(windows)]
 pub fn wgc_enabled() -> bool {
     static GATE: OnceLock<bool> = OnceLock::new();
     *GATE.get_or_init(|| {
@@ -236,6 +237,7 @@ pub fn wgc_enabled() -> bool {
 // retry already recover a stale/black first frame, so the sleep is usually pure
 // latency. left off by default because some drivers may rely on the settle
 // time; CAPSCR_FAST_HDR=1 trims it once verified on real HDR hardware.
+#[cfg(windows)]
 pub fn fast_hdr_acquire_enabled() -> bool {
     static GATE: OnceLock<bool> = OnceLock::new();
     *GATE.get_or_init(|| {
@@ -321,6 +323,7 @@ pub fn orient_captured_image(
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg(windows)]
 pub enum MonitorRotation {
     Identity,
     Rotate90,

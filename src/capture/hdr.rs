@@ -72,6 +72,7 @@ mod f16_tests {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(not(windows), allow(dead_code))]
 pub enum HdrFormat {
     Sdr,
     Hdr10,
@@ -108,7 +109,7 @@ pub struct HdrCapture;
 
 #[cfg(target_os = "linux")]
 mod linux_hdr {
-    use super::{HdrDisplayInfo, HdrFormat};
+    use super::HdrDisplayInfo;
 
     // hdr display facts for the monitor containing `target` (primary when
     // None), from the compositor's color-management state. only gnome can
@@ -160,6 +161,7 @@ impl HdrCapture {
         Self
     }
 
+    #[cfg(windows)]
     pub fn get_display_hdr_info() -> Result<HdrDisplayInfo> {
         Self::get_display_hdr_info_at(None)
     }
@@ -183,6 +185,7 @@ impl HdrCapture {
         }
     }
 
+    #[cfg(windows)]
     pub fn is_hdr_available() -> bool {
         Self::get_display_hdr_info()
             .map(|info| info.is_hdr_enabled)
@@ -1146,12 +1149,6 @@ mod tests {
     fn test_hdr_display_info_default() {
         let info = HdrDisplayInfo::default();
         assert!(!info.is_hdr_enabled);
-    }
-
-    #[test]
-    fn test_hdr_capture_creation() {
-        let _capture = HdrCapture::new();
-        let _is_available = HdrCapture::is_hdr_available();
     }
 
     // end-to-end guard for HdrCapture::tonemap's scRGB dispatch: the f16 decode

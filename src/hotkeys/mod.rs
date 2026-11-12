@@ -136,6 +136,7 @@ pub fn hotkey_to_hook_binding(hk: &HotKey) -> Option<ll_hook::HookBinding> {
 /// hotkey string the rest of the system already understands ("Ctrl+Shift+G",
 /// "Numpad5", "F12"). Used by the capture-via-LL-hook path so the recorded
 /// binding matches what Windows actually delivered at press time.
+#[cfg(windows)]
 pub fn format_vk_mods(vk: u32, mods: u8) -> String {
     let mut parts: Vec<&str> = Vec::new();
     if mods & MOD_CTRL != 0 {
@@ -161,6 +162,7 @@ pub fn format_vk_mods(vk: u32, mods: u8) -> String {
     }
 }
 
+#[cfg(windows)]
 fn vk_to_name(vk: u32) -> Option<String> {
     let s: &str = match vk {
         0x41..=0x5A => return Some(((vk as u8) as char).to_string()),

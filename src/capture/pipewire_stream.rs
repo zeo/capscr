@@ -127,8 +127,6 @@ pub struct Hdr10Frame {
     pub data: Vec<u8>,
     pub width: u32,
     pub height: u32,
-    pub position: (i32, i32),
-    pub logical_size: (i32, i32),
 }
 
 type Hdr10Slot = Arc<Mutex<Option<(Vec<u8>, u32, u32)>>>;
@@ -177,8 +175,6 @@ pub fn grab_hdr10_frame(embed_cursor: bool) -> Result<Hdr10Frame> {
         data,
         width,
         height,
-        position: stream.position,
-        logical_size: stream.size,
     })
 }
 

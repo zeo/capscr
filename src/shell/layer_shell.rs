@@ -98,12 +98,6 @@ fn layer_shell_api() -> Option<&'static LayerShellApi> {
         .as_ref()
 }
 
-pub fn available() -> bool {
-    layer_shell_api()
-        .map(|api| unsafe { (api.is_supported)() } != 0)
-        .unwrap_or(false)
-}
-
 // pin a fixed-size window to a global logical position on wlroots
 // compositors, the layer-shell counterpart of kde's plasma-shell placement.
 // the surface anchors top-left of its output and is offset by margins into
