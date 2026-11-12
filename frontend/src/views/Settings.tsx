@@ -13,7 +13,7 @@ import {
 } from "../api";
 import { configDirty, setConfigDirty } from "../dirty";
 import { FolderOpen, RotateCcw, Save } from "lucide-solid";
-import { config, mutateConfig } from "../store";
+import { applySavedConfig, config, mutateConfig } from "../store";
 import { commitNumber } from "../num";
 import { IS_LINUX } from "../keys";
 import { hdrSupported } from "../hdrSupport";
@@ -51,9 +51,9 @@ export function Settings() {
     setSaving(true);
     setStatus({ tone: "", msg: "writing..." });
     try {
-      mutateConfig(await api.setConfig(c));
+      const kept = applySavedConfig(c, await api.setConfig(c));
       setStatus({ tone: "ok", msg: "saved." });
-      setConfigDirty(false);
+      if (kept) setConfigDirty(false);
     } catch (e) {
       setStatus({ tone: "err", msg: `err: ${e}` });
     } finally {
@@ -1044,7 +1044,6 @@ function HotkeysPane(props: { c: AppConfig; patch: Patch }) {
                   {(task) => {
                     const entry = () =>
                       diag()?.statuses.find((s) => s.task_id === task.id) ?? null;
-                    const e = entry();
                     return (
                       <tr>
                         <td>{task.name || task.id}</td>
@@ -1055,7 +1054,7 @@ function HotkeysPane(props: { c: AppConfig; patch: Patch }) {
                             fallback={<span class="lede">—</span>}
                           >
                             <Show
-                              when={e}
+                              when={entry()}
                               fallback={<span class="lede">unknown</span>}
                             >
                               <span

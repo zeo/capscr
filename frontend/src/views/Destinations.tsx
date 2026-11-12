@@ -4,7 +4,7 @@ import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { Section } from "../components/Section";
 import { api, AppConfig, ConnectionTestReport } from "../api";
 import { configDirty, setConfigDirty } from "../dirty";
-import { config, mutateConfig } from "../store";
+import { applySavedConfig, config, mutateConfig } from "../store";
 import { commitNumber } from "../num";
 import { IS_LINUX } from "../keys";
 
@@ -43,9 +43,9 @@ export function Destinations() {
     if (!c) return;
     setStatus({ tone: "", msg: "writing..." });
     try {
-      mutateConfig(await api.setConfig(c));
+      const kept = applySavedConfig(c, await api.setConfig(c));
       setStatus({ tone: "ok", msg: "saved." });
-      setConfigDirty(false);
+      if (kept) setConfigDirty(false);
     } catch (e) {
       setStatus({ tone: "err", msg: `err: ${e}` });
     }

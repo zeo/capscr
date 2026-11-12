@@ -3,6 +3,14 @@ import { api, type AppConfig, type CaptureTask } from "./api";
 
 export const [config, { mutate: mutateConfig, refetch: refetchConfig }] = createResource<AppConfig>(api.getConfig);
 
+// a save reply only replaces the draft it was sent from; patches build a new
+// object, so a changed identity means the user kept editing mid-save
+export const applySavedConfig = (sent: AppConfig, saved: AppConfig): boolean => {
+  if (config() !== sent) return false;
+  mutateConfig(saved);
+  return true;
+};
+
 export type CaptureTaskSaveState =
   | { kind: "idle" }
   | { kind: "saving" }
