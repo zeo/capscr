@@ -1,8 +1,6 @@
 use crate::capture::{Capture, Rectangle, RegionCapture, ScreenCapture, WindowCapture};
 use crate::clipboard::{get_unique_filepath, save_image, show_notification, ClipboardManager};
-use crate::config::{
-    CaptureTask, Config, PostCaptureAction, TaskCaptureMode, TaskPostAction, UploadDestination,
-};
+use crate::config::{CaptureTask, Config, TaskCaptureMode, TaskPostAction, UploadDestination};
 use crate::overlay::{SelectionResult, UnifiedSelector};
 use crate::plugin::{CaptureType, PluginEvent, PluginResponse};
 use crate::recording::{GifRecorder, RecordingSettings, RecordingState, StopReason};
@@ -34,27 +32,6 @@ pub enum CaptureModeArg {
     Window,
     Fullscreen,
     ActiveMonitor,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "kebab-case")]
-pub enum PostActionArg {
-    // aliases accept the PostCaptureAction vocabulary: the hub titlebar
-    // passes the global post-capture action straight to take_screenshot,
-    // and that enum historically serialized under these names.
-    #[serde(alias = "copy-to-clipboard")]
-    Clipboard,
-    #[serde(alias = "save-to-file")]
-    SaveFile,
-    Upload,
-    #[serde(alias = "save-and-copy")]
-    SaveAndClipboard,
-    OpenEditor,
-    Annotate,
-    #[serde(alias = "prompt-user")]
-    Prompt,
-    DoNothing,
-    CopyText,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -367,7 +344,7 @@ pub fn set_capture_tasks(
 #[tauri::command]
 pub fn take_screenshot(
     mode: CaptureModeArg,
-    post: PostActionArg,
+    post: TaskPostAction,
     app: AppHandle,
 ) -> Result<(), String> {
     let app_handle = app;
@@ -421,45 +398,6 @@ mod task_failure_tests {
     }
 }
 
-#[cfg(test)]
-mod post_action_wire_tests {
-    use super::*;
-
-    #[test]
-    fn every_global_action_parses_as_take_screenshot_post() {
-        // the hub titlebar passes post_capture.action straight to
-        // take_screenshot, so each PostCaptureAction must deserialize
-        // as the PostActionArg take_screenshot expects
-        for action in [
-            crate::config::PostCaptureAction::SaveFile,
-            crate::config::PostCaptureAction::Clipboard,
-            crate::config::PostCaptureAction::SaveAndClipboard,
-            crate::config::PostCaptureAction::Upload,
-            crate::config::PostCaptureAction::Prompt,
-            crate::config::PostCaptureAction::DoNothing,
-        ] {
-            let wire = serde_json::to_string(&action).unwrap();
-            let parsed: PostActionArg = serde_json::from_str(&wire)
-                .unwrap_or_else(|_| panic!("take_screenshot rejects global action {wire}"));
-            let _ = parsed;
-        }
-    }
-
-    #[test]
-    fn annotate_uses_kebab_case_on_the_wire() {
-        // the tasks UI sends these strings verbatim over invoke; a rename
-        // without the frontend following breaks the action silently
-        let task = serde_json::to_string(&crate::config::TaskPostAction::Annotate).unwrap();
-        assert_eq!(task, "\"annotate\"");
-        let arg = serde_json::to_string(&PostActionArg::Annotate).unwrap();
-        assert_eq!(arg, "\"annotate\"");
-        assert_eq!(
-            PostActionArg::from_task_action(crate::config::TaskPostAction::Annotate),
-            PostActionArg::Annotate
-        );
-    }
-}
-
 // translate the raw anyhow chain into something a non-engineer can act on.
 // we keep the original text as a suffix when none of the patterns match so
 // debugging info isn't lost.
@@ -500,7 +438,7 @@ fn humanize_capture_error(e: &anyhow::Error) -> String {
 
 pub fn run_capture_pipeline(
     mode: CaptureModeArg,
-    post: PostActionArg,
+    post: TaskPostAction,
     app: &AppHandle,
 ) -> anyhow::Result<()> {
     run_capture_pipeline_inner(mode, post, app, None, None)
@@ -508,7 +446,7 @@ pub fn run_capture_pipeline(
 
 pub fn run_capture_pipeline_with_target(
     mode: CaptureModeArg,
-    post: PostActionArg,
+    post: TaskPostAction,
     app: &AppHandle,
     upload_target: Option<crate::config::TaskUploadTarget>,
     delay_override: Option<u32>,
@@ -526,7 +464,7 @@ impl Drop for CaptureGate<'_> {
 
 fn run_capture_pipeline_inner(
     mode: CaptureModeArg,
-    post: PostActionArg,
+    post: TaskPostAction,
     app: &AppHandle,
     upload_target: Option<crate::config::TaskUploadTarget>,
     delay_override: Option<u32>,
@@ -973,7 +911,7 @@ fn run_capture_pipeline_inner(
         }
     }
 
-    if matches!(post, PostActionArg::OpenEditor | PostActionArg::Prompt) {
+    if matches!(post, TaskPostAction::OpenEditor | TaskPostAction::Prompt) {
         let config = state.config.lock().unwrap().clone();
         if let Err(e) = std::fs::create_dir_all(&config.output.directory) {
             tracing::warn!("failed to create output dir: {e}");
@@ -1002,7 +940,7 @@ fn run_capture_pipeline_inner(
         return Ok(());
     }
 
-    if matches!(post, PostActionArg::Annotate) {
+    if matches!(post, TaskPostAction::Annotate) {
         // annotate-before-save: stage the fresh capture in the app cache
         // (asset-scope reachable, invisible to History) and open it in the
         // editor. saving there mints the real capture through the staging
@@ -1032,7 +970,7 @@ fn run_capture_pipeline_inner(
         return Ok(());
     }
 
-    if matches!(post, PostActionArg::CopyText) {
+    if matches!(post, TaskPostAction::CopyText) {
         // run OCR on the fresh capture and put the detected text on the clipboard,
         // without saving a file
         let config = state.config.lock().unwrap().clone();
@@ -1054,26 +992,7 @@ fn run_capture_pipeline_inner(
         return Ok(());
     }
 
-    let post_action = match post {
-        PostActionArg::Clipboard => PostCaptureAction::Clipboard,
-        PostActionArg::SaveFile => PostCaptureAction::SaveFile,
-        PostActionArg::Upload => PostCaptureAction::Upload,
-        PostActionArg::SaveAndClipboard => PostCaptureAction::SaveAndClipboard,
-        PostActionArg::OpenEditor
-        | PostActionArg::Annotate
-        | PostActionArg::Prompt
-        | PostActionArg::CopyText => unreachable!(),
-        PostActionArg::DoNothing => PostCaptureAction::DoNothing,
-    };
-
-    let result = run_post_action(
-        app,
-        &state,
-        image.clone(),
-        hdr_bitmap,
-        post_action,
-        upload_target,
-    );
+    let result = run_post_action(app, &state, image.clone(), hdr_bitmap, post, upload_target);
     result.map(|_| ())
 }
 
@@ -1412,7 +1331,7 @@ fn run_post_action(
     state: &AppState,
     image: Arc<RgbaImage>,
     hdr_bitmap: Option<crate::capture::HdrBitmap>,
-    action: PostCaptureAction,
+    action: TaskPostAction,
     upload_target: Option<crate::config::TaskUploadTarget>,
 ) -> anyhow::Result<Option<PathBuf>> {
     let config = state.config.lock().unwrap().clone();
@@ -1529,7 +1448,7 @@ fn run_post_action(
     };
 
     match action {
-        PostCaptureAction::SaveFile => {
+        TaskPostAction::SaveFile => {
             let play = config.post_capture.play_sound;
             let show = config.ui.show_notifications;
             let path = do_save_async(
@@ -1545,7 +1464,7 @@ fn run_post_action(
             )?;
             Ok(Some(path))
         }
-        PostCaptureAction::Clipboard => {
+        TaskPostAction::Clipboard => {
             let history_path =
                 do_save_to_history_async(image.clone(), hdr_bitmap.clone(), app.clone());
             let clipboard_ok = do_clipboard().is_ok();
@@ -1565,7 +1484,7 @@ fn run_post_action(
             }
             Ok(history_path)
         }
-        PostCaptureAction::SaveAndClipboard => {
+        TaskPostAction::SaveAndClipboard => {
             // the encode and the clipboard copy overlap; the toast waits for both
             let (clip_tx, clip_rx) = std::sync::mpsc::channel::<bool>();
             let play = config.post_capture.play_sound;
@@ -1590,7 +1509,7 @@ fn run_post_action(
             let _ = clip_tx.send(do_clipboard().is_ok());
             Ok(Some(path?))
         }
-        PostCaptureAction::Upload => {
+        TaskPostAction::Upload => {
             let history_path =
                 do_save_to_history_async(image.clone(), hdr_bitmap.clone(), app.clone());
             let (result, destination) = do_upload()?;
@@ -1601,15 +1520,18 @@ fn run_post_action(
             }
             Ok(history_path)
         }
-        PostCaptureAction::DoNothing => {
+        TaskPostAction::DoNothing => {
             Sound::Screenshot.play_if_enabled(config.post_capture.play_sound);
             if config.ui.show_notifications {
                 let _ = show_notification("Capture complete", "Screenshot taken successfully.");
             }
             Ok(None)
         }
-        // take_screenshot opens the editor for prompt before it gets here
-        PostCaptureAction::Prompt => unreachable!(),
+        // take_screenshot handles these itself before it gets here
+        TaskPostAction::OpenEditor
+        | TaskPostAction::Annotate
+        | TaskPostAction::Prompt
+        | TaskPostAction::CopyText => unreachable!(),
     }
 }
 
@@ -3506,8 +3428,13 @@ pub fn run_task(task: &CaptureTask, app: &AppHandle) -> anyhow::Result<()> {
         TaskCaptureMode::ActiveMonitor => CaptureModeArg::ActiveMonitor,
         TaskCaptureMode::RegionGif | TaskCaptureMode::RegionMp4 => unreachable!("handled above"),
     };
-    let post = PostActionArg::from_task_action(task.post_action);
-    run_capture_pipeline_with_target(mode, post, app, task.target_destination, task.delay_ms)
+    run_capture_pipeline_with_target(
+        mode,
+        task.post_action,
+        app,
+        task.target_destination,
+        task.delay_ms,
+    )
 }
 
 #[cfg(any(windows, target_os = "linux"))]
@@ -4612,22 +4539,6 @@ impl CaptureModeArg {
             TaskCaptureMode::Fullscreen => CaptureModeArg::Fullscreen,
             TaskCaptureMode::ActiveMonitor => CaptureModeArg::ActiveMonitor,
             TaskCaptureMode::RegionGif | TaskCaptureMode::RegionMp4 => CaptureModeArg::Region,
-        }
-    }
-}
-
-impl PostActionArg {
-    pub fn from_task_action(action: TaskPostAction) -> Self {
-        match action {
-            TaskPostAction::Clipboard => PostActionArg::Clipboard,
-            TaskPostAction::SaveFile => PostActionArg::SaveFile,
-            TaskPostAction::Upload => PostActionArg::Upload,
-            TaskPostAction::SaveAndClipboard => PostActionArg::SaveAndClipboard,
-            TaskPostAction::OpenEditor => PostActionArg::OpenEditor,
-            TaskPostAction::Annotate => PostActionArg::Annotate,
-            TaskPostAction::Prompt => PostActionArg::Prompt,
-            TaskPostAction::DoNothing => PostActionArg::DoNothing,
-            TaskPostAction::CopyText => PostActionArg::CopyText,
         }
     }
 }

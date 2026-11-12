@@ -668,9 +668,10 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
         .show_menu_on_left_click(false)
         .tooltip("capscr")
         .on_menu_event(|app, event| {
-            use commands::{CaptureModeArg, PostActionArg};
+            use commands::CaptureModeArg;
+            use config::TaskPostAction;
             let id = event.id.as_ref();
-            let spawn_capture = |mode: CaptureModeArg, post: PostActionArg| {
+            let spawn_capture = |mode: CaptureModeArg, post: TaskPostAction| {
                 let app = app.clone();
                 std::thread::spawn(move || {
                     if let Err(e) = commands::run_capture_pipeline(mode, post, &app) {
@@ -682,14 +683,14 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
             // route by id. dynamic-id items (recent_upload_*) are matched by
             // prefix below so the static-arm part stays compact.
             match id {
-                "cap_region" => spawn_capture(CaptureModeArg::Region, PostActionArg::Clipboard),
-                "cap_region_editor" => spawn_capture(CaptureModeArg::Region, PostActionArg::OpenEditor),
-                "cap_window" => spawn_capture(CaptureModeArg::Window, PostActionArg::Clipboard),
+                "cap_region" => spawn_capture(CaptureModeArg::Region, TaskPostAction::Clipboard),
+                "cap_region_editor" => spawn_capture(CaptureModeArg::Region, TaskPostAction::OpenEditor),
+                "cap_window" => spawn_capture(CaptureModeArg::Window, TaskPostAction::Clipboard),
                 "cap_fullscreen" => {
-                    spawn_capture(CaptureModeArg::Fullscreen, PostActionArg::Clipboard)
+                    spawn_capture(CaptureModeArg::Fullscreen, TaskPostAction::Clipboard)
                 }
                 "cap_active_monitor" => {
-                    spawn_capture(CaptureModeArg::ActiveMonitor, PostActionArg::Clipboard)
+                    spawn_capture(CaptureModeArg::ActiveMonitor, TaskPostAction::Clipboard)
                 }
                 "rec_region_gif" => {
                     // synthesize a tray-driven gif task so run_gif_task's start/stop
@@ -1224,7 +1225,8 @@ fn attach_parent_console() {
 fn attach_parent_console() {}
 
 fn dispatch_jump(app: &tauri::AppHandle, kind: Option<&str>) {
-    use commands::{CaptureModeArg, PostActionArg};
+    use commands::CaptureModeArg;
+    use config::TaskPostAction;
     let Some(kind) = kind else {
         // bare second launch (no --jump=) — just surface the hub.
         let _ = commands::open_hub_window(app);
@@ -1234,7 +1236,7 @@ fn dispatch_jump(app: &tauri::AppHandle, kind: Option<&str>) {
     let spawn_capture = move |mode: CaptureModeArg| {
         std::thread::spawn(move || {
             if let Err(e) =
-                commands::run_capture_pipeline(mode, PostActionArg::Clipboard, &app_clone)
+                commands::run_capture_pipeline(mode, TaskPostAction::Clipboard, &app_clone)
             {
                 tracing::warn!("jump-list capture failed: {e}");
                 commands::emit_error(&app_clone, "capture", &e.to_string());

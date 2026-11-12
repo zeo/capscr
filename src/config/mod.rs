@@ -102,13 +102,21 @@ impl TaskCaptureMode {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum TaskPostAction {
+    // tasks, the global post_capture.action and take_screenshot all read
+    // this enum; the aliases keep every spelling any of them once wrote
+    #[serde(alias = "CopyToClipboard", alias = "copy-to-clipboard")]
     Clipboard,
+    #[serde(alias = "SaveToFile", alias = "save-to-file")]
     SaveFile,
+    #[serde(alias = "Upload")]
     Upload,
+    #[serde(alias = "SaveAndCopy", alias = "save-and-copy")]
     SaveAndClipboard,
     OpenEditor,
     Annotate,
+    #[serde(alias = "PromptUser", alias = "prompt-user")]
     Prompt,
+    #[serde(alias = "DoNothing")]
     DoNothing,
     /// run OCR on the fresh capture and copy the detected text to the clipboard
     CopyText,
@@ -554,61 +562,10 @@ impl Default for UiConfig {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
-#[serde(rename_all = "kebab-case")]
-pub enum PostCaptureAction {
-    // one vocabulary with the take_screenshot post actions: the hub titlebar
-    // passes this value straight through, so the wire names must agree.
-    // aliases keep reading every historical spelling instead of resetting.
-    #[default]
-    #[serde(alias = "SaveToFile", alias = "save-to-file")]
-    SaveFile,
-    #[serde(alias = "CopyToClipboard", alias = "copy-to-clipboard")]
-    Clipboard,
-    #[serde(alias = "SaveAndCopy", alias = "save-and-copy")]
-    SaveAndClipboard,
-    #[serde(alias = "Upload")]
-    Upload,
-    #[serde(alias = "PromptUser", alias = "prompt-user")]
-    Prompt,
-    #[serde(alias = "DoNothing")]
-    DoNothing,
-}
-
-impl PostCaptureAction {
-    pub fn all() -> &'static [PostCaptureAction] {
-        &[
-            PostCaptureAction::SaveFile,
-            PostCaptureAction::Clipboard,
-            PostCaptureAction::SaveAndClipboard,
-            PostCaptureAction::Upload,
-            PostCaptureAction::Prompt,
-            PostCaptureAction::DoNothing,
-        ]
-    }
-
-    pub fn display_name(&self) -> &'static str {
-        match self {
-            PostCaptureAction::SaveFile => "Save to file",
-            PostCaptureAction::Clipboard => "Copy to clipboard",
-            PostCaptureAction::SaveAndClipboard => "Save and copy",
-            PostCaptureAction::Upload => "Upload to web",
-            PostCaptureAction::Prompt => "Ask me each time",
-            PostCaptureAction::DoNothing => "Do nothing",
-        }
-    }
-}
-
-impl std::fmt::Display for PostCaptureAction {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.display_name())
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PostCaptureConfig {
-    pub action: PostCaptureAction,
+    pub action: TaskPostAction,
     pub open_file_after_save: bool,
     pub play_sound: bool,
 }
@@ -616,7 +573,7 @@ pub struct PostCaptureConfig {
 impl Default for PostCaptureConfig {
     fn default() -> Self {
         Self {
-            action: PostCaptureAction::SaveAndClipboard,
+            action: TaskPostAction::SaveAndClipboard,
             open_file_after_save: false,
             play_sound: true,
         }
@@ -1977,34 +1934,58 @@ mod tests {
     }
 
     #[test]
-    fn post_capture_action_serializes_kebab_case() {
-        // the hub titlebar passes this value straight to take_screenshot,
-        // which only understands kebab-case post actions
-        let wire = serde_json::to_string(&PostCaptureAction::SaveAndClipboard).unwrap();
-        assert_eq!(wire, "\"save-and-clipboard\"");
+    fn post_action_reads_every_accepted_spelling() {
+        // the wire names changed twice (PascalCase, then a different
+        // kebab-case); configs and callers from any era must keep
+        // loading instead of resetting the field to default
+        use TaskPostAction::*;
+        let cases = [
+            ("clipboard", Clipboard),
+            ("copy-to-clipboard", Clipboard),
+            ("CopyToClipboard", Clipboard),
+            ("save-file", SaveFile),
+            ("save-to-file", SaveFile),
+            ("SaveToFile", SaveFile),
+            ("upload", Upload),
+            ("Upload", Upload),
+            ("save-and-clipboard", SaveAndClipboard),
+            ("save-and-copy", SaveAndClipboard),
+            ("SaveAndCopy", SaveAndClipboard),
+            ("open-editor", OpenEditor),
+            ("annotate", Annotate),
+            ("prompt", Prompt),
+            ("prompt-user", Prompt),
+            ("PromptUser", Prompt),
+            ("do-nothing", DoNothing),
+            ("DoNothing", DoNothing),
+            ("copy-text", CopyText),
+        ];
+        for (wire, expected) in cases {
+            let action: TaskPostAction = serde_json::from_str(&format!("\"{wire}\""))
+                .unwrap_or_else(|_| panic!("lost spelling {wire}"));
+            assert_eq!(action, expected);
+        }
     }
 
     #[test]
-    fn post_capture_action_reads_every_historical_spelling() {
-        // the wire names changed twice (PascalCase, then a different
-        // kebab-case); configs from either era must keep loading
-        // instead of resetting the field to default
-        let cases = [
-            ("\"SaveToFile\"", PostCaptureAction::SaveFile),
-            ("\"save-to-file\"", PostCaptureAction::SaveFile),
-            ("\"CopyToClipboard\"", PostCaptureAction::Clipboard),
-            ("\"copy-to-clipboard\"", PostCaptureAction::Clipboard),
-            ("\"SaveAndCopy\"", PostCaptureAction::SaveAndClipboard),
-            ("\"save-and-copy\"", PostCaptureAction::SaveAndClipboard),
-            ("\"Upload\"", PostCaptureAction::Upload),
-            ("\"PromptUser\"", PostCaptureAction::Prompt),
-            ("\"prompt-user\"", PostCaptureAction::Prompt),
-            ("\"DoNothing\"", PostCaptureAction::DoNothing),
-        ];
-        for (wire, expected) in cases {
-            let action: PostCaptureAction = serde_json::from_str(wire)
-                .unwrap_or_else(|_| panic!("lost historical spelling {wire}"));
-            assert_eq!(action, expected);
+    fn post_action_writes_kebab_case() {
+        // the frontend sends and compares these strings verbatim
+        use TaskPostAction::*;
+        for (action, wire) in [
+            (Clipboard, "clipboard"),
+            (SaveFile, "save-file"),
+            (Upload, "upload"),
+            (SaveAndClipboard, "save-and-clipboard"),
+            (OpenEditor, "open-editor"),
+            (Annotate, "annotate"),
+            (Prompt, "prompt"),
+            (DoNothing, "do-nothing"),
+            (CopyText, "copy-text"),
+        ] {
+            assert_eq!(
+                serde_json::to_string(&action).unwrap(),
+                format!("\"{wire}\"")
+            );
         }
     }
 }
