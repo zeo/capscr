@@ -38,7 +38,7 @@ use anyhow::{anyhow, bail, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::io::Read;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
@@ -187,11 +187,27 @@ pub fn install_plugin(plugins_dir: &Path, entry: &RegistryEntry) -> Result<bool>
     if buf.len() as u64 > MAX_PLUGIN_ZIP_BYTES {
         bail!("plugin payload exceeded size cap mid-stream");
     }
+    install_from_bytes(plugins_dir, &entry.id, &entry.sha256, &buf)
+}
 
+/// removes a staging dir that never got renamed into place
+struct StagingDir(PathBuf);
+
+impl Drop for StagingDir {
+    fn drop(&mut self) {
+        if self.0.exists() {
+            if let Err(e) = std::fs::remove_dir_all(&self.0) {
+                tracing::warn!("could not remove plugin staging dir {:?}: {e}", self.0);
+            }
+        }
+    }
+}
+
+fn install_from_bytes(plugins_dir: &Path, id: &str, sha256: &str, buf: &[u8]) -> Result<bool> {
     let mut hasher = Sha256::new();
-    hasher.update(&buf);
+    hasher.update(buf);
     let got = hex::encode(hasher.finalize());
-    let want = entry.sha256.trim().to_lowercase();
+    let want = sha256.trim().to_lowercase();
     if got != want {
         bail!("sha256 mismatch — got {}, registry expected {}", got, want);
     }
@@ -199,17 +215,16 @@ pub fn install_plugin(plugins_dir: &Path, entry: &RegistryEntry) -> Result<bool>
     // stage into a temp dir, then atomic-rename into place. If anything
     // fails we leave the existing install untouched.
     std::fs::create_dir_all(plugins_dir)?;
-    let final_dir = plugins_dir.join(&entry.id);
-    let staging = plugins_dir.join(format!(".staging-{}", entry.id));
-    if staging.exists() {
-        let _ = std::fs::remove_dir_all(&staging);
+    let final_dir = plugins_dir.join(id);
+    let staging = StagingDir(plugins_dir.join(format!(".staging-{id}")));
+    if staging.0.exists() {
+        std::fs::remove_dir_all(&staging.0)?;
     }
-    std::fs::create_dir_all(&staging)?;
+    std::fs::create_dir_all(&staging.0)?;
 
-    let cursor = std::io::Cursor::new(&buf);
+    let cursor = std::io::Cursor::new(buf);
     let mut archive = zip::ZipArchive::new(cursor)?;
     if archive.len() > MAX_PLUGIN_FILES {
-        let _ = std::fs::remove_dir_all(&staging);
         bail!(
             "plugin zip has too many files ({} > {})",
             archive.len(),
@@ -221,23 +236,10 @@ pub fn install_plugin(plugins_dir: &Path, entry: &RegistryEntry) -> Result<bool>
 
     for i in 0..archive.len() {
         let mut file = archive.by_index(i)?;
-        let name = match file.name() {
-            Ok(name) => name.into_owned(),
-            Err(error) => {
-                let _ = std::fs::remove_dir_all(&staging);
-                return Err(error.into());
-            }
-        };
-        if let Err(error) = validate_archive_name(&name) {
-            let _ = std::fs::remove_dir_all(&staging);
-            return Err(error);
-        }
-        let raw_name = match file.enclosed_name() {
-            Some(n) => n.to_path_buf(),
-            None => {
-                let _ = std::fs::remove_dir_all(&staging);
-                bail!("zip entry has unsafe path: {}", name);
-            }
+        let name = file.name()?.into_owned();
+        validate_archive_name(&name)?;
+        let Some(raw_name) = file.enclosed_name().map(|n| n.to_path_buf()) else {
+            bail!("zip entry has unsafe path: {}", name);
         };
         // defense-in-depth on top of enclosed_name (which already rejects
         // `..` traversal): reject absolute paths and component-level `..`.
@@ -249,10 +251,9 @@ pub fn install_plugin(plugins_dir: &Path, entry: &RegistryEntry) -> Result<bool>
                 )
             })
         {
-            let _ = std::fs::remove_dir_all(&staging);
             bail!("zip entry escapes plugin folder: {:?}", raw_name);
         }
-        let out_path = staging.join(&raw_name);
+        let out_path = staging.0.join(&raw_name);
         if name.ends_with('/') {
             std::fs::create_dir_all(&out_path)?;
             continue;
@@ -263,7 +264,6 @@ pub fn install_plugin(plugins_dir: &Path, entry: &RegistryEntry) -> Result<bool>
         // controlled — so a deflate bomb can declare a tiny size and expand to
         // gigabytes; only the actual byte count can stop that.
         if file.size() > MAX_PLUGIN_FILE_BYTES {
-            let _ = std::fs::remove_dir_all(&staging);
             bail!(
                 "zip entry too large: {:?} ({} bytes)",
                 raw_name,
@@ -280,7 +280,6 @@ pub fn install_plugin(plugins_dir: &Path, entry: &RegistryEntry) -> Result<bool>
         // running total) blew the cap regardless of the declared size
         let written = std::io::copy(&mut std::io::Read::take(&mut file, limit + 1), &mut out)?;
         if written > limit {
-            let _ = std::fs::remove_dir_all(&staging);
             bail!(
                 "plugin zip decompresses past the {}-byte cap",
                 MAX_PLUGIN_TOTAL_BYTES
@@ -291,9 +290,8 @@ pub fn install_plugin(plugins_dir: &Path, entry: &RegistryEntry) -> Result<bool>
 
     // manifest must exist. Without it the listing path won't see the plugin
     // and we'd have a silently broken install.
-    let manifest_path = staging.join("plugin.toml");
+    let manifest_path = staging.0.join("plugin.toml");
     if !manifest_path.exists() {
-        let _ = std::fs::remove_dir_all(&staging);
         bail!("plugin zip missing plugin.toml at the root");
     }
 
@@ -303,13 +301,10 @@ pub fn install_plugin(plugins_dir: &Path, entry: &RegistryEntry) -> Result<bool>
     // enabled it. capability-free plugins install ready to go.
     let needs_review = manifest_declares_capabilities(&manifest_path);
     if needs_review {
-        if let Err(e) = force_manifest_disabled(&manifest_path) {
-            let _ = std::fs::remove_dir_all(&staging);
-            return Err(e);
-        }
+        force_manifest_disabled(&manifest_path)?;
     }
 
-    activate_staged_plugin(&final_dir, &staging)?;
+    activate_staged_plugin(&final_dir, &staging.0)?;
     Ok(needs_review)
 }
 
@@ -515,6 +510,99 @@ pub fn validate_id(id: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const PLAIN_MANIFEST: &[u8] = b"name = \"Sample\"\nenabled = true\n";
+
+    fn plugin_zip(entries: &[(&str, &[u8])]) -> Vec<u8> {
+        use std::io::Write;
+        let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        for (name, body) in entries {
+            writer
+                .start_file(*name, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            writer.write_all(body).unwrap();
+        }
+        writer.finish().unwrap().into_inner()
+    }
+
+    fn install_zip(plugins: &Path, zip: &[u8]) -> Result<bool> {
+        install_from_bytes(plugins, "sample", &hex::encode(Sha256::digest(zip)), zip)
+    }
+
+    fn assert_rejected_cleanly(plugins: &Path, result: Result<bool>, reason: &str) {
+        let error = result.expect_err("install should fail").to_string();
+        assert!(error.contains(reason), "{error}");
+        let leftovers: Vec<_> = std::fs::read_dir(plugins)
+            .map(|entries| entries.flatten().map(|e| e.file_name()).collect())
+            .unwrap_or_default();
+        assert!(leftovers.is_empty(), "{leftovers:?}");
+    }
+
+    #[test]
+    fn install_rejects_a_sha256_mismatch_before_staging() {
+        let dir = tempfile::tempdir().unwrap();
+        let plugins = dir.path().join("plugins");
+        let zip = plugin_zip(&[("plugin.toml", PLAIN_MANIFEST)]);
+        let result = install_from_bytes(&plugins, "sample", &"0".repeat(64), &zip);
+        assert_rejected_cleanly(&plugins, result, "sha256 mismatch");
+    }
+
+    #[test]
+    fn install_rejects_a_zip_without_a_manifest_and_cleans_staging() {
+        let dir = tempfile::tempdir().unwrap();
+        let plugins = dir.path().join("plugins");
+        let result = install_zip(&plugins, &plugin_zip(&[("plugin.wasm", b"\0asm")]));
+        assert_rejected_cleanly(&plugins, result, "missing plugin.toml");
+    }
+
+    #[test]
+    fn install_rejects_an_oversized_entry_and_cleans_staging() {
+        let dir = tempfile::tempdir().unwrap();
+        let plugins = dir.path().join("plugins");
+        let big = vec![0u8; MAX_PLUGIN_FILE_BYTES as usize + 1];
+        let zip = plugin_zip(&[("plugin.toml", PLAIN_MANIFEST), ("big.bin", &big)]);
+        let result = install_zip(&plugins, &zip);
+        assert_rejected_cleanly(&plugins, result, "too large");
+    }
+
+    #[test]
+    fn install_rejects_a_parent_dir_entry_and_writes_nothing_outside() {
+        let dir = tempfile::tempdir().unwrap();
+        let plugins = dir.path().join("plugins");
+        let zip = plugin_zip(&[("plugin.toml", PLAIN_MANIFEST), ("../evil.txt", b"x")]);
+        let result = install_zip(&plugins, &zip);
+        assert_rejected_cleanly(&plugins, result, "unsafe path component");
+        assert!(!dir.path().join("evil.txt").exists());
+    }
+
+    #[test]
+    fn install_leaves_a_plugin_with_capabilities_disabled() {
+        let dir = tempfile::tempdir().unwrap();
+        let plugins = dir.path().join("plugins");
+        let manifest =
+            b"name = \"Sample\"\nenabled = true\n[capabilities]\nclipboard = [\"write\"]\n";
+        let needs_review =
+            install_zip(&plugins, &plugin_zip(&[("plugin.toml", manifest)])).unwrap();
+
+        assert!(needs_review);
+        let body = std::fs::read_to_string(plugins.join("sample/plugin.toml")).unwrap();
+        let table: toml::Table = toml::from_str(&body).unwrap();
+        assert_eq!(table.get("enabled"), Some(&toml::Value::Boolean(false)));
+        assert!(!plugins.join(".staging-sample").exists());
+    }
+
+    #[test]
+    fn install_enables_a_capability_free_plugin_as_shipped() {
+        let dir = tempfile::tempdir().unwrap();
+        let plugins = dir.path().join("plugins");
+        let needs_review =
+            install_zip(&plugins, &plugin_zip(&[("plugin.toml", PLAIN_MANIFEST)])).unwrap();
+
+        assert!(!needs_review);
+        let body = std::fs::read(plugins.join("sample/plugin.toml")).unwrap();
+        assert_eq!(body, PLAIN_MANIFEST);
+        assert!(!plugins.join(".staging-sample").exists());
+    }
 
     #[test]
     fn id_validation_accepts_normal() {

@@ -160,6 +160,32 @@ mod tests {
     }
 
     #[test]
+    fn first_key_is_stored_and_later_checked() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("ssh_known_hosts.toml");
+
+        assert!(matches!(
+            verify_or_trust(&path, "host:22", "SHA256:first").unwrap(),
+            TrustDecision::FirstSeen
+        ));
+        assert!(matches!(
+            verify_or_trust(&path, "host:22", "SHA256:first").unwrap(),
+            TrustDecision::Trusted
+        ));
+        match verify_or_trust(&path, "host:22", "SHA256:changed").unwrap() {
+            TrustDecision::Mismatch { stored } => assert_eq!(stored, "SHA256:first"),
+            other => panic!("expected a mismatch, got {other:?}"),
+        }
+        assert_eq!(
+            load_locked(&path)
+                .unwrap()
+                .lookup("host:22")
+                .map(|e| e.fingerprint.as_str()),
+            Some("SHA256:first")
+        );
+    }
+
+    #[test]
     fn missing_file_is_empty() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("nope.toml");

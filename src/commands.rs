@@ -992,12 +992,16 @@ fn run_capture_pipeline_inner(
 
     if matches!(post, PostActionArg::OpenEditor | PostActionArg::Prompt) {
         let config = state.config.lock().unwrap().clone();
-        let base = config.output_path();
-        let path = get_unique_filepath(&base);
         if let Err(e) = std::fs::create_dir_all(&config.output.directory) {
             tracing::warn!("failed to create output dir: {e}");
         }
-        crate::clipboard::save_image(&image, &path, config.output.format, config.output.quality)?;
+        let path = get_unique_filepath(&config.output_path());
+        if let Err(e) =
+            crate::clipboard::save_image(&image, &path, config.output.format, config.output.quality)
+        {
+            let _ = std::fs::remove_file(&path);
+            return Err(e);
+        }
         maybe_write_hdr_sidecar(&path, &hdr_bitmap, &config);
         *state.last_save.lock().unwrap() = Some(path.clone());
         notify_capture_saved(app, &path);
@@ -1357,12 +1361,11 @@ fn run_post_action(
                          app_handle: AppHandle,
                          on_saved: Box<dyn FnOnce(&std::path::Path) + Send>|
      -> anyhow::Result<PathBuf> {
-        let base = config.output_path();
-        let path = get_unique_filepath(&base);
         let pending_write = PendingFileMutation::begin(&app_handle).map_err(anyhow::Error::msg)?;
         if let Err(e) = std::fs::create_dir_all(&config.output.directory) {
             tracing::warn!("failed to create output dir: {e}");
         }
+        let path = get_unique_filepath(&config.output_path());
 
         let path_clone = path.clone();
         let format = config.output.format;
@@ -2081,16 +2084,17 @@ fn run_exit_worker(app: AppHandle, exit_guard: ExitWorkerGuard) {
         let is_mp4 = recorder.format() == crate::recording::RecordingFormat::Mp4;
         let mut path = cfg.output_path();
         path.set_extension(if is_mp4 { "mp4" } else { "gif" });
-        let path = get_unique_filepath(&path);
         if let Err(e) = std::fs::create_dir_all(&cfg.output.directory) {
             tracing::warn!("failed to create output dir on exit: {e}");
         }
+        let path = get_unique_filepath(&path);
         let save_result = if is_mp4 {
             recorder.save_mp4(&path).map(|_| ())
         } else {
             recorder.save(&path)
         };
         if let Err(error) = save_result {
+            let _ = std::fs::remove_file(&path);
             *recorder_slot = Some(recorder);
             drop(recorder_slot);
             tracing::warn!("recording save on exit failed: {error}");
@@ -3033,13 +3037,12 @@ fn save_staged_annotation(
         return Err("Image too large to save".into());
     }
     let config = state.config.lock().unwrap().clone();
-    let base = config.output_path();
-    let dest = get_unique_filepath(&base);
+    let _pending_mutation =
+        PendingFileMutation::begin(app).map_err(|error| error.to_string())?;
     if let Err(e) = std::fs::create_dir_all(&config.output.directory) {
         tracing::warn!("failed to create output dir: {e}");
     }
-    let _pending_mutation =
-        PendingFileMutation::begin(app).map_err(|error| error.to_string())?;
+    let dest = get_unique_filepath(&config.output_path());
     // re-encode into the configured output format (the editor always exports
     // PNG, so writing its bytes verbatim would mislabel non-PNG captures),
     // via a sibling temp that is renamed over the claimed slot for atomicity.
@@ -3061,13 +3064,12 @@ fn save_staged_annotation(
         )
         .map_err(|e| format!("{e:#}"))
     })();
-    if let Err(e) = encode_result {
+    if let Err(e) = encode_result.and_then(|()| {
+        std::fs::rename(&tmp, &dest).map_err(|e| format!("rename failed: {e}"))
+    }) {
         let _ = std::fs::remove_file(&tmp);
-        return Err(format!("encode failed: {e}"));
-    }
-    if let Err(e) = std::fs::rename(&tmp, &dest) {
-        let _ = std::fs::remove_file(&tmp);
-        return Err(format!("rename failed: {e}"));
+        let _ = std::fs::remove_file(&dest);
+        return Err(format!("save failed: {e}"));
     }
     let _ = std::fs::remove_file(staged);
     *state.last_save.lock().unwrap() = Some(dest.clone());
@@ -3913,10 +3915,10 @@ fn finalize_gif_recording(task: &CaptureTask, app: &AppHandle) {
         } else {
             path.set_extension("gif");
         }
-        let path = get_unique_filepath(&path);
         if let Err(e) = std::fs::create_dir_all(&cfg.output.directory) {
             tracing::warn!("failed to create output dir: {e}");
         }
+        let path = get_unique_filepath(&path);
 
         let save_result = if is_mp4 {
             rec.save_mp4(&path)
@@ -3965,6 +3967,7 @@ fn finalize_gif_recording(task: &CaptureTask, app: &AppHandle) {
                 apply_gif_post_action(task, app, &path, &cfg);
             }
             Err(e) => {
+                let _ = std::fs::remove_file(&path);
                 let err_type = if is_mp4 { "mp4-save" } else { "gif-save" };
                 tracing::warn!("{} failed: {e}", err_type);
                 emit_error(app, err_type, &e.to_string());
@@ -4089,13 +4092,18 @@ fn trim_mp4_blocking(
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped())
         .output()
-        .map_err(|e| anyhow::anyhow!("failed to launch ffmpeg: {e}"))?;
+        .map_err(|e| {
+            let _ = std::fs::remove_file(&out);
+            anyhow::anyhow!("failed to launch ffmpeg: {e}")
+        })?;
     if !output.status.success() {
+        let _ = std::fs::remove_file(&out);
         let stderr = String::from_utf8_lossy(&output.stderr);
         let tail = stderr.trim().lines().last().unwrap_or("ffmpeg error");
         anyhow::bail!("ffmpeg failed: {tail}");
     }
-    if !out.exists() {
+    if std::fs::metadata(&out).map_or(true, |m| m.len() == 0) {
+        let _ = std::fs::remove_file(&out);
         anyhow::bail!("ffmpeg produced no output file");
     }
     Ok(out_str)

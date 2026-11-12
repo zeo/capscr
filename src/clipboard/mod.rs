@@ -509,3 +509,27 @@ fn should_emit(title: &str, body: &str) -> bool {
     *guard = Some((title.to_string(), body.to_string(), now));
     true
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unique_filepath_claims_the_name_then_a_numbered_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().join("x.png");
+
+        assert_eq!(get_unique_filepath(&base), base);
+        assert_eq!(get_unique_filepath(&base), dir.path().join("x_1.png"));
+        assert!(base.exists() && dir.path().join("x_1.png").exists());
+    }
+
+    #[test]
+    fn unique_filepath_with_a_missing_parent_creates_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().join("missing").join("x.png");
+
+        assert_eq!(get_unique_filepath(&base), base);
+        assert!(!dir.path().join("missing").exists());
+    }
+}

@@ -249,7 +249,9 @@ impl ImageUploader {
                 // well-known NAT64 64:ff9b::/96 (rfc 6052) and 6to4 2002::/16
                 // (rfc 3056) carry an IPv4 address a gateway routes to
                 if o[..12] == [0x00, 0x64, 0xFF, 0x9B, 0, 0, 0, 0, 0, 0, 0, 0] {
-                    return Self::is_private_ip(IpAddr::V4(Ipv4Addr::new(o[12], o[13], o[14], o[15])));
+                    return Self::is_private_ip(IpAddr::V4(Ipv4Addr::new(
+                        o[12], o[13], o[14], o[15],
+                    )));
                 }
                 if o[..2] == [0x20, 0x02] {
                     return Self::is_private_ip(IpAddr::V4(Ipv4Addr::new(o[2], o[3], o[4], o[5])));
@@ -1655,6 +1657,36 @@ pub fn test_connection_s3(target: &S3Target) -> Result<Vec<TestStep>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "sftp")]
+    #[test]
+    fn sftp_host_key_check_accepts_known_and_rejects_changed_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ssh_known_hosts.toml");
+        let rejection = Arc::new(std::sync::Mutex::new(None));
+
+        let check = |fingerprint| accept_sftp_host_key(&path, "host:22", fingerprint, &rejection);
+
+        assert!(check("SHA256:first"));
+        assert!(check("SHA256:first"));
+        assert!(rejection.lock().unwrap().is_none());
+
+        assert!(!check("SHA256:changed"));
+        let message = rejection.lock().unwrap().clone().unwrap();
+        assert!(message.contains("mismatch"), "{message}");
+        assert!(message.contains("SHA256:first"), "{message}");
+    }
+
+    #[cfg(feature = "sftp")]
+    #[test]
+    fn sftp_host_key_check_rejects_an_empty_fingerprint() {
+        let dir = tempfile::tempdir().unwrap();
+        let rejection = Arc::new(std::sync::Mutex::new(None));
+        let path = dir.path().join("ssh_known_hosts.toml");
+        assert!(!accept_sftp_host_key(&path, "host:22", "", &rejection));
+        assert!(rejection.lock().unwrap().is_some());
+        assert!(!path.exists());
+    }
 
     #[test]
     fn test_sign_s3_request_validity() {

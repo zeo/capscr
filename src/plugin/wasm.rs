@@ -155,10 +155,6 @@ pub struct WasmHost {
 /// commodity hardware). manifest's `time_slice_ms` overrides — we treat
 /// the ms value as fuel units * a calibration factor.
 const DEFAULT_HOOK_FUEL: u64 = 5_000_000;
-/// epoch ticks the host advances between hook calls. one tick = ~10ms on
-/// the bumper thread below
-const HOOK_EPOCH_DEADLINE: u64 = 1;
-
 impl WasmHost {
     pub fn new() -> Result<Self> {
         let mut cfg = wasmtime::Config::new();
@@ -226,12 +222,9 @@ impl WasmHost {
             },
         );
         store.limiter(|data| &mut data.mem_limiter as &mut dyn wasmtime::ResourceLimiter);
-        // trap when the epoch deadline is exceeded — bumper thread advances
-        // the engine epoch every 10ms, so HOOK_EPOCH_DEADLINE ticks ≈ 10ms.
-        // call_hook bumps the deadline up to time_slice_ms / 10 before each
-        // invocation; this Store::set_epoch_deadline only sets the initial
-        // value before any hook fires
-        store.set_epoch_deadline(HOOK_EPOCH_DEADLINE);
+        // trap when the epoch deadline is exceeded; the bumper thread advances
+        // the engine epoch every 10ms and call_hook resets the deadline to
+        // time_slice_ms / 10 before each invocation
         store.epoch_deadline_trap();
         let mut linker: Linker<HostState> = Linker::new(&self.engine);
 
@@ -493,7 +486,10 @@ impl WasmHost {
         // since wasmtime 47 instantiation itself (data/element segment init,
         // start function) is metered, so the store needs its first fuel budget
         // before instantiate rather than only before hook calls
+        // the epoch is metered too, and a short deadline set before linking
+        // can lapse on a busy machine and trap a perfectly normal module
         let _ = store.set_fuel(DEFAULT_HOOK_FUEL);
+        store.set_epoch_deadline(deadline_ticks);
         let instance = linker
             .instantiate(&mut store, &module)
             .map_err(|e| anyhow!("instantiating: {e}"))?;
@@ -1182,6 +1178,44 @@ mod tests {
         let mem = plugin.memory.data(&*guard);
         let code = i32::from_le_bytes([mem[0], mem[1], mem[2], mem[3]]);
         assert_eq!(code, HOST_ERR_DENIED);
+    }
+
+    #[test]
+    fn notify_and_fetch_imports_deny_without_capability() {
+        // the result slots start as 0xff so a 0 proves the host import ran and
+        // returned its denial; fetch is scoped to a host the payload url misses
+        const GATED_WAT: &str = r#"
+            (module
+              (import "capscr" "notify" (func $notify (param i32 i32 i32 i32) (result i32)))
+              (import "capscr" "fetch" (func $fetch (param i32 i32) (result i64)))
+              (import "capscr" "fetch_post"
+                (func $post (param i32 i32 i32 i32 i32 i32) (result i64)))
+              (memory (export "memory") 1)
+              (data (i32.const 8) "\ff\ff\ff\ff\ff\ff\ff\ff\ff\ff\ff\ff\ff\ff\ff\ff")
+              (func (export "capscr_alloc") (param i32) (result i32) (i32.const 1024))
+              (func (export "capscr_on_capture_saved") (param $ptr i32) (param $len i32)
+                (i32.store (i32.const 0)
+                  (call $notify (local.get $ptr) (local.get $len) (local.get $ptr) (local.get $len)))
+                (i64.store (i32.const 8) (call $fetch (local.get $ptr) (local.get $len)))
+                (i64.store (i32.const 16)
+                  (call $post (local.get $ptr) (local.get $len) (i32.const 0) (i32.const 0)
+                    (local.get $ptr) (local.get $len)))))
+        "#;
+        let caps = caps_map(&[("fetch", &["https://api.example.com/*"])]);
+        let (_dir, plugin) = load_plugin(GATED_WAT, caps);
+        let started = std::time::Instant::now();
+        plugin
+            .call_hook("on_capture_saved", "https://other.example.com/x")
+            .expect("hook runs; denial is an in-band return code");
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+
+        let guard = plugin.store.lock().unwrap();
+        let mem = plugin.memory.data(&*guard);
+        let notify = i32::from_le_bytes(mem[0..4].try_into().unwrap());
+        let fetch = i64::from_le_bytes(mem[8..16].try_into().unwrap());
+        let post = i64::from_le_bytes(mem[16..24].try_into().unwrap());
+        assert_eq!(notify, HOST_ERR_DENIED);
+        assert_eq!((fetch, post), (0, 0));
     }
 
     // ---- on_capture (image-blob) end-to-end tests ----
