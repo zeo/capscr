@@ -155,12 +155,9 @@ fn pq_to_linear_norm(pq: f32) -> f32 {
 // asymptoting at 1.0, preserving SDR up to `knee = 0.85`, mapping SDR white (1.0)
 // to 0.925 (very bright and close to white), and rolling off all HDR highlights smoothly
 // into [0.925, 1.0) so they never clip or blow out.
-#[inline]
-fn tonemap_pixel(r: f32, g: f32, b: f32, l_src: f32) -> (f32, f32, f32) {
-    let max_val = r.max(g).max(b);
-    if max_val <= 0.85 {
-        return (r, g, b);
-    }
+//
+// B depends only on the frame peak, so callers solve it once per frame
+fn solve_b_param(l_src: f32) -> f32 {
     let knee = 0.85f32;
     let w = l_src - knee;
     let c = 1.0 - knee;
@@ -179,7 +176,16 @@ fn tonemap_pixel(r: f32, g: f32, b: f32, l_src: f32) -> (f32, f32, f32) {
         }
         b_param = mid;
     }
+    b_param
+}
 
+#[inline]
+fn tonemap_pixel(r: f32, g: f32, b: f32, b_param: f32) -> (f32, f32, f32) {
+    let max_val = r.max(g).max(b);
+    if max_val <= 0.85 {
+        return (r, g, b);
+    }
+    let knee = 0.85f32;
     let excess = max_val - knee;
     let compressed = knee + 1.0 / b_param * (1.0 + b_param * excess).ln();
 
@@ -249,6 +255,7 @@ pub fn scrgb_to_sdr_bt2390(
     // tonemap, so the expression must stay verbatim
     #[allow(clippy::manual_clamp)]
     let l_src = (raw_peak * coeff).min(40.0).max(1.05);
+    let b_param = solve_b_param(l_src);
 
     tracing::info!(
         "tonemap: {}x{} sdr_white={:.0}nits coeff={:.4} raw_peak={:.3} l_src={:.3}",
@@ -307,7 +314,7 @@ pub fn scrgb_to_sdr_bt2390(
                         1.0
                     };
 
-                    let (r_tm, g_tm, b_tm) = tonemap_pixel(r, g, b, l_src);
+                    let (r_tm, g_tm, b_tm) = tonemap_pixel(r, g, b, b_param);
 
                     out_chunk[i * 4] = linear_to_srgb_u8(r_tm);
                     out_chunk[i * 4 + 1] = linear_to_srgb_u8(g_tm);
@@ -446,6 +453,58 @@ mod tests {
     }
 
     #[test]
+    fn tonemap_matches_per_pixel_solve() {
+        let per_pixel = |r: f32, g: f32, b: f32, l_src: f32| {
+            let max_val = r.max(g).max(b);
+            if max_val <= 0.85 {
+                return (r, g, b);
+            }
+            let knee = 0.85f32;
+            let w = l_src - knee;
+            let c = 1.0 - knee;
+            let mut low = 0.0f32;
+            let mut high = 1000.0f32;
+            let mut b_param = 1.0f32;
+            for _ in 0..20 {
+                let mid = 0.5 * (low + high);
+                let val = (1.0 + mid * w).ln() - c * mid;
+                if val > 0.0 {
+                    low = mid;
+                } else {
+                    high = mid;
+                }
+                b_param = mid;
+            }
+            let excess = max_val - knee;
+            let compressed = knee + 1.0 / b_param * (1.0 + b_param * excess).ln();
+            let hdr_excess = (max_val - 1.0).max(0.0);
+            let ratio = hdr_excess / max_val;
+            let desat_factor = 0.06 * ratio.powf(4.0);
+            let r_desat = r * (1.0 - desat_factor) + max_val * desat_factor;
+            let g_desat = g * (1.0 - desat_factor) + max_val * desat_factor;
+            let b_desat = b * (1.0 - desat_factor) + max_val * desat_factor;
+            let scale = compressed / max_val;
+            (r_desat * scale, g_desat * scale, b_desat * scale)
+        };
+        let encode = |(r, g, b): (f32, f32, f32)| [r, g, b].map(linear_to_srgb_u8);
+        let steps: Vec<f32> = (0..=80).map(|i| i as f32 * 0.05).collect();
+        for l_src in [1.05f32, 2.0, 6.0, 12.0, 40.0] {
+            let b_param = solve_b_param(l_src);
+            for &r in &steps {
+                for &g in &steps {
+                    for &b in &steps {
+                        assert_eq!(
+                            encode(tonemap_pixel(r, g, b, b_param)),
+                            encode(per_pixel(r, g, b, l_src)),
+                            "rgb ({r}, {g}, {b}) at l_src {l_src}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn max_rgb_tonemap_identity_on_sdr() {
         // any pixel with max component <= 0.85 must be the identity. that
         // means SDR content on an HDR display (after working-space
@@ -458,7 +517,7 @@ mod tests {
             (0.0, 0.0, 0.8), // SDR blue below knee
             (0.8, 0.0, 0.8), // SDR magenta below knee
         ] {
-            let (r2, g2, b2) = tonemap_pixel(r, g, b, 4.0);
+            let (r2, g2, b2) = tonemap_pixel(r, g, b, solve_b_param(4.0));
             assert!((r2 - r).abs() < 1e-5, "r {r} -> {r2}");
             assert!((g2 - g).abs() < 1e-5, "g {g} -> {g2}");
             assert!((b2 - b).abs() < 1e-5, "b {b} -> {b2}");
@@ -470,7 +529,7 @@ mod tests {
         // bright white at 4× SDR (working space 4.0): excess = 3.15, l_src = 4.0.
         // solver finds b_param for w = 3.15, c = 0.15 -> b_param = 30.566.
         // compressed = 0.85 + 1.0/b_param * ln(1.0 + b_param * 3.15) = 1.0.
-        let (r, g, b) = tonemap_pixel(4.0, 4.0, 4.0, 4.0);
+        let (r, g, b) = tonemap_pixel(4.0, 4.0, 4.0, solve_b_param(4.0));
         assert!((r - 1.0).abs() < 1e-4, "{r}");
         assert!((g - 1.0).abs() < 1e-4, "{g}");
         assert!((b - 1.0).abs() < 1e-4, "{b}");
@@ -483,15 +542,15 @@ mod tests {
         //   excess = 0.65, compressed = 0.85 + 1.0/b * ln(1.0 + b * 0.65) = 0.94125.
         // HDR magenta at 6× brightness (working 6.0, R=B=6, G=0), l_src = 6.0:
         //   excess = 5.15, compressed = 1.0.
-        let (wcg_r, _, wcg_b) = tonemap_pixel(1.5, 0.0, 1.5, 6.0);
-        let (hdr_r, _, hdr_b) = tonemap_pixel(6.0, 0.0, 6.0, 6.0);
+        let (wcg_r, _, wcg_b) = tonemap_pixel(1.5, 0.0, 1.5, solve_b_param(6.0));
+        let (hdr_r, _, hdr_b) = tonemap_pixel(6.0, 0.0, 6.0, solve_b_param(6.0));
         assert!((wcg_r - 0.94125).abs() < 1e-4, "WCG: {wcg_r}");
         assert!((wcg_b - 0.94125).abs() < 1e-4, "WCG: {wcg_b}");
         assert!((hdr_r - 1.0).abs() < 1e-4, "HDR: {hdr_r}");
         assert!((hdr_b - 1.0).abs() < 1e-4, "HDR: {hdr_b}");
         // bright WHITE compresses similarly
-        let (sdr_white_r, _, _) = tonemap_pixel(1.0, 1.0, 1.0, 6.0);
-        let (hdr_white_r, _, _) = tonemap_pixel(4.0, 4.0, 4.0, 6.0);
+        let (sdr_white_r, _, _) = tonemap_pixel(1.0, 1.0, 1.0, solve_b_param(6.0));
+        let (hdr_white_r, _, _) = tonemap_pixel(4.0, 4.0, 4.0, solve_b_param(6.0));
         assert!(
             (sdr_white_r - 0.90273).abs() < 1e-4,
             "SDR white must be 0.90273: {sdr_white_r}"
