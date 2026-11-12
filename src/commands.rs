@@ -1225,71 +1225,71 @@ fn window_screen_origin(window_id: u32) -> Option<(i32, i32)> {
     Some((w.x().ok()?, w.y().ok()?))
 }
 
-// crops a desktop-space rect out of a frozen frame whose top-left pixel sits
-// at `origin`. a rect hanging past the top or left edge shrinks rather than
-// shifting, and the crop comes back with its own desktop-space top-left
-fn crop_frozen(
-    frozen: &RgbaImage,
-    origin: (i32, i32),
-    (x, y): (i32, i32),
-    (w, h): (u32, u32),
-) -> Option<(RgbaImage, (i32, i32))> {
-    let (left, top) = (x.max(origin.0), y.max(origin.1));
-    let img_x = left.abs_diff(origin.0);
-    let img_y = top.abs_diff(origin.1);
-    let w = w
-        .saturating_sub(left.abs_diff(x))
-        .min(frozen.width().saturating_sub(img_x));
-    let h = h
-        .saturating_sub(top.abs_diff(y))
-        .min(frozen.height().saturating_sub(img_y));
-    (w > 0 && h > 0).then(|| {
-        let crop = image::imageops::crop_imm(frozen, img_x, img_y, w, h).to_image();
-        (crop, (left, top))
-    })
-}
-
-#[cfg(test)]
-mod crop_frozen_tests {
-    use super::*;
-
-    fn desktop() -> RgbaImage {
-        RgbaImage::from_fn(4, 2, |x, y| image::Rgba([x as u8, y as u8, 0, 255]))
-    }
-
-    fn columns(img: &RgbaImage) -> Vec<(u8, u8)> {
-        img.pixels().map(|p| (p[0], p[1])).collect()
-    }
-
-    #[test]
-    fn crop_frozen_takes_a_rect_inside_the_frame() {
-        let (img, at) = crop_frozen(&desktop(), (-10, 5), (-9, 6), (2, 1)).unwrap();
-        assert_eq!(at, (-9, 6));
-        assert_eq!(columns(&img), [(1, 1), (2, 1)]);
-    }
-
-    #[test]
-    fn crop_frozen_shrinks_a_rect_left_of_the_origin() {
-        let (img, at) = crop_frozen(&desktop(), (-10, 5), (-12, 5), (4, 2)).unwrap();
-        assert_eq!(at, (-10, 5));
-        assert_eq!(columns(&img), [(0, 0), (1, 0), (0, 1), (1, 1)]);
-    }
-
-    #[test]
-    fn crop_frozen_clamps_a_rect_past_the_right_edge() {
-        let (img, at) = crop_frozen(&desktop(), (0, 0), (3, 0), (5, 9)).unwrap();
-        assert_eq!(at, (3, 0));
-        assert_eq!(columns(&img), [(3, 0), (3, 1)]);
-    }
-
-    #[test]
-    fn crop_frozen_rejects_a_rect_outside_the_frame() {
-        assert!(crop_frozen(&desktop(), (0, 0), (4, 0), (2, 2)).is_none());
-        assert!(crop_frozen(&desktop(), (0, 0), (-3, 0), (3, 2)).is_none());
-        assert!(crop_frozen(&desktop(), (0, 0), (0, 0), (0, 2)).is_none());
-    }
-}
-
+// crops a desktop-space rect out of a frozen frame whose top-left pixel sits
+// at `origin`. a rect hanging past the top or left edge shrinks rather than
+// shifting, and the crop comes back with its own desktop-space top-left
+fn crop_frozen(
+    frozen: &RgbaImage,
+    origin: (i32, i32),
+    (x, y): (i32, i32),
+    (w, h): (u32, u32),
+) -> Option<(RgbaImage, (i32, i32))> {
+    let (left, top) = (x.max(origin.0), y.max(origin.1));
+    let img_x = left.abs_diff(origin.0);
+    let img_y = top.abs_diff(origin.1);
+    let w = w
+        .saturating_sub(left.abs_diff(x))
+        .min(frozen.width().saturating_sub(img_x));
+    let h = h
+        .saturating_sub(top.abs_diff(y))
+        .min(frozen.height().saturating_sub(img_y));
+    (w > 0 && h > 0).then(|| {
+        let crop = image::imageops::crop_imm(frozen, img_x, img_y, w, h).to_image();
+        (crop, (left, top))
+    })
+}
+
+#[cfg(test)]
+mod crop_frozen_tests {
+    use super::*;
+
+    fn desktop() -> RgbaImage {
+        RgbaImage::from_fn(4, 2, |x, y| image::Rgba([x as u8, y as u8, 0, 255]))
+    }
+
+    fn columns(img: &RgbaImage) -> Vec<(u8, u8)> {
+        img.pixels().map(|p| (p[0], p[1])).collect()
+    }
+
+    #[test]
+    fn crop_frozen_takes_a_rect_inside_the_frame() {
+        let (img, at) = crop_frozen(&desktop(), (-10, 5), (-9, 6), (2, 1)).unwrap();
+        assert_eq!(at, (-9, 6));
+        assert_eq!(columns(&img), [(1, 1), (2, 1)]);
+    }
+
+    #[test]
+    fn crop_frozen_shrinks_a_rect_left_of_the_origin() {
+        let (img, at) = crop_frozen(&desktop(), (-10, 5), (-12, 5), (4, 2)).unwrap();
+        assert_eq!(at, (-10, 5));
+        assert_eq!(columns(&img), [(0, 0), (1, 0), (0, 1), (1, 1)]);
+    }
+
+    #[test]
+    fn crop_frozen_clamps_a_rect_past_the_right_edge() {
+        let (img, at) = crop_frozen(&desktop(), (0, 0), (3, 0), (5, 9)).unwrap();
+        assert_eq!(at, (3, 0));
+        assert_eq!(columns(&img), [(3, 0), (3, 1)]);
+    }
+
+    #[test]
+    fn crop_frozen_rejects_a_rect_outside_the_frame() {
+        assert!(crop_frozen(&desktop(), (0, 0), (4, 0), (2, 2)).is_none());
+        assert!(crop_frozen(&desktop(), (0, 0), (-3, 0), (3, 2)).is_none());
+        assert!(crop_frozen(&desktop(), (0, 0), (0, 0), (0, 2)).is_none());
+    }
+}
+
 // full window rect from the compositor, used to crop a window capture out of
 // the frozen frame on platforms without DWM extended-frame bounds
 #[cfg(not(windows))]
