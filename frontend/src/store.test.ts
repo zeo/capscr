@@ -81,6 +81,20 @@ describe("capture task saves", () => {
     expect(captureTaskSaveState()).toEqual({ kind: "saved", count: 1 });
   });
 
+  it("ignores a failure from a list that was already superseded", async () => {
+    const b = tasks("a", "b");
+    queueCaptureTasks(tasks("a"));
+    queueCaptureTasks(b);
+    replies[0].reject(new Error("disk full"));
+    await settle();
+    expect(captureTaskSaveState()).toEqual({ kind: "saving" });
+    replies[1].resolve(b);
+    await waitForCaptureTaskSaves();
+    expect(captureTaskSaveState()).toEqual({ kind: "saved", count: 2 });
+    retryCaptureTaskSave();
+    expect(setCaptureTasks).toHaveBeenCalledTimes(2);
+  });
+
   it("forgets a discarded failure", async () => {
     queueCaptureTasks(tasks("a"));
     replies[0].reject(new Error("disk full"));
