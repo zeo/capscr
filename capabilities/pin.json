@@ -1,0 +1,12 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "identifier": "pin",
+  "description": "pinned image windows size and reveal themselves once the image loads, close from their own button and drag by their body",
+  "windows": ["pin_*"],
+  "permissions": [
+    "core:window:allow-show",
+    "core:window:allow-set-size",
+    "core:window:allow-close",
+    "core:window:allow-start-dragging"
+  ]
+}
