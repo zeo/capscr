@@ -3,6 +3,7 @@
 #[cfg(target_os = "linux")]
 pub mod linux;
 pub mod recording;
+mod selection;
 mod unified;
 #[cfg(target_os = "linux")]
 mod wayland_native_selector;

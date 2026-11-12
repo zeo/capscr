@@ -20,6 +20,7 @@ use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_ba
 use wayland_protocols_plasma::plasma_shell::client::{org_kde_plasma_shell, org_kde_plasma_surface};
 
 use crate::capture::Rectangle;
+use crate::overlay::selection::aspect_target;
 
 #[derive(Debug, Clone)]
 pub struct NativeWindow {
@@ -1026,13 +1027,8 @@ fn selection_rectangle(
     let mut end_y = pointer_y;
     let width = (pointer_x - start_x).abs();
     let height = (pointer_y - start_y).abs();
-    if snap && width > 0.0 && height > 0.0 {
-        const RATIOS: [f64; 5] = [1.0, 16.0 / 9.0, 16.0 / 10.0, 4.0 / 3.0, 21.0 / 9.0];
-        let ratio = width / height;
-        let target = RATIOS
-            .into_iter()
-            .min_by(|a, b| (ratio - *a).abs().total_cmp(&(ratio - *b).abs()));
-        end_y = start_y + (pointer_y - start_y).signum() * width / target.unwrap_or(1.0);
+    if let Some(target) = aspect_target(width, height).filter(|_| snap) {
+        end_y = start_y + (pointer_y - start_y).signum() * width / target;
     }
     Rectangle::new(
         start_x.min(pointer_x).round() as i32,

@@ -1,5 +1,6 @@
 import { onCleanup, onMount } from "solid-js";
 import { invoke } from "@tauri-apps/api/core";
+import { aspectTarget } from "./selection";
 
 interface WindowRect {
   id: number;
@@ -20,7 +21,6 @@ interface SelectorContext {
 
 const CLICK_THRESHOLD = 5;
 const MAGNIFIER_SIZE = 120;
-const ASPECT_TARGETS = [1, 16 / 9, 16 / 10, 4 / 3, 21 / 9];
 const DRAG_CHANNEL = "capscr-selector-drag";
 
 interface SharedDrag {
@@ -103,12 +103,8 @@ export function Selector() {
     const dx = endX - startX;
     const dy = endY - startY;
     const width = Math.abs(dx);
-    const height = Math.abs(dy);
-    if (!width || !height) return { ex: endX, ey: endY };
-    const ratio = width / height;
-    const target = ASPECT_TARGETS.reduce((best, candidate) =>
-      Math.abs(ratio - candidate) < Math.abs(ratio - best) ? candidate : best,
-    );
+    const target = aspectTarget(width, Math.abs(dy));
+    if (target === null) return { ex: endX, ey: endY };
     return { ex: endX, ey: startY + Math.sign(dy || 1) * Math.round(width / target) };
   };
 

@@ -30,6 +30,7 @@ pub enum SelectionResult {
 #[cfg(windows)]
 mod windows_impl {
     use super::*;
+    use crate::overlay::selection::aspect_target;
     use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
     use std::sync::Mutex;
     use windows::{
@@ -822,25 +823,11 @@ mod windows_impl {
             let mut ey = END_Y.load(Ordering::SeqCst);
 
             if SHIFT_AT_COMMIT.load(Ordering::SeqCst) {
-                let dx = ex - sx;
                 let dy = ey - sy;
-                let w = dx.abs() as f64;
-                let h = dy.abs() as f64;
-                if w > 0.0 && h > 0.0 {
-                    let current_ratio = w / h;
-                    let targets = [1.0, 16.0 / 9.0, 16.0 / 10.0, 4.0 / 3.0, 21.0 / 9.0];
-                    let mut best_target = 1.0;
-                    let mut min_diff = f64::MAX;
-                    for &t in &targets {
-                        let diff = (current_ratio - t).abs();
-                        if diff < min_diff {
-                            min_diff = diff;
-                            best_target = t;
-                        }
-                    }
-                    let new_h = (w / best_target).round() as i32;
+                let w = (ex - sx).abs() as f64;
+                if let Some(target) = aspect_target(w, dy.abs() as f64) {
                     let sign_y = if dy >= 0 { 1 } else { -1 };
-                    ey = sy + sign_y * new_h;
+                    ey = sy + sign_y * (w / target).round() as i32;
                 }
             }
 
@@ -928,25 +915,11 @@ mod windows_impl {
                 let mut ey = END_Y.load(Ordering::SeqCst);
 
                 if shift_held() {
-                    let dx = ex - sx;
                     let dy = ey - sy;
-                    let w = dx.abs() as f64;
-                    let h = dy.abs() as f64;
-                    if w > 0.0 && h > 0.0 {
-                        let current_ratio = w / h;
-                        let targets = [1.0, 16.0 / 9.0, 16.0 / 10.0, 4.0 / 3.0, 21.0 / 9.0];
-                        let mut best_target = 1.0;
-                        let mut min_diff = f64::MAX;
-                        for &t in &targets {
-                            let diff = (current_ratio - t).abs();
-                            if diff < min_diff {
-                                min_diff = diff;
-                                best_target = t;
-                            }
-                        }
-                        let new_h = (w / best_target).round() as i32;
+                    let w = (ex - sx).abs() as f64;
+                    if let Some(target) = aspect_target(w, dy.abs() as f64) {
                         let sign_y = if dy >= 0 { 1 } else { -1 };
-                        ey = sy + sign_y * new_h;
+                        ey = sy + sign_y * (w / target).round() as i32;
                     }
                 }
 
