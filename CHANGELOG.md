@@ -4,6 +4,56 @@ format follows [keep-a-changelog](https://keepachangelog.com/en/1.1.0/) loosely.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-12
+
+### removed
+- plain ftp upload. breaking: uploads set to ftp, globally or in a capture task, now go to sftp. the ftp host is copied over when sftp has none, a one-time notice says so at startup, and the stored ftp password is deleted. check the sftp settings in destinations before the next upload
+
+### security
+- russh 0.65.1, fixing RUSTSEC-2026-0492 and RUSTSEC-2026-0495 in sftp uploads
+- sftp uploads refuse a host key they haven't seen before. the connection test in destinations shows the fingerprint and asks before trusting it
+- the marketplace registry is signed; capscr refuses a registry whose signature doesn't verify and won't install a plugin that needs a newer capscr
+- the upload address guard also blocks private addresses wrapped in nat64 and 6to4
+- the windows ffmpeg download is pinned to the gyan.dev 9.0.2 build and checked against an embedded sha256, like the linux one
+- only the backend changes the output folder: browse opens the native picker and a typed path asks for confirmation
+- the unused fs and notification plugins and their permissions are gone
+- a plugin hook gets at most 2 seconds
+- SECURITY.md: report vulnerabilities privately through github
+
+### added
+- plugins can be upload destinations
+- plugins reload in place after install, uninstall or toggle, and each plugin gets a settings page built from its manifest
+- plugins can opt into a json payload with capture details and delete links
+- uploads are recorded per capture; history tags uploaded captures, copies the link and can delete the upload from imgur, s3 or sftp
+- capture tasks run from the command line (`capscr --task=<id>`, `capscr --list-tasks`), the windows jump list and the gnome extension menu; settings show each task's id
+- gif recordings can be trimmed, and mp4 clips export as gif
+- microphone narration: record the default input and mix it with system audio
+- the tray lists every upload destination
+
+### fixed
+- a filename template chrono can't format is rejected in settings instead of crashing the capture
+- a config.toml that fails to load falls back to defaults with a notice naming the backup file
+- gif, mp4, avif and jxl captures can be re-uploaded from history
+- uploads and ocr no longer block the main thread
+- failed plugin installs and failed saves clean up after themselves
+- recorder threads stop when a recording is dropped, and the audio track is finished before muxing
+- edits made while settings are saving are kept, and the hotkey status row updates when diagnostics load
+- hdr10 captures convert from bt.2020 to bt.709 primaries before tonemapping
+- hdr captures from a display rotated 180 degrees come out upright
+- an hdr capture at a point on no output fails instead of grabbing the first output
+- wayland monitor grabs on scaled displays are scaled to the logical size, so stitched and cropped captures line up
+- a linux recording stops and keeps the file when the screen share ends
+- pinned image windows can show, size, close and drag themselves
+- the frozen-frame crop on a monitor left of the primary shrinks instead of shifting
+- for recordings, "ask each time" reveals the file, as "open in editor" already did
+- a hardware encoder whose trial encode hangs is skipped after 10 seconds instead of stalling every recording start
+- shift-drag snaps to the same aspect ratios in every selector
+
+### changed
+- hdr tonemapping solves its curve once per frame instead of per bright pixel
+- copying to the clipboard starts while the capture is still encoding
+- settings that did nothing are gone
+
 ## [0.5.60] - 2026-11-11
 
 ### fixed

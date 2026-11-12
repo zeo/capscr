@@ -1,6 +1,6 @@
 [package]
 name = "capscr"
-version = "0.5.60"
+version = "0.6.0"
 edition = "2021"
 rust-version = "1.97"
 description = "Fast HDR-aware screen capture for Windows and Linux — tray-first, signed updates, no telemetry."
