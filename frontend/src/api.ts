@@ -303,8 +303,16 @@ export const api = {
   reuploadCapture: (path: string) =>
     invoke<{ url: string; delete_url: string | null }>("reupload_capture", { path }),
   openInExplorer: (path: string) => invoke<void>("open_in_explorer", { path }),
-  trimMp4: (path: string, startSecs: number, endSecs: number, fast: boolean) =>
-    invoke<string>("trim_mp4", { path, startSecs, endSecs, fast }),
+  trimRecording: (path: string, startSecs: number, endSecs: number, fast: boolean) =>
+    invoke<string>("trim_recording", { path, startSecs, endSecs, fast }),
+  exportGif: (
+    path: string,
+    startSecs: number,
+    endSecs: number,
+    fps: number,
+    maxWidth: number,
+  ) => invoke<string>("export_gif", { path, startSecs, endSecs, fps, maxWidth }),
+  gifDuration: (path: string) => invoke<number>("gif_duration", { path }),
 
   listInstalledPlugins: () => invoke<InstalledPlugin[]>("list_installed_plugins"),
   listUploadPlugins: () => invoke<UploadPlugin[]>("list_upload_plugins"),

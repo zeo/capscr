@@ -1,6 +1,6 @@
 import { createSignal, onCleanup, onMount, Show } from "solid-js";
 import { convertFileSrc } from "@tauri-apps/api/core";
-import { Scissors, X } from "lucide-solid";
+import { Film, Scissors, X } from "lucide-solid";
 import { api } from "../api";
 
 function fmt(s: number): string {
@@ -28,6 +28,9 @@ export function TrimModal(props: {
   const [fast, setFast] = createSignal(false);
   const [busy, setBusy] = createSignal(false);
   const [err, setErr] = createSignal<string | null>(null);
+  const [gifFps, setGifFps] = createSignal(15);
+  const [gifWidth, setGifWidth] = createSignal(960);
+  const isGif = /\.gif$/i.test(props.path);
 
   // Escape closes the modal (unless a trim is in progress), matching the editor
   // and shortcuts overlay
@@ -71,19 +74,25 @@ export function TrimModal(props: {
     };
     window.addEventListener("keydown", onKey);
     (closeButton ?? dialog)?.focus();
+    if (isGif) {
+      api
+        .gifDuration(props.path)
+        .then(setDuration)
+        .catch((e: unknown) => setErr(String(e)));
+    }
     onCleanup(() => {
       window.removeEventListener("keydown", onKey);
       if (previousFocus?.isConnected) previousFocus.focus();
     });
   });
 
-  const onMeta = () => {
-    const d = video?.duration ?? 0;
+  const setDuration = (d: number) => {
     if (isFinite(d) && d > 0) {
       setDur(d);
       setEnd(d);
     }
   };
+  const onMeta = () => setDuration(video?.duration ?? 0);
 
   const setStartClamped = (v: number) =>
     setStart(Math.max(0, Math.min(v, end() - 0.05)));
@@ -92,18 +101,28 @@ export function TrimModal(props: {
 
   const len = () => Math.max(0, end() - start());
 
-  const exportTrim = async () => {
+  const run = async (job: () => Promise<string>, verb: string) => {
     if (busy() || len() < 0.05) return;
     setBusy(true);
     setErr(null);
     try {
-      const out = await api.trimMp4(props.path, start(), end(), fast());
-      props.onDone(`trimmed → ${basename(out)}`);
+      props.onDone(`${verb} → ${basename(await job())}`);
     } catch (e) {
       setErr(String(e));
     } finally {
       setBusy(false);
     }
+  };
+  const exportTrim = () =>
+    run(() => api.trimRecording(props.path, start(), end(), fast()), "trimmed");
+  const exportGif = () =>
+    run(
+      () => api.exportGif(props.path, start(), end(), gifFps(), gifWidth()),
+      "exported gif",
+    );
+  const clampInput = (value: string, min: number, max: number, fallback: number) => {
+    const n = Math.round(Number(value));
+    return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : fallback;
   };
 
   return (
@@ -137,14 +156,25 @@ export function TrimModal(props: {
           </button>
         </div>
 
-        <video
-          ref={video}
-          class="trim-video"
-          src={convertFileSrc(props.path)}
-          controls
-          aria-label={`recording preview for ${basename(props.path)}`}
-          onLoadedMetadata={onMeta}
-        />
+        <Show
+          when={!isGif}
+          fallback={
+            <img
+              class="trim-video"
+              src={convertFileSrc(props.path)}
+              alt={`recording preview for ${basename(props.path)}`}
+            />
+          }
+        >
+          <video
+            ref={video}
+            class="trim-video"
+            src={convertFileSrc(props.path)}
+            controls
+            aria-label={`recording preview for ${basename(props.path)}`}
+            onLoadedMetadata={onMeta}
+          />
+        </Show>
 
         <div class="trim-row">
           <span id="trim-start-label" class="trim-label">
@@ -160,14 +190,16 @@ export function TrimModal(props: {
             disabled={busy()}
             onInput={(e) => setStartClamped(parseFloat(e.currentTarget.value))}
           />
-          <button
-            class="btn"
-            data-variant="ghost"
-            disabled={busy()}
-            onClick={() => setStartClamped(video?.currentTime ?? 0)}
-          >
-            playhead
-          </button>
+          <Show when={!isGif}>
+            <button
+              class="btn"
+              data-variant="ghost"
+              disabled={busy()}
+              onClick={() => setStartClamped(video?.currentTime ?? 0)}
+            >
+              playhead
+            </button>
+          </Show>
         </div>
 
         <div class="trim-row">
@@ -184,30 +216,77 @@ export function TrimModal(props: {
             disabled={busy()}
             onInput={(e) => setEndClamped(parseFloat(e.currentTarget.value))}
           />
-          <button
-            class="btn"
-            data-variant="ghost"
-            disabled={busy()}
-            onClick={() => setEndClamped(video?.currentTime ?? 0)}
-          >
-            playhead
-          </button>
+          <Show when={!isGif}>
+            <button
+              class="btn"
+              data-variant="ghost"
+              disabled={busy()}
+              onClick={() => setEndClamped(video?.currentTime ?? 0)}
+            >
+              playhead
+            </button>
+          </Show>
         </div>
 
         <div class="trim-foot">
-          <label class="check">
-            <input
-              type="checkbox"
-              checked={fast()}
-              disabled={busy()}
-              onChange={(e) => setFast(e.currentTarget.checked)}
-            />
-            <span class="check-label">
-              fast (lossless, start snaps to keyframe)
-            </span>
-          </label>
+          <Show when={!isGif} fallback={<span />}>
+            <label class="check">
+              <input
+                type="checkbox"
+                checked={fast()}
+                disabled={busy()}
+                onChange={(e) => setFast(e.currentTarget.checked)}
+              />
+              <span class="check-label">
+                fast (lossless, start snaps to keyframe)
+              </span>
+            </label>
+          </Show>
           <span class="trim-len">length {fmt(len())}</span>
         </div>
+
+        <Show when={!isGif}>
+          <div class="trim-foot">
+            <span class="trim-gif-fields">
+              <label class="trim-label">
+                gif fps
+                <input
+                  type="number"
+                  min={5}
+                  max={30}
+                  value={gifFps()}
+                  disabled={busy()}
+                  onChange={(e) =>
+                    setGifFps(clampInput(e.currentTarget.value, 5, 30, 15))
+                  }
+                />
+              </label>
+              <label class="trim-label">
+                max width
+                <input
+                  type="number"
+                  min={160}
+                  max={1920}
+                  step={10}
+                  value={gifWidth()}
+                  disabled={busy()}
+                  onChange={(e) =>
+                    setGifWidth(clampInput(e.currentTarget.value, 160, 1920, 960))
+                  }
+                />
+              </label>
+            </span>
+            <button
+              class="btn"
+              data-variant="ghost"
+              disabled={busy() || len() < 0.05}
+              onClick={exportGif}
+            >
+              <Film size={12} stroke-width={1.5} />
+              export gif
+            </button>
+          </div>
+        </Show>
 
         <Show when={err()}>
           <div class="flash" data-tone="err" role="alert" aria-atomic="true">

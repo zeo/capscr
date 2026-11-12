@@ -2614,6 +2614,16 @@ kbd {
   gap: 12px;
 }
 
+.trim-gif-fields {
+  display: flex;
+  gap: 14px;
+}
+
+.trim-gif-fields input {
+  width: 64px;
+  margin-left: 6px;
+}
+
 .trim-len {
   font-size: 11px;
   color: var(--mute);

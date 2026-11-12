@@ -4146,28 +4146,110 @@ fn set_tray_tooltip(app: &AppHandle, tooltip: &str) {
     }
 }
 
-// trim an mp4 recording to [start_secs, start_secs + duration). `fast` stream-
-// copies (instant, but the start snaps to the nearest keyframe); otherwise the
-// clip is re-encoded for a frame-accurate cut. writes a new file next to the
-// source and returns its path. recordings are video-only, so audio is dropped.
-#[tauri::command]
-pub async fn trim_mp4(
-    path: String,
-    start_secs: f64,
-    end_secs: f64,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RecordingKind {
+    Mp4,
+    Gif,
+}
+
+fn recording_kind(path: &std::path::Path) -> Option<RecordingKind> {
+    let ext = path.extension()?.to_str()?;
+    if ext.eq_ignore_ascii_case("mp4") {
+        Some(RecordingKind::Mp4)
+    } else if ext.eq_ignore_ascii_case("gif") {
+        Some(RecordingKind::Gif)
+    } else {
+        None
+    }
+}
+
+const GIF_EXPORT_FPS: std::ops::RangeInclusive<u32> = 5..=30;
+const GIF_EXPORT_WIDTH: std::ops::RangeInclusive<u32> = 160..=1920;
+// one global palette, ordered dither, and only the changed rectangle per frame
+const GIF_PALETTE_GRAPH: &str = "split[a][b];[a]palettegen=stats_mode=diff[p];\
+     [b][p]paletteuse=dither=bayer:bayer_scale=4:diff_mode=rectangle";
+
+/// the ffmpeg arguments that cut [start, start + duration) out of a recording.
+/// mp4 is stream-copied when `fast` (keyframe-aligned start) and re-encoded
+/// otherwise; a gif is always re-encoded so frame delays stay right
+fn build_trim_args(
+    kind: RecordingKind,
+    input: &str,
+    output: &str,
+    start: f64,
+    duration: f64,
     fast: bool,
-    app: AppHandle,
-    state: State<'_, AppState>,
-) -> Result<String, String> {
-    let config = state.config.lock().unwrap().clone();
-    let canonical = std::fs::canonicalize(&path).map_err(|e| e.to_string())?;
-    if !is_path_allowed(&canonical, &config) {
+) -> Vec<String> {
+    let start = format!("{start:.3}");
+    let duration = format!("{duration:.3}");
+    let args: Vec<&str> = match (kind, fast) {
+        (RecordingKind::Mp4, true) => vec![
+            "-ss", &start, "-i", input, "-t", &duration, "-c", "copy", "-an", "-y", output,
+        ],
+        (RecordingKind::Mp4, false) => vec![
+            "-i", input, "-ss", &start, "-t", &duration, "-c:v", "libx264", "-pix_fmt", "yuv420p",
+            "-crf", "23", "-an", "-y", output,
+        ],
+        // the gif demuxer can't seek, so the cut happens after decoding
+        (RecordingKind::Gif, _) => vec![
+            "-i",
+            input,
+            "-ss",
+            &start,
+            "-t",
+            &duration,
+            "-filter_complex",
+            GIF_PALETTE_GRAPH,
+            "-loop",
+            "0",
+            "-y",
+            output,
+        ],
+    };
+    args.into_iter().map(String::from).collect()
+}
+
+/// the ffmpeg arguments that turn [start, start + duration) of an mp4 into a
+/// gif at `fps`, no wider than `max_width`. both are clamped to the export limits
+fn build_gif_export_args(
+    input: &str,
+    output: &str,
+    start: f64,
+    duration: f64,
+    fps: u32,
+    max_width: u32,
+) -> Vec<String> {
+    let fps = fps.clamp(*GIF_EXPORT_FPS.start(), *GIF_EXPORT_FPS.end());
+    let width = max_width.clamp(*GIF_EXPORT_WIDTH.start(), *GIF_EXPORT_WIDTH.end());
+    let graph = format!("fps={fps},scale='min({width},iw)':-2:flags=lanczos,{GIF_PALETTE_GRAPH}");
+    [
+        "-ss",
+        &format!("{start:.3}"),
+        "-i",
+        input,
+        "-t",
+        &format!("{duration:.3}"),
+        "-filter_complex",
+        &graph,
+        "-loop",
+        "0",
+        "-an",
+        "-y",
+        output,
+    ]
+    .into_iter()
+    .map(String::from)
+    .collect()
+}
+
+/// resolve a history path for ffmpeg: canonical, inside the allowed dirs, and
+/// without the \\?\ prefix canonicalize adds on windows, which the
+/// network-path guard in check_recording_source would otherwise reject
+fn resolve_recording_path(path: &str, config: &Config) -> Result<String, String> {
+    let canonical = std::fs::canonicalize(path).map_err(|e| e.to_string())?;
+    if !is_path_allowed(&canonical, config) {
         return Err("Path is outside the allowed directories".into());
     }
-    // operate on the resolved path so a symlink can't be repointed between this
-    // allow-list check and ffmpeg opening the file. strip the \\?\ verbatim
-    // prefix canonicalize adds on windows, which trim_mp4_blocking's network-path
-    // guard would otherwise reject.
     #[cfg(windows)]
     let resolved = {
         let s = canonical.to_string_lossy();
@@ -4181,23 +4263,15 @@ pub async fn trim_mp4(
     };
     #[cfg(not(windows))]
     let resolved = canonical.to_string_lossy().into_owned();
-    let pending_mutation =
-        PendingFileMutation::begin(&app).map_err(|error| error.to_string())?;
-    tauri::async_runtime::spawn_blocking(move || {
-        let _pending_mutation = pending_mutation;
-        trim_mp4_blocking(&resolved, start_secs, end_secs, fast).map_err(|e| e.to_string())
-    })
-    .await
-    .map_err(|e| e.to_string())?
+    Ok(resolved)
 }
 
-fn trim_mp4_blocking(
+/// the recording kind and clip length for a cut, after the path and range checks
+fn check_recording_source(
     path: &str,
     start_secs: f64,
     end_secs: f64,
-    fast: bool,
-) -> anyhow::Result<String> {
-    use std::path::Path;
+) -> anyhow::Result<(RecordingKind, f64, f64)> {
     if path.contains("..") {
         anyhow::bail!("path contains directory traversal");
     }
@@ -4205,67 +4279,232 @@ fn trim_mp4_blocking(
     if path.starts_with("\\\\") {
         anyhow::bail!("network paths not allowed");
     }
-    let src = Path::new(path);
+    let src = std::path::Path::new(path);
     if !src.exists() {
         anyhow::bail!("file not found");
     }
-    let is_mp4 = src
-        .extension()
-        .map(|e| e.eq_ignore_ascii_case("mp4"))
-        .unwrap_or(false);
-    if !is_mp4 {
-        anyhow::bail!("not an mp4 file");
-    }
-
+    let kind = recording_kind(src).ok_or_else(|| anyhow::anyhow!("not an mp4 or gif file"))?;
     let start = start_secs.max(0.0);
     let duration = end_secs - start;
     if !duration.is_finite() || duration <= 0.05 {
         anyhow::bail!("trim must be at least 0.05s and end after start");
     }
+    Ok((kind, start, duration))
+}
 
-    let stem = src.file_stem().and_then(|s| s.to_str()).unwrap_or("clip");
-    let parent = src.parent().unwrap_or_else(|| Path::new("."));
-    let base = parent.join(format!("{stem}_trim.mp4"));
-    let out = crate::clipboard::get_unique_filepath(&base);
-    let out_str = out.to_string_lossy().to_string();
-
-    let start_s = format!("{start:.3}");
-    let dur_s = format!("{duration:.3}");
-
-    let mut cmd = crate::recording::ffmpeg_command();
-    if fast {
-        // input-side seek + stream copy: instant, keyframe-aligned start
-        cmd.args([
-            "-ss", &start_s, "-i", path, "-t", &dur_s, "-c", "copy", "-an", "-y", &out_str,
-        ]);
-    } else {
-        // decode then re-encode for a frame-accurate cut
-        cmd.args([
-            "-i", path, "-ss", &start_s, "-t", &dur_s, "-c:v", "libx264", "-pix_fmt", "yuv420p",
-            "-crf", "23", "-an", "-y", &out_str,
-        ]);
-    }
-
-    let output = cmd
+/// run ffmpeg with `args` writing `out`, removing a failed or empty output
+fn run_ffmpeg_to(out: &std::path::Path, args: &[String]) -> anyhow::Result<()> {
+    let output = crate::recording::ffmpeg_command()
+        .args(args)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped())
         .output()
         .map_err(|e| {
-            let _ = std::fs::remove_file(&out);
+            let _ = std::fs::remove_file(out);
             anyhow::anyhow!("failed to launch ffmpeg: {e}")
         })?;
     if !output.status.success() {
-        let _ = std::fs::remove_file(&out);
+        let _ = std::fs::remove_file(out);
         let stderr = String::from_utf8_lossy(&output.stderr);
         let tail = stderr.trim().lines().last().unwrap_or("ffmpeg error");
         anyhow::bail!("ffmpeg failed: {tail}");
     }
-    if std::fs::metadata(&out).map_or(true, |m| m.len() == 0) {
-        let _ = std::fs::remove_file(&out);
+    if std::fs::metadata(out).map_or(true, |m| m.len() == 0) {
+        let _ = std::fs::remove_file(out);
         anyhow::bail!("ffmpeg produced no output file");
     }
-    Ok(out_str)
+    Ok(())
+}
+
+/// `<stem><suffix>.<ext>` next to the source, numbered when that name is taken
+fn sibling_output(src: &str, suffix: &str, ext: &str) -> std::path::PathBuf {
+    let src = std::path::Path::new(src);
+    let stem = src.file_stem().and_then(|s| s.to_str()).unwrap_or("clip");
+    let parent = src.parent().unwrap_or_else(|| std::path::Path::new("."));
+    crate::clipboard::get_unique_filepath(&parent.join(format!("{stem}{suffix}.{ext}")))
+}
+
+async fn run_recording_job(
+    path: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+    job: impl FnOnce(&str) -> anyhow::Result<String> + Send + 'static,
+) -> Result<String, String> {
+    let config = state.config.lock().unwrap().clone();
+    let resolved = resolve_recording_path(&path, &config)?;
+    let pending_mutation = PendingFileMutation::begin(&app).map_err(|error| error.to_string())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let _pending_mutation = pending_mutation;
+        job(&resolved).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+// trim an mp4 or gif recording to [start_secs, end_secs) into a new file next
+// to the source and return its path. recordings are video-only, so audio is dropped
+#[tauri::command]
+pub async fn trim_recording(
+    path: String,
+    start_secs: f64,
+    end_secs: f64,
+    fast: bool,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    run_recording_job(path, app, state, move |src| {
+        let (kind, start, duration) = check_recording_source(src, start_secs, end_secs)?;
+        let ext = match kind {
+            RecordingKind::Mp4 => "mp4",
+            RecordingKind::Gif => "gif",
+        };
+        let out = sibling_output(src, "_trim", ext);
+        let out_str = out.to_string_lossy().into_owned();
+        run_ffmpeg_to(
+            &out,
+            &build_trim_args(kind, src, &out_str, start, duration, fast),
+        )?;
+        Ok(out_str)
+    })
+    .await
+}
+
+// convert [start_secs, end_secs) of an mp4 recording to a gif next to it
+#[tauri::command]
+pub async fn export_gif(
+    path: String,
+    start_secs: f64,
+    end_secs: f64,
+    fps: u32,
+    max_width: u32,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    run_recording_job(path, app, state, move |src| {
+        let (kind, start, duration) = check_recording_source(src, start_secs, end_secs)?;
+        if kind != RecordingKind::Mp4 {
+            anyhow::bail!("only an mp4 recording can be exported as a gif");
+        }
+        let out = sibling_output(src, "", "gif");
+        let out_str = out.to_string_lossy().into_owned();
+        run_ffmpeg_to(
+            &out,
+            &build_gif_export_args(src, &out_str, start, duration, fps, max_width),
+        )?;
+        Ok(out_str)
+    })
+    .await
+}
+
+/// a gif's play time in seconds, counting delays the way ffmpeg's gif demuxer
+/// does so the trim range lines up with what ffmpeg cuts
+fn gif_duration_secs(reader: impl std::io::Read) -> anyhow::Result<f64> {
+    let mut decoder = gif::DecodeOptions::new().read_info(reader)?;
+    let mut hundredths = 0u64;
+    while let Some(frame) = decoder.next_frame_info()? {
+        hundredths += match frame.delay {
+            0 | 1 => 10,
+            delay => u64::from(delay),
+        };
+    }
+    Ok(hundredths as f64 / 100.0)
+}
+
+#[tauri::command]
+pub async fn gif_duration(path: String, state: State<'_, AppState>) -> Result<f64, String> {
+    let config = state.config.lock().unwrap().clone();
+    let resolved = resolve_recording_path(&path, &config)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let file = std::fs::File::open(&resolved).map_err(|e| e.to_string())?;
+        gif_duration_secs(std::io::BufReader::new(file)).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[cfg(test)]
+mod recording_edit_tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn recording_kind_reads_the_extension() {
+        assert_eq!(recording_kind(Path::new("a.mp4")), Some(RecordingKind::Mp4));
+        assert_eq!(recording_kind(Path::new("a.MP4")), Some(RecordingKind::Mp4));
+        assert_eq!(recording_kind(Path::new("a.gif")), Some(RecordingKind::Gif));
+        assert_eq!(recording_kind(Path::new("a.png")), None);
+        assert_eq!(recording_kind(Path::new("mp4")), None);
+    }
+
+    #[test]
+    fn trim_args_per_kind() {
+        let fast = build_trim_args(RecordingKind::Mp4, "in.mp4", "out.mp4", 1.0, 2.5, true);
+        assert_eq!(
+            fast,
+            ["-ss", "1.000", "-i", "in.mp4", "-t", "2.500", "-c", "copy", "-an", "-y", "out.mp4"]
+        );
+        let exact = build_trim_args(RecordingKind::Mp4, "in.mp4", "out.mp4", 1.0, 2.5, false);
+        assert_eq!(&exact[..6], ["-i", "in.mp4", "-ss", "1.000", "-t", "2.500"]);
+        assert!(exact.iter().any(|a| a == "libx264"));
+        let gif = build_trim_args(RecordingKind::Gif, "in.gif", "out.gif", 0.0, 3.0, true);
+        assert_eq!(&gif[..6], ["-i", "in.gif", "-ss", "0.000", "-t", "3.000"]);
+        assert!(gif.iter().any(|a| a.contains("palettegen")));
+        assert!(!gif.iter().any(|a| a == "copy"));
+        assert_eq!(gif.last().unwrap(), "out.gif");
+    }
+
+    #[test]
+    fn gif_export_clamps_fps_and_width() {
+        let graph = |fps, width| {
+            build_gif_export_args("in.mp4", "out.gif", 0.0, 1.0, fps, width)
+                .into_iter()
+                .skip_while(|a| a != "-filter_complex")
+                .nth(1)
+                .unwrap()
+        };
+        assert!(graph(15, 960).starts_with("fps=15,scale='min(960,iw)':-2:flags=lanczos,split"));
+        assert!(graph(1, 10).starts_with("fps=5,scale='min(160,iw)'"));
+        assert!(graph(120, 8000).starts_with("fps=30,scale='min(1920,iw)'"));
+    }
+
+    #[test]
+    fn recording_source_checks() {
+        let dir = tempfile::tempdir().unwrap();
+        let mp4 = dir.path().join("clip.mp4");
+        let png = dir.path().join("shot.png");
+        std::fs::write(&mp4, b"x").unwrap();
+        std::fs::write(&png, b"x").unwrap();
+        let mp4 = mp4.to_string_lossy().into_owned();
+        assert_eq!(
+            check_recording_source(&mp4, -1.0, 2.0).unwrap(),
+            (RecordingKind::Mp4, 0.0, 2.0)
+        );
+        assert!(check_recording_source(&mp4, 1.0, 1.01).is_err());
+        assert!(check_recording_source(&mp4, 2.0, 1.0).is_err());
+        assert!(check_recording_source(&mp4, 0.0, f64::NAN).is_err());
+        assert!(check_recording_source(&png.to_string_lossy(), 0.0, 1.0).is_err());
+        let missing = dir.path().join("gone.gif");
+        assert!(check_recording_source(&missing.to_string_lossy(), 0.0, 1.0).is_err());
+        let traversal = format!("{}/../clip.mp4", dir.path().display());
+        assert!(check_recording_source(&traversal, 0.0, 1.0).is_err());
+    }
+
+    #[test]
+    fn gif_duration_counts_short_delays_like_ffmpeg() {
+        let mut bytes = Vec::new();
+        {
+            let mut encoder =
+                gif::Encoder::new(&mut bytes, 1, 1, &[0, 0, 0, 255, 255, 255]).unwrap();
+            for delay in [0, 5, 20] {
+                let mut frame = gif::Frame::from_indexed_pixels(1, 1, vec![0], None);
+                frame.delay = delay;
+                encoder.write_frame(&frame).unwrap();
+            }
+        }
+        let secs = gif_duration_secs(std::io::Cursor::new(bytes)).unwrap();
+        assert!((secs - 0.35).abs() < 1e-9, "{secs}");
+    }
 }
 
 fn apply_gif_post_action(

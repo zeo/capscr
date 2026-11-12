@@ -172,7 +172,7 @@ export function History() {
   const [confirmDelete, setConfirmDelete] = createSignal<string | null>(null);
   const [search, setSearch] = createSignal("");
   const [filter, setFilter] = createSignal<FilterKind>("all");
-  // path of the mp4 currently open in the trim modal, or null
+  // path of the recording currently open in the trim modal, or null
   const [trimPath, setTrimPath] = createSignal<string | null>(null);
 
   // live-refresh the grid when a new capture lands so the user doesn't
@@ -481,10 +481,10 @@ export function History() {
                   </div>
                 </button>
                 <div class="tile-actions">
-                  <Show when={e.is_mp4}>
+                  <Show when={e.is_mp4 || e.is_gif}>
                     <button
                       class="icon-btn"
-                      title="trim"
+                      title={e.is_mp4 ? "trim or export gif" : "trim"}
                       onClick={() => setTrimPath(e.path)}
                     >
                       <Scissors size={12} stroke-width={1.5} />
