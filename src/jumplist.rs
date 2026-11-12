@@ -12,12 +12,13 @@ use std::os::windows::ffi::OsStrExt;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, PoisonError};
 use windows::core::{Interface, PCWSTR};
+use windows::Win32::Foundation::PROPERTYKEY;
 use windows::Win32::System::Com::StructuredStorage::InitPropVariantFromStringVector;
 use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
 };
 use windows::Win32::UI::Shell::Common::{IObjectArray, IObjectCollection};
-use windows::Win32::UI::Shell::PropertiesSystem::{IPropertyStore, PROPERTYKEY};
+use windows::Win32::UI::Shell::PropertiesSystem::IPropertyStore;
 use windows::Win32::UI::Shell::{
     DestinationList, EnumerableObjectCollection, ICustomDestinationList, IShellLinkW,
     SetCurrentProcessExplicitAppUserModelID, ShellLink,
@@ -120,7 +121,7 @@ fn register(tasks: &[CaptureTask]) -> windows::core::Result<()> {
         let collection: IObjectCollection =
             CoCreateInstance(&EnumerableObjectCollection, None, CLSCTX_INPROC_SERVER)?;
 
-        let exe = std::env::current_exe().map_err(|_| windows::core::Error::from_win32())?;
+        let exe = std::env::current_exe().map_err(|_| windows::core::Error::from_thread())?;
         let exe_wide = wide_path(&exe);
 
         for (arg, title, desc) in entries {

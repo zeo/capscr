@@ -332,7 +332,7 @@ mod bar {
         unsafe {
             let _ = SetWindowPos(
                 hwnd,
-                HWND_TOPMOST,
+                Some(HWND_TOPMOST),
                 x,
                 y,
                 0,

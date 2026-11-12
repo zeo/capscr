@@ -381,7 +381,7 @@ fn encrypt_win(plaintext: &str) -> Result<String> {
     let slice =
         unsafe { std::slice::from_raw_parts(out_blob.pbData, out_blob.cbData as usize).to_vec() };
     unsafe {
-        let _ = LocalFree(HLOCAL(out_blob.pbData as *mut _));
+        let _ = LocalFree(Some(HLOCAL(out_blob.pbData as *mut _)));
     }
     Ok(hex::encode(slice))
 }
@@ -420,9 +420,9 @@ fn decrypt_win(blob: &str) -> Result<String> {
     let plaintext_bytes =
         unsafe { std::slice::from_raw_parts(out_blob.pbData, out_blob.cbData as usize).to_vec() };
     unsafe {
-        let _ = LocalFree(HLOCAL(out_blob.pbData as *mut _));
+        let _ = LocalFree(Some(HLOCAL(out_blob.pbData as *mut _)));
         if !desc.is_null() {
-            let _ = LocalFree(HLOCAL(desc.0 as *mut _));
+            let _ = LocalFree(Some(HLOCAL(desc.0 as *mut _)));
         }
     }
     String::from_utf8(plaintext_bytes).map_err(|e| anyhow!("bad utf-8: {e}"))

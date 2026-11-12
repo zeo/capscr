@@ -88,25 +88,25 @@ fn ocr_image_bytes(image_bytes: &[u8]) -> anyhow::Result<String> {
         .map_err(|e| anyhow::anyhow!("Failed to write bytes: {:?}", e))?;
     writer
         .StoreAsync()?
-        .get()
+        .join()
         .map_err(|e| anyhow::anyhow!("Failed to store data: {:?}", e))?;
     writer
         .FlushAsync()?
-        .get()
+        .join()
         .map_err(|e| anyhow::anyhow!("Failed to flush stream: {:?}", e))?;
     stream
         .Seek(0)
         .map_err(|e| anyhow::anyhow!("Failed to seek stream: {:?}", e))?;
     let decoder = BitmapDecoder::CreateAsync(&stream)?
-        .get()
+        .join()
         .map_err(|e| anyhow::anyhow!("Failed to decode image: {:?}", e))?;
     let software_bitmap = decoder
         .GetSoftwareBitmapAsync()?
-        .get()
+        .join()
         .map_err(|e| anyhow::anyhow!("Failed to get software bitmap: {:?}", e))?;
     let result = engine
         .RecognizeAsync(&software_bitmap)?
-        .get()
+        .join()
         .map_err(|e| anyhow::anyhow!("Failed to run OCR: {:?}", e))?;
     Ok(result.Text()?.to_string())
 }

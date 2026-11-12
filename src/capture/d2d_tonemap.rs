@@ -99,7 +99,7 @@ pub fn capture_hdr_to_sdr_variant(
         D3D11CreateDevice(
             &adapter,
             D3D_DRIVER_TYPE_UNKNOWN,
-            None,
+            windows::Win32::Foundation::HMODULE::default(),
             D3D11_CREATE_DEVICE_BGRA_SUPPORT,
             None,
             D3D11_SDK_VERSION,

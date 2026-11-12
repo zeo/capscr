@@ -1,6 +1,5 @@
 use anyhow::{anyhow, Result};
 use image::RgbaImage;
-use windows::Win32::Foundation::HWND;
 use windows::Win32::Graphics::Gdi::{
     BitBlt, CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GdiFlush, GetDC,
     ReleaseDC, SelectObject, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, CAPTUREBLT, DIB_RGB_COLORS,
@@ -20,23 +19,14 @@ fn create_32bpp_dib(width: i32, height: i32) -> Option<(HBITMAP, *mut std::ffi::
     bi.bmiHeader.biCompression = BI_RGB.0;
 
     let mut bits_ptr: *mut std::ffi::c_void = std::ptr::null_mut();
-    let hbmp = unsafe {
-        CreateDIBSection(
-            windows::Win32::Graphics::Gdi::HDC::default(),
-            &bi,
-            DIB_RGB_COLORS,
-            &mut bits_ptr,
-            None,
-            0,
-        )
-    }
-    .ok()?;
+    let hbmp =
+        unsafe { CreateDIBSection(None, &bi, DIB_RGB_COLORS, &mut bits_ptr, None, 0) }.ok()?;
     if hbmp.is_invalid() {
         return None;
     }
     if bits_ptr.is_null() {
         unsafe {
-            let _ = DeleteObject(hbmp);
+            let _ = DeleteObject(hbmp.into());
         }
         return None;
     }
@@ -70,28 +60,28 @@ impl GdiRegionGrabber {
         }
 
         unsafe {
-            let screen_dc = GetDC(HWND::default());
+            let screen_dc = GetDC(None);
             if screen_dc.is_invalid() {
                 return Err(anyhow!("GetDC failed"));
             }
-            let mem_dc = CreateCompatibleDC(screen_dc);
+            let mem_dc = CreateCompatibleDC(Some(screen_dc));
             if mem_dc.is_invalid() {
-                ReleaseDC(HWND::default(), screen_dc);
+                ReleaseDC(None, screen_dc);
                 return Err(anyhow!("CreateCompatibleDC failed"));
             }
             let (bitmap, bits_ptr) = match create_32bpp_dib(width as i32, height as i32) {
                 Some(value) => value,
                 None => {
                     let _ = DeleteDC(mem_dc);
-                    ReleaseDC(HWND::default(), screen_dc);
+                    ReleaseDC(None, screen_dc);
                     return Err(anyhow!("create_32bpp_dib failed"));
                 }
             };
-            let old_bitmap = SelectObject(mem_dc, bitmap);
+            let old_bitmap = SelectObject(mem_dc, bitmap.into());
             if old_bitmap.is_invalid() {
-                let _ = DeleteObject(bitmap);
+                let _ = DeleteObject(bitmap.into());
                 let _ = DeleteDC(mem_dc);
-                ReleaseDC(HWND::default(), screen_dc);
+                ReleaseDC(None, screen_dc);
                 return Err(anyhow!("SelectObject failed"));
             }
 
@@ -118,7 +108,7 @@ impl GdiRegionGrabber {
                 0,
                 self.width as i32,
                 self.height as i32,
-                self.screen_dc,
+                Some(self.screen_dc),
                 self.x,
                 self.y,
                 windows::Win32::Graphics::Gdi::ROP_CODE(SRCCOPY.0 | CAPTUREBLT.0),
@@ -143,9 +133,9 @@ impl Drop for GdiRegionGrabber {
     fn drop(&mut self) {
         unsafe {
             SelectObject(self.mem_dc, self.old_bitmap);
-            let _ = DeleteObject(self.bitmap);
+            let _ = DeleteObject(self.bitmap.into());
             let _ = DeleteDC(self.mem_dc);
-            ReleaseDC(HWND::default(), self.screen_dc);
+            ReleaseDC(None, self.screen_dc);
         }
     }
 }
@@ -155,7 +145,8 @@ pub fn fast_gdi_capture(x: i32, y: i32, width: u32, height: u32) -> Result<RgbaI
 }
 
 use super::MonitorInfo;
-use windows::Win32::Foundation::{BOOL, LPARAM, RECT};
+use windows::core::BOOL;
+use windows::Win32::Foundation::{LPARAM, RECT};
 use windows::Win32::Graphics::Gdi::{
     EnumDisplayMonitors, GetMonitorInfoW, HMONITOR, MONITORINFOEXW,
 };
@@ -174,7 +165,7 @@ pub fn fast_list_monitors() -> Result<Vec<MonitorInfo>> {
 
         // EnumDisplayMonitors returns BOOL in windows-rs
         let result = EnumDisplayMonitors(
-            HDC::default(),
+            None,
             None,
             Some(monitor_enum_proc),
             LPARAM(&mut state as *mut MonitorEnumState as isize),

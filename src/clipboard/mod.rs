@@ -187,7 +187,7 @@ pub fn copy_file_to_clipboard(path: &Path) -> Result<()> {
 
         let ptr = GlobalLock(hglobal);
         if ptr.is_null() {
-            let _ = GlobalFree(hglobal);
+            let _ = GlobalFree(Some(hglobal));
             return Err(anyhow!("GlobalLock failed"));
         }
 
@@ -218,7 +218,7 @@ pub fn copy_file_to_clipboard(path: &Path) -> Result<()> {
             }
         }
         if !opened {
-            let _ = GlobalFree(hglobal);
+            let _ = GlobalFree(Some(hglobal));
             return Err(anyhow!(
                 "Clipboard occupied after {CLIPBOARD_MAX_RETRIES} retries"
             ));
@@ -227,7 +227,7 @@ pub fn copy_file_to_clipboard(path: &Path) -> Result<()> {
         let result = EmptyClipboard()
             .map_err(|e| anyhow!("EmptyClipboard failed: {e}"))
             .and_then(|_| {
-                SetClipboardData(CF_HDROP.0 as u32, HANDLE(hglobal.0))
+                SetClipboardData(CF_HDROP.0 as u32, Some(HANDLE(hglobal.0)))
                     .map_err(|e| anyhow!("SetClipboardData failed: {e}"))
             });
         let _ = CloseClipboard();
@@ -236,7 +236,7 @@ pub fn copy_file_to_clipboard(path: &Path) -> Result<()> {
             // on success the clipboard owns the allocation
             Ok(_) => Ok(()),
             Err(e) => {
-                let _ = GlobalFree(hglobal);
+                let _ = GlobalFree(Some(hglobal));
                 Err(e)
             }
         }

@@ -108,7 +108,6 @@ fn composite_at(dst: &mut RgbaImage, src: &RgbaImage, x: i32, y: i32) -> bool {
 #[cfg(windows)]
 mod windows_impl {
     use image::RgbaImage;
-    use windows::Win32::Foundation::HWND;
     use windows::Win32::Graphics::Gdi::{
         CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetDC, GetPixel, ReleaseDC,
         SelectObject, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HBITMAP, HDC,
@@ -136,7 +135,7 @@ mod windows_impl {
 
             // CopyIcon hands us an owned HICON we can pass to GetIconInfo
             // without racing against the cursor handle the OS might recycle.
-            let hicon = CopyIcon(info.hCursor).ok()?;
+            let hicon = CopyIcon(info.hCursor.into()).ok()?;
             // RAII so we never leak the icon on any early return below.
             struct IconGuard(windows::Win32::UI::WindowsAndMessaging::HICON);
             impl Drop for IconGuard {
@@ -158,7 +157,7 @@ mod windows_impl {
                 fn drop(&mut self) {
                     if !self.0.is_invalid() {
                         unsafe {
-                            let _ = DeleteObject(self.0);
+                            let _ = DeleteObject(self.0.into());
                         }
                     }
                 }
@@ -178,7 +177,7 @@ mod windows_impl {
                 };
                 let mut bmp = BITMAP::default();
                 let n = GetObjectW(
-                    bmp_handle,
+                    bmp_handle.into(),
                     std::mem::size_of::<BITMAP>() as i32,
                     Some(&mut bmp as *mut _ as *mut _),
                 );
@@ -202,7 +201,7 @@ mod windows_impl {
             // create a 32-bit DIB section, draw the cursor into it via
             // DrawIconEx (which handles AND-mask + XOR for arrow cursors and
             // alpha for modern Aero ones), then read the bits out.
-            let screen_dc = GetDC(HWND::default());
+            let screen_dc = GetDC(None);
             if screen_dc.is_invalid() {
                 return None;
             }
@@ -210,13 +209,13 @@ mod windows_impl {
             impl Drop for DcGuard {
                 fn drop(&mut self) {
                     unsafe {
-                        ReleaseDC(HWND::default(), self.0);
+                        ReleaseDC(None, self.0);
                     }
                 }
             }
             let _screen_guard = DcGuard(screen_dc);
 
-            let mem_dc = CreateCompatibleDC(screen_dc);
+            let mem_dc = CreateCompatibleDC(Some(screen_dc));
             if mem_dc.is_invalid() {
                 return None;
             }
@@ -241,13 +240,14 @@ mod windows_impl {
 
             let mut pixels_ptr: *mut std::ffi::c_void = std::ptr::null_mut();
             let dib =
-                CreateDIBSection(mem_dc, &bmi, DIB_RGB_COLORS, &mut pixels_ptr, None, 0).ok()?;
+                CreateDIBSection(Some(mem_dc), &bmi, DIB_RGB_COLORS, &mut pixels_ptr, None, 0)
+                    .ok()?;
             let _dib_guard = BmpGuard(dib);
             if pixels_ptr.is_null() {
                 return None;
             }
 
-            let old = SelectObject(mem_dc, dib);
+            let old = SelectObject(mem_dc, dib.into());
             if old.is_invalid() {
                 return None;
             }
@@ -294,7 +294,7 @@ mod windows_impl {
             // invisible cursor.
             let any_alpha = rgba.as_chunks::<4>().0.iter().any(|p| p[3] != 0);
             if !any_alpha {
-                let old_bmp = SelectObject(mem_dc, icon_info.hbmMask);
+                let old_bmp = SelectObject(mem_dc, icon_info.hbmMask.into());
                 let mut fallback = true;
                 if !old_bmp.is_invalid() {
                     for y in 0..height {

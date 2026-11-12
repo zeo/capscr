@@ -409,7 +409,7 @@ unsafe fn reapply_hooks(
     };
 
     if kbd_wanted && kbd.is_none() {
-        match SetWindowsHookExW(WH_KEYBOARD_LL, Some(hook_proc), hinstance, 0) {
+        match SetWindowsHookExW(WH_KEYBOARD_LL, Some(hook_proc), Some(hinstance), 0) {
             Ok(h) => *kbd = Some(h),
             Err(e) => tracing::error!("SetWindowsHookExW(WH_KEYBOARD_LL) failed: {e}"),
         }
@@ -420,7 +420,7 @@ unsafe fn reapply_hooks(
     }
 
     if mouse_wanted && mouse.is_none() {
-        match SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_hook_proc), hinstance, 0) {
+        match SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_hook_proc), Some(hinstance), 0) {
             Ok(h) => *mouse = Some(h),
             Err(e) => tracing::warn!("SetWindowsHookExW(WH_MOUSE_LL) failed: {e}"),
         }

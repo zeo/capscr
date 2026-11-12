@@ -399,7 +399,7 @@ pub mod windows_impl {
     fn post(msg: u32) {
         if let Some(hwnd) = *OVERLAY_HWND.lock().unwrap() {
             unsafe {
-                let _ = PostMessageW(HWND(hwnd as *mut _), msg, WPARAM(0), LPARAM(0));
+                let _ = PostMessageW(Some(HWND(hwnd as *mut _)), msg, WPARAM(0), LPARAM(0));
             }
         }
     }
@@ -450,7 +450,7 @@ pub mod windows_impl {
             region.height as i32 + b * 2,
             SWP_NOZORDER | SWP_NOACTIVATE,
         );
-        let _ = InvalidateRect(hwnd, None, false);
+        let _ = InvalidateRect(Some(hwnd), None, false);
         fire(FrameEvent::Moved(region));
     }
 
@@ -499,7 +499,7 @@ pub mod windows_impl {
                 region.height as i32 + b * 2,
                 None,
                 None,
-                hinstance,
+                Some(hinstance),
                 None,
             ) {
                 Ok(h) => h,
@@ -517,7 +517,7 @@ pub mod windows_impl {
             *OVERLAY_HWND.lock().unwrap() = Some(hwnd.0 as isize);
             let _ = ShowWindow(hwnd, SW_SHOWNA);
             let _ = SetForegroundWindow(hwnd);
-            let _ = SetTimer(hwnd, FLASH_TIMER_ID, FLASH_INTERVAL_MS, None);
+            let _ = SetTimer(Some(hwnd), FLASH_TIMER_ID, FLASH_INTERVAL_MS, None);
 
             let mut msg = MSG::default();
             while RUNNING.load(Ordering::SeqCst) && !STOP_REQUESTED.load(Ordering::SeqCst) {
@@ -528,7 +528,7 @@ pub mod windows_impl {
                 DispatchMessageW(&msg);
             }
 
-            KillTimer(hwnd, FLASH_TIMER_ID).ok();
+            KillTimer(Some(hwnd), FLASH_TIMER_ID).ok();
             let _ = ShowWindow(hwnd, SW_HIDE);
             let _ = DestroyWindow(hwnd);
             clear_overlay_state();
@@ -556,7 +556,7 @@ pub mod windows_impl {
                 bottom,
             };
             FillRect(hdc, &rect, brush);
-            let _ = DeleteObject(brush);
+            let _ = DeleteObject(brush.into());
         };
         fill(0, 0, w, h, KEY);
         let color = match mode() {
@@ -622,13 +622,13 @@ pub mod windows_impl {
                     FLASH_STATE.fetch_xor(true, Ordering::SeqCst);
                     // erase=false: paint fills the whole client, a white
                     // erase first would only add a flicker frame
-                    let _ = InvalidateRect(hwnd, None, false);
+                    let _ = InvalidateRect(Some(hwnd), None, false);
                 }
                 LRESULT(0)
             }
             WM_SET_MODE => {
                 FLASH_STATE.store(true, Ordering::SeqCst);
-                let _ = InvalidateRect(hwnd, None, false);
+                let _ = InvalidateRect(Some(hwnd), None, false);
                 LRESULT(0)
             }
             WM_SET_RECT => {
@@ -645,7 +645,7 @@ pub mod windows_impl {
                     _ => IDC_SIZENS,
                 };
                 if let Ok(cursor) = LoadCursorW(None, id) {
-                    SetCursor(cursor);
+                    SetCursor(Some(cursor));
                 }
                 LRESULT(1)
             }
