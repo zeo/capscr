@@ -296,6 +296,7 @@ mod bar {
         .shadow(false)
         .visible(false)
         .inner_size(BAR_W, BAR_H)
+        .additional_browser_args(crate::commands::WEBVIEW_BROWSER_ARGS)
         .build()?;
         let hwnd = HWND(window.hwnd()?.0 as *mut _);
         unsafe {

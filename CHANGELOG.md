@@ -4,6 +4,12 @@ format follows [keep-a-changelog](https://keepachangelog.com/en/1.1.0/) loosely.
 
 ## [Unreleased]
 
+### fixed
+- the windows recording bar opens again; since 0.5.57 its webview failed to start because it was built with different browser arguments from the other windows
+
+### changed
+- windows crate 0.62
+
 ## [0.6.0] - 2026-11-12
 
 ### removed
