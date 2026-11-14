@@ -65,7 +65,7 @@ jobs:
           components: clippy
 
       - name: Cache cargo
-        uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16
+        uses: Swatinem/rust-cache@eedcf2fb1c22f010a0eb66b92f378c110977f266
 
       - name: Install Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
@@ -142,7 +142,7 @@ jobs:
           toolchain: stable
 
       - name: Cache cargo
-        uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16
+        uses: Swatinem/rust-cache@eedcf2fb1c22f010a0eb66b92f378c110977f266
 
       - name: Install Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
@@ -248,7 +248,7 @@ jobs:
           components: clippy
 
       - name: Cache cargo
-        uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16
+        uses: Swatinem/rust-cache@eedcf2fb1c22f010a0eb66b92f378c110977f266
 
       - name: Install Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
