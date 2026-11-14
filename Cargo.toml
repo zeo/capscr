@@ -31,7 +31,7 @@ tauri-plugin-window-state = "2"
 tauri-plugin-single-instance = "2"
 
 # Global hotkeys (native, OS-event-driven via crossbeam channel)
-global-hotkey = "0.8"
+global-hotkey = "0.10"
 
 # Used to select between the hotkey-event channel and the reload-command
 # channel in the hotkey thread — replaces a 100ms busy-poll loop that drained
