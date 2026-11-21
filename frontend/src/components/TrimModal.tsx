@@ -1,5 +1,5 @@
 import { createSignal, onCleanup, onMount, Show } from "solid-js";
-import { convertFileSrc } from "@tauri-apps/api/core";
+import { fileSrc } from "../host";
 import { Film, Scissors, X } from "lucide-solid";
 import { api } from "../api";
 
@@ -161,7 +161,7 @@ export function TrimModal(props: {
           fallback={
             <img
               class="trim-video"
-              src={convertFileSrc(props.path)}
+              src={fileSrc(props.path)}
               alt={`recording preview for ${basename(props.path)}`}
             />
           }
@@ -169,7 +169,7 @@ export function TrimModal(props: {
           <video
             ref={video}
             class="trim-video"
-            src={convertFileSrc(props.path)}
+            src={fileSrc(props.path)}
             controls
             aria-label={`recording preview for ${basename(props.path)}`}
             onLoadedMetadata={onMeta}

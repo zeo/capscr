@@ -7,8 +7,7 @@ import {
   onMount,
   Show,
 } from "solid-js";
-import { listen, UnlistenFn } from "@tauri-apps/api/event";
-import { convertFileSrc } from "@tauri-apps/api/core";
+import { fileSrc, listen, type Unlisten } from "../host";
 import {
   Copy,
   CloudOff,
@@ -77,7 +76,7 @@ function ThumbImg(props: { path: string; alt: string }) {
     >
       <img
         class="tile-img"
-        src={convertFileSrc(thumb()!)}
+        src={fileSrc(thumb()!)}
         alt={props.alt}
         loading="lazy"
         decoding="async"
@@ -110,7 +109,7 @@ function ThumbVideo(props: { path: string }) {
     <video
       ref={target}
       class="tile-img"
-      src={shouldLoad() ? `${convertFileSrc(props.path)}#t=0.1` : undefined}
+      src={shouldLoad() ? `${fileSrc(props.path)}#t=0.1` : undefined}
       muted
       loop
       playsinline
@@ -179,7 +178,7 @@ export function History() {
   // have to click "reload" after every screenshot. Coalesce rapid bursts
   // (e.g. a GIF + sidecar landing back-to-back) into one refetch.
   let refreshTimer: ReturnType<typeof setTimeout> | null = null;
-  let unlisten: UnlistenFn | null = null;
+  let unlisten: Unlisten | null = null;
   onMount(() => {
     let disposed = false;
     void listen("capscr://capture-saved", () => {

@@ -234,81 +234,6 @@ textarea,
   border: 1px solid var(--edge);
 }
 
-.resize-handle {
-  position: fixed;
-  z-index: 2000;
-}
-
-.resize-handle.is-disabled {
-  pointer-events: none;
-}
-
-.resize-handle-n,
-.resize-handle-s {
-  left: 8px;
-  right: 8px;
-  height: 6px;
-}
-
-.resize-handle-e,
-.resize-handle-w {
-  top: 8px;
-  bottom: 8px;
-  width: 6px;
-}
-
-.resize-handle-n {
-  top: 0;
-  cursor: ns-resize;
-}
-
-.resize-handle-ne {
-  top: 0;
-  right: 0;
-  cursor: nesw-resize;
-}
-
-.resize-handle-e {
-  right: 0;
-  cursor: ew-resize;
-}
-
-.resize-handle-se {
-  right: 0;
-  bottom: 0;
-  cursor: nwse-resize;
-}
-
-.resize-handle-s {
-  bottom: 0;
-  cursor: ns-resize;
-}
-
-.resize-handle-sw {
-  bottom: 0;
-  left: 0;
-  cursor: nesw-resize;
-}
-
-.resize-handle-w {
-  left: 0;
-  cursor: ew-resize;
-}
-
-.resize-handle-nw {
-  top: 0;
-  left: 0;
-  cursor: nwse-resize;
-}
-
-.resize-handle-ne,
-.resize-handle-se,
-.resize-handle-sw,
-.resize-handle-nw {
-  width: 10px;
-  height: 10px;
-}
-
 /* no corner registration marks — kept the diagnostic-console rules
    without the gimmicky cross-hair ticks */
 
@@ -2657,6 +2582,10 @@ kbd {
   display: flex;
   align-items: center;
   justify-content: center;
+}
+
+.pin-drag-region.window-drag {
+  app-region: drag;
 }
 
 .pin-image {

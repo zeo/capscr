@@ -2,8 +2,9 @@
 import { describe, expect, it } from "vitest";
 import mainRs from "../../src/main.rs?raw";
 
+// host.ts wraps invoke itself and names no command
 const sources = Object.values(
-  import.meta.glob<string>(["./**/*.{ts,tsx}", "!./**/*.test.{ts,tsx}"], {
+  import.meta.glob<string>(["./**/*.{ts,tsx}", "!./**/*.test.{ts,tsx}", "!./host.ts"], {
     query: "?raw",
     import: "default",
     eager: true,
@@ -15,12 +16,7 @@ const invoked = sources.flatMap((text) =>
   [...text.matchAll(/\binvoke\b[^"(]*\(\s*"([a-z0-9_]+)"/g)].map((m) => m[1]),
 );
 
-const handlerBlock = mainRs.match(/generate_handler!\[([\s\S]*?)\]\)/)?.[1] ?? "";
-const handlers = handlerBlock
-  .split(/\r?\n/)
-  .map((line) => line.trim().replace(/,$/, ""))
-  .filter((line) => line && !line.startsWith("#["))
-  .map((path) => path.split("::").pop()!);
+const handlers = [...mainRs.matchAll(/json_command\(\s*"([a-z0-9_]+)"/g)].map((m) => m[1]);
 
 describe("frontend to backend command contract", () => {
   it("finds every invoke call by a literal command name", () => {

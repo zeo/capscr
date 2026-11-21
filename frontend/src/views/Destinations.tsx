@@ -1,6 +1,6 @@
 import { createResource, createSignal, For, Show } from "solid-js";
 import { Save, FolderOpen, Zap } from "lucide-solid";
-import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { dialog } from "../host";
 import { Section } from "../components/Section";
 import { api, AppConfig, ConnectionTestReport, UploadConfig } from "../api";
 import { configDirty, setConfigDirty } from "../dirty";
@@ -282,7 +282,7 @@ export function Destinations() {
                       data-variant="ghost"
                       data-size="xs"
                       onClick={async () => {
-                        const picked = await openDialog({
+                        const picked = await dialog.open({
                           multiple: false,
                           directory: false,
                           filters: [

@@ -1,7 +1,5 @@
 import { createEffect, createMemo, createSignal, For, onCleanup, onMount, Show } from "solid-js";
-import { getCurrentWindow, Window } from "@tauri-apps/api/window";
-import { convertFileSrc, invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { appWindow as win, fileSrc, invoke, listen } from "../host";
 import { api } from "../api";
 import {
   ArrowRight,
@@ -186,8 +184,6 @@ export function Editor() {
   let drag: Drag | null = null;
   let loadGeneration = 0;
 
-  const win = getCurrentWindow();
-
   const loaded = () => history() !== null;
   const snapshot = () => {
     const h = history();
@@ -284,11 +280,11 @@ export function Editor() {
     setIsHdrSource(baseIsHdr || sidecarIsHdr);
 
     const img = new Image();
-    // without cors the asset-protocol image taints the canvas and export throws
+    // without cors the files-origin image taints the canvas and export throws
     img.crossOrigin = "anonymous";
     // the query defeats the per-document image cache, which would otherwise
     // hand back the pre-save pixels when a just-saved file is reopened
-    img.src = `${convertFileSrc(path)}?v=${Date.now()}`;
+    img.src = `${fileSrc(path)}?v=${Date.now()}`;
     try {
       await img.decode();
     } catch (e) {
@@ -506,8 +502,7 @@ export function Editor() {
   };
 
   const sendEditorExitDecision = (requestId: string, allowed: boolean) => {
-    void win
-      .emitTo({ kind: "Window", label: "hub" }, "capscr://editor-exit-decision", { requestId, allowed })
+    void invoke<void>("answer_editor_exit", { requestId, allowed })
       .catch((error) => {
         setStatus({ tone: "err", msg: `close response failed: ${error}` });
       });
@@ -526,11 +521,11 @@ export function Editor() {
   // not discarded silently
   let appExitApproved = false;
   let pendingExitRequestId: string | null = null;
-  let closeUnlisten: (() => void) | null = null;
+  let closeUnlisten: (() => Promise<void>) | null = null;
 
+  // the host refuses a close while the guard is on and asks here instead
   const registerCloseGuard = async () => {
-    closeUnlisten = await win.onCloseRequested(async (ev) => {
-      ev.preventDefault();
+    const stopListening = await listen("capscr://editor-close-requested", async () => {
       if (!appExitApproved && !confirmDiscardEdits()) return;
       appExitApproved = true;
       if (await closeApprovedEditor()) return;
@@ -538,6 +533,11 @@ export function Editor() {
       pendingExitRequestId = null;
       if (requestId) sendEditorExitDecision(requestId, false);
     });
+    await invoke<void>("set_editor_close_guard", { guarded: true });
+    closeUnlisten = () => {
+      stopListening();
+      return invoke<void>("set_editor_close_guard", { guarded: false });
+    };
   };
 
   const closeApprovedEditor = async () => {
@@ -547,7 +547,7 @@ export function Editor() {
       if (stopCloseGuard) await stopCloseGuard();
       await win.close();
       await new Promise((resolve) => setTimeout(resolve, 250));
-      if (!(await Window.getByLabel("editor"))) return true;
+      if (!(await win.labels()).includes("editor")) return true;
       setStatus({ tone: "err", msg: "editor window did not close" });
     } catch (error) {
       setStatus({ tone: "err", msg: `editor close failed: ${error}` });
@@ -566,7 +566,7 @@ export function Editor() {
     void registerCloseGuard()
       .then(() => {
         if (!disposed) return;
-        closeUnlisten?.();
+        void closeUnlisten?.();
         closeUnlisten = null;
       })
       .catch((error) => {
@@ -576,7 +576,7 @@ export function Editor() {
       });
     onCleanup(() => {
       disposed = true;
-      closeUnlisten?.();
+      void closeUnlisten?.();
       closeUnlisten = null;
     });
   });
@@ -584,31 +584,28 @@ export function Editor() {
   onMount(() => {
     let disposed = false;
     let unlisten: (() => void) | undefined;
-    void win
-      .listen<EditorExitRequest>("capscr://editor-exit-request", async (event) => {
-        try {
-          if (isDirty()) {
-            await win.show();
-            await win.unminimize();
-            await win.setFocus();
-          }
-          if (!confirmDiscardEdits()) {
-            sendEditorExitDecision(event.payload.requestId, false);
-            return;
-          }
-          appExitApproved = true;
-          pendingExitRequestId = event.payload.requestId;
-          await win.close();
-          return;
-        } catch (error) {
-          if (!disposed) {
-            setStatus({ tone: "err", msg: `editor close failed: ${error}` });
-          }
+    void listen<EditorExitRequest>("capscr://editor-exit-request", async (event) => {
+      try {
+        if (isDirty()) {
+          await win.focus();
         }
-        appExitApproved = false;
-        pendingExitRequestId = null;
-        sendEditorExitDecision(event.payload.requestId, false);
-      })
+        if (!confirmDiscardEdits()) {
+          sendEditorExitDecision(event.payload.requestId, false);
+          return;
+        }
+        appExitApproved = true;
+        pendingExitRequestId = event.payload.requestId;
+        await win.close();
+        return;
+      } catch (error) {
+        if (!disposed) {
+          setStatus({ tone: "err", msg: `editor close failed: ${error}` });
+        }
+      }
+      appExitApproved = false;
+      pendingExitRequestId = null;
+      sendEditorExitDecision(event.payload.requestId, false);
+    })
       .then((stopListening) => {
         if (disposed) {
           stopListening();

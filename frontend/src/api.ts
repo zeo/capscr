@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "./host";
 
 export type CaptureMode = "region" | "window" | "fullscreen" | "active-monitor";
 export type PostAction =

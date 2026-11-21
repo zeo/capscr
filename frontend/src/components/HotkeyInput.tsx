@@ -1,5 +1,5 @@
 import { createSignal, For, onCleanup, Show } from "solid-js";
-import { listen, UnlistenFn } from "@tauri-apps/api/event";
+import { listen, type Unlisten } from "../host";
 import { X } from "lucide-solid";
 import {
   splitHotkey,
@@ -41,7 +41,7 @@ export function HotkeyInput(props: Props) {
   const [capturing, setCapturing] = createSignal(false);
   const [warning, setWarning] = createSignal<string | null>(null);
 
-  let unlisten: UnlistenFn | null = null;
+  let unlisten: Unlisten | null = null;
   let escHandler: ((e: KeyboardEvent) => void) | null = null;
   let mousedownHandler: ((e: MouseEvent) => void) | null = null;
 

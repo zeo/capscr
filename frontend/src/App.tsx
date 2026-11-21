@@ -1,8 +1,5 @@
 import { createEffect, createResource, createSignal, For, lazy, Match, onCleanup, onMount, Show, Suspense, Switch } from "solid-js";
-import { listen, TauriEvent, UnlistenFn } from "@tauri-apps/api/event";
-import { getCurrentWindow, Window } from "@tauri-apps/api/window";
-import { writeText } from "@tauri-apps/plugin-clipboard-manager";
-import { openUrl } from "@tauri-apps/plugin-opener";
+import { appWindow as win, invoke, listen, opener, windowLabel, type Unlisten } from "./host";
 import { Copy, ExternalLink, Trash2, X, Download } from "lucide-solid";
 import { Titlebar } from "./components/Titlebar";
 import { api, type AppConfig, type CaptureMode, HotkeyDiagnostics, UpdateInfo } from "./api";
@@ -70,7 +67,7 @@ const TABS: Tab[] = [
 ];
 
 export function App() {
-  const label = getCurrentWindow().label;
+  const label = windowLabel();
   createEffect(() => {
     const theme = config()?.ui.theme;
     if (theme) document.documentElement.dataset.theme = theme.toLowerCase();
@@ -149,11 +146,10 @@ function Hub() {
   };
   onCleanup(stopTick);
 
-  const win = getCurrentWindow();
   const active = () => tab().id;
 
   let nextId = 1;
-  const unlisteners: UnlistenFn[] = [];
+  const unlisteners: Unlisten[] = [];
   const toastTimers: ReturnType<typeof setTimeout>[] = [];
 
   // cap so error storms (network down, upload retry loops, etc.) can't pile
@@ -183,8 +179,7 @@ function Hub() {
   };
 
   const confirmEditorExit = async () => {
-    const editor = await Window.getByLabel("editor");
-    if (!editor) return true;
+    if (!(await win.labels()).includes("editor")) return true;
 
     const requestId = crypto.randomUUID();
     let resolveDecision!: (allowed: boolean) => void;
@@ -199,7 +194,7 @@ function Hub() {
       resolveDecision(allowed);
     };
 
-    const stopDecision = await win.listen<EditorExitDecision>(
+    const stopDecision = await listen<EditorExitDecision>(
       "capscr://editor-exit-decision",
       (event) => {
         if (event.payload.requestId === requestId) {
@@ -207,21 +202,19 @@ function Hub() {
         }
       },
     );
-    let stopDestroyed: UnlistenFn | undefined;
+    let stopDestroyed: Unlisten | undefined;
     let timeout: ReturnType<typeof setTimeout> | undefined;
     try {
-      stopDestroyed = await editor.once(TauriEvent.WINDOW_DESTROYED, () => finish(true));
-      if (!(await Window.getByLabel("editor"))) return true;
+      stopDestroyed = await win.onClosed((closed) => {
+        if (closed === "editor") finish(true);
+      });
+      if (!(await win.labels()).includes("editor")) return true;
 
       timeout = setTimeout(() => {
         timedOut = true;
         finish(false);
       }, 120_000);
-      await win.emitTo(
-        { kind: "Window", label: "editor" },
-        "capscr://editor-exit-request",
-        { requestId },
-      );
+      await invoke<void>("request_editor_exit", { requestId });
       const allowed = await decision;
       if (timedOut) throw new Error("editor did not respond; action cancelled");
       return allowed;
@@ -385,19 +378,14 @@ function Hub() {
     window.addEventListener("keydown", onKey);
     unlisteners.push(() => window.removeEventListener("keydown", onKey));
 
-    const dragUnlisten = await win.onDragDropEvent(async (e) => {
-      const payload = e.payload;
-      if (payload.type === "enter" || payload.type === "over") {
-        setDragOver(true);
-      } else if (payload.type === "leave") {
-        setDragOver(false);
-      } else if (payload.type === "drop") {
+    unlisteners.push(
+      await win.onFileHover(setDragOver),
+      await win.onFileDrop(async (paths) => {
         setDragOver(false);
         // cap concurrent uploads so dragging 50 files onto the window doesn't
         // melt the UI thread. Anything over the cap is rejected with a single
         // explanatory toast — the user can re-drop the remainder.
         const MAX_BATCH = 5;
-        const paths = payload.paths;
         const accepted = paths.slice(0, MAX_BATCH);
         const overflow = paths.length - accepted.length;
         if (overflow > 0) {
@@ -413,9 +401,8 @@ function Hub() {
             pushToast("upload", String(err));
           }
         }
-      }
-    });
-    unlisteners.push(dragUnlisten);
+      }),
+    );
   });
 
   onCleanup(() => unlisteners.forEach((u) => u()));
@@ -530,7 +517,7 @@ function Hub() {
       const message = String(e);
       pushToast("update", message);
       if (message.includes("not installed")) {
-        void openUrl(RELEASES_URL);
+        void opener.openUrl(RELEASES_URL);
       }
       setUpdating(false);
     } finally {
@@ -742,7 +729,7 @@ function Hub() {
               class="btn"
               data-size="xs"
               onClick={() =>
-                void openUrl("https://extensions.gnome.org/extension/615/appindicator-support/")
+                void opener.openUrl("https://extensions.gnome.org/extension/615/appindicator-support/")
               }
             >
               get extension
@@ -798,7 +785,7 @@ function Hub() {
                   class="btn"
                   data-size="xs"
                   onClick={() =>
-                    void openUrl(updateInfo()!.download_url ?? RELEASES_URL)
+                    void opener.openUrl(updateInfo()!.download_url ?? RELEASES_URL)
                   }
                   title={
                     updateInfo()!.install_kind === "deb"
@@ -1011,7 +998,7 @@ function Hub() {
                   <button
                     class="btn"
                     data-size="xs"
-                    onClick={() => writeText(u.url).catch(() => pushToast("err", "clipboard busy — try again"))}
+                    onClick={() => navigator.clipboard.writeText(u.url).catch(() => pushToast("err", "clipboard busy, try again"))}
                   >
                     <Copy size={11} stroke-width={1.5} />
                     copy
@@ -1020,7 +1007,7 @@ function Hub() {
                     class="btn"
                     data-variant="ghost"
                     data-size="xs"
-                    onClick={() => void openUrl(u.url)}
+                    onClick={() => void opener.openUrl(u.url)}
                   >
                     <ExternalLink size={11} stroke-width={1.5} />
                     open
@@ -1031,7 +1018,7 @@ function Hub() {
                       data-variant="ghost"
                       data-size="xs"
                       title={u.deleteUrl!}
-                      onClick={() => writeText(u.deleteUrl!).catch(() => pushToast("err", "clipboard busy — try again"))}
+                      onClick={() => navigator.clipboard.writeText(u.deleteUrl!).catch(() => pushToast("err", "clipboard busy, try again"))}
                     >
                       <Trash2 size={11} stroke-width={1.5} />
                       copy del url

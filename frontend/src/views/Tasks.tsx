@@ -1,5 +1,5 @@
 import { createResource, createSignal, For, onCleanup, Show } from "solid-js";
-import { listen } from "@tauri-apps/api/event";
+import { listen } from "../host";
 import { Plus, Terminal, Trash2, Zap } from "lucide-solid";
 import { api, type CaptureTask, type HotkeyDiagnostics } from "../api";
 import { HotkeyInput } from "../components/HotkeyInput";

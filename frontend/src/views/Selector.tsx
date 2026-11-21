@@ -1,5 +1,5 @@
 import { onCleanup, onMount } from "solid-js";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "../host";
 import { aspectTarget } from "./selection";
 
 interface WindowRect {

@@ -8,7 +8,7 @@ import {
   ExternalLink,
   SlidersHorizontal,
 } from "lucide-solid";
-import { openUrl } from "@tauri-apps/plugin-opener";
+import { opener } from "../host";
 import { Section } from "../components/Section";
 import {
   api,
@@ -467,7 +467,7 @@ export function Marketplace() {
                                 class="btn"
                                 data-variant="ghost"
                                 data-size="xs"
-                                onClick={() => void openUrl(entry.homepage)}
+                                onClick={() => void opener.openUrl(entry.homepage)}
                                 title={entry.homepage}
                               >
                                 <ExternalLink size={11} stroke-width={1.5} />

@@ -1,7 +1,5 @@
 import { createSignal, onCleanup, onMount, Show } from "solid-js";
-import { getCurrentWindow } from "@tauri-apps/api/window";
-import { LogicalSize } from "@tauri-apps/api/dpi";
-import { convertFileSrc } from "@tauri-apps/api/core";
+import { appWindow, fileSrc } from "../host";
 import { X } from "lucide-solid";
 import { api } from "../api";
 
@@ -15,11 +13,10 @@ export function PinView(props: { label: string }) {
   // path has to reach a reveal, or a failed load leaves an invisible window the
   // user can't find to close.
   const reveal = async (w?: number, h?: number) => {
-    const win = getCurrentWindow();
     if (w && h) {
-      await win.setSize(new LogicalSize(w, h)).catch(() => {});
+      await appWindow.setSize(w, h).catch(() => {});
     }
-    await win.show().catch(() => {});
+    await appWindow.show().catch(() => {});
   };
 
   onMount(() => {
@@ -52,7 +49,7 @@ export function PinView(props: { label: string }) {
           setError("couldn't load this pin's image");
           reveal(320, 120);
         };
-        img.src = convertFileSrc(path);
+        img.src = fileSrc(path);
       })
       .catch((e) => {
         console.error("Failed to load pinned image path:", e);
@@ -62,11 +59,11 @@ export function PinView(props: { label: string }) {
   });
 
   const closePin = () => {
-    getCurrentWindow().close();
+    void appWindow.close();
   };
 
   // on wlroots the pin is a layer-shell surface the compositor won't move, so
-  // data-tauri-drag-region does nothing; drive the move ourselves through
+  // a window drag region does nothing; drive the move ourselves through
   // pin_set_position. off (false) everywhere else, where the compositor drags.
   const [manualDrag, setManualDrag] = createSignal(false);
   onMount(() => {
@@ -114,14 +111,14 @@ export function PinView(props: { label: string }) {
       onMouseLeave={() => setHovered(false)}
     >
       <div
-        {...(manualDrag() ? {} : { "data-tauri-drag-region": true })}
         onPointerDown={manualDrag() ? startManualDrag : undefined}
         class="pin-drag-region"
+        classList={{ "window-drag": !manualDrag() }}
         style={{ opacity: opacity() }}
       >
         {imagePath() ? (
           <img
-            src={convertFileSrc(imagePath()!)}
+            src={fileSrc(imagePath()!)}
             alt="pinned"
             class="pin-image"
             draggable={false}

@@ -1,5 +1,5 @@
 import { createResource, createSignal, For, Match, onCleanup, Show, Switch } from "solid-js";
-import { listen } from "@tauri-apps/api/event";
+import { listen } from "../host";
 import { HotkeyInput } from "../components/HotkeyInput";
 import { Section } from "../components/Section";
 import {
