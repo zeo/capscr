@@ -43,15 +43,17 @@ Settings live in `%APPDATA%\capscr\capscr\config\config.toml` or `~/.config/caps
 
 ## build from source
 
-Rust 1.97+, Node 22.12+, MSVC build tools on Windows or the webkit2gtk stack on Linux.
+Rust 1.97+, Node 22.12+, MSVC build tools on Windows, and a ceri checkout at `../../hAugust/ceri`.
 
 ```sh
 git clone https://github.com/zeo/capscr.git
 cd capscr
 npm --prefix frontend ci
-cargo install tauri-cli --version "^2" --locked
-cargo tauri build
+npm --prefix frontend run build
+cargo build --release
 ```
+
+A debug build loads the pages from the Vite dev server, so run `npm --prefix frontend run dev` next to `cargo run`.
 
 Debian/Ubuntu build dependencies:
 

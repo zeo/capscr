@@ -15,7 +15,7 @@ short version: fork, branch, build, PR. read on for the specifics.
 - new big dependencies. capscr ships a small binary by design — adding `serde_yaml` to read a config that's already TOML is a no.
 - features that already have a plugin shape. e.g. "auto-OCR every capture" should land as a plugin, not in core.
 - code style refactors that don't change behaviour. land them with a feature change, not on their own.
-- migrations to other languages, build systems, or frontend frameworks. solid + tauri is what we have.
+- migrations to other languages, build systems, or frontend frameworks. solid + ceri is what we have.
 
 ## dev loop
 
@@ -32,11 +32,13 @@ npm --prefix frontend ci
 npm --prefix frontend run build    # tsc --noEmit && vite build
 npm --prefix frontend test         # vitest
 
-# dev run (Rust + Vite + HMR)
-cargo tauri dev
+# dev run: a debug build loads the pages from the vite dev server
+npm --prefix frontend run dev
+cargo run
 
-# release build (needs signing env loaded — see README)
-cargo tauri build
+# release build, with the pages compiled in
+npm --prefix frontend run build
+cargo build --release
 ```
 
 ## commits + PRs

@@ -15,7 +15,7 @@
 - [ ] `cargo test --bin capscr` passes
 - [ ] `npm --prefix frontend run build` clean
 - [ ] `npm --prefix frontend test` passes
-- [ ] `cargo tauri dev` — manually exercised the affected path
+- [ ] `cargo run`: manually exercised the affected path
 
 ## screenshots (UI changes only)
 
