@@ -216,6 +216,7 @@ pub async fn delete_remote_upload(
             &window,
             "delete from host",
             format!("Delete {} from {host}? This can't be undone.", entry.url),
+            ("delete", "keep"),
         );
         if !confirmed {
             return Ok(false);
@@ -384,6 +385,7 @@ pub async fn test_upload_connection(
                              with the server's own fingerprint (ssh-keygen -lf on its host key) \
                              before trusting it. Uploads only connect to trusted keys."
                         ),
+                        ("trust key", "cancel"),
                     )
                 })
             }

@@ -21,14 +21,22 @@ pub(crate) fn window_geometry_path(label: &str) -> Option<PathBuf> {
     Some(dirs.data_dir().join(format!("window-{label}")))
 }
 
-// a native ok or cancel question owned by a window
-pub(crate) fn confirm(app: &AppHandle, window: &str, title: &str, text: String) -> bool {
+// a native question owned by a window, its two buttons named
+pub(crate) fn confirm(
+    app: &AppHandle,
+    window: &str,
+    title: &str,
+    text: String,
+    (accept, refuse): (&str, &str),
+) -> bool {
     let dialog = ceri::MessageDialog {
         title: title.to_string(),
         text,
         level: ceri::MessageLevel::Warning,
         buttons: ceri::MessageButtons::OkCancel,
         owner: window_handle(app, window),
+        ok_label: Some(accept.to_string()),
+        cancel_label: Some(refuse.to_string()),
     };
     dialog.show().unwrap_or_else(|error| {
         tracing::warn!("the '{title}' dialog failed: {error}");

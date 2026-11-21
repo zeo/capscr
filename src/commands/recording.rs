@@ -172,15 +172,23 @@ fn download_verified_ffmpeg(
     Err(anyhow::anyhow!("ffmpeg binary not found in zip archive"))
 }
 
-// an informational question with no owner window; false when it cannot be shown
+// an informational question with no owner window, its buttons named or plain; false when
+// it cannot be shown
 #[cfg(any(windows, target_os = "linux"))]
-fn ffmpeg_dialog(title: &str, text: &str, buttons: ceri::MessageButtons) -> bool {
+fn ffmpeg_dialog(
+    title: &str,
+    text: &str,
+    buttons: ceri::MessageButtons,
+    labels: Option<(&str, &str)>,
+) -> bool {
     let dialog = ceri::MessageDialog {
         title: title.to_string(),
         text: text.to_string(),
         level: ceri::MessageLevel::Info,
         buttons,
         owner: None,
+        ok_label: labels.map(|(accept, _)| accept.to_string()),
+        cancel_label: labels.map(|(_, refuse)| refuse.to_string()),
     };
     dialog.show().unwrap_or_else(|error| {
         tracing::warn!("the '{title}' dialog failed: {error}");
@@ -206,7 +214,12 @@ fn handle_missing_ffmpeg() -> anyhow::Result<()> {
 
     // the hosted build is x86_64 only; other arches get the instructions
     if LINUX_FFMPEG_SHA256.is_empty() || !cfg!(target_arch = "x86_64") {
-        ffmpeg_dialog("FFmpeg Required", instructions, ceri::MessageButtons::Ok);
+        ffmpeg_dialog(
+            "FFmpeg Required",
+            instructions,
+            ceri::MessageButtons::Ok,
+            None,
+        );
         return Ok(());
     }
     if FFMPEG_DOWNLOADING.load(Ordering::SeqCst) {
@@ -222,9 +235,10 @@ fn handle_missing_ffmpeg() -> anyhow::Result<()> {
          Download a verified static FFmpeg (~30 MB, used only by capscr), or \
          install it with your package manager instead?",
         ceri::MessageButtons::OkCancel,
+        Some(("Download", "Show instructions")),
     );
     if !download {
-        ffmpeg_dialog("Install FFmpeg", instructions, ceri::MessageButtons::Ok);
+        ffmpeg_dialog("Install FFmpeg", instructions, ceri::MessageButtons::Ok, None);
         return Ok(());
     }
     let download_guard = match FfmpegDownloadGuard::begin() {
@@ -272,6 +286,7 @@ fn handle_missing_ffmpeg() -> anyhow::Result<()> {
         "FFmpeg Required",
         "Recording MP4 requires FFmpeg, which was not found on your system.\n\nWould you like to automatically download and configure it?",
         ceri::MessageButtons::YesNo,
+        None,
     );
 
     if is_confirmed {

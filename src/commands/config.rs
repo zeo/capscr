@@ -217,6 +217,7 @@ pub async fn set_output_dir(
                 "capscr will save, list, upload and delete captures in {}.",
                 directory.display()
             ),
+            ("use this folder", "keep current"),
         );
         if !confirmed {
             return Ok(None);
