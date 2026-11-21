@@ -17,8 +17,8 @@ use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
 use anyhow::{anyhow, Result};
+use ceri::AppHandle;
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Manager};
 use zbus::zvariant::{OwnedObjectPath, OwnedValue, Value};
 
 use crate::capture::portal_request;
@@ -266,7 +266,7 @@ fn spawn_listeners(conn: &zbus::blocking::Connection, session: &OwnedObjectPath)
                     continue;
                 }
                 let Some(app) = APP.get() else { continue };
-                let state = app.state::<crate::state::AppState>();
+                let state = crate::state::app_state();
                 if state
                     .hotkeys_disabled
                     .load(std::sync::atomic::Ordering::SeqCst)

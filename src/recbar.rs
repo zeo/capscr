@@ -4,11 +4,11 @@
 use crate::capture::Rectangle;
 use crate::config::CaptureTask;
 use crate::recording::PauseClock;
-use crate::state::AppState;
+use crate::state::app_state;
+use ceri::AppHandle;
 use serde::Serialize;
 use std::sync::Mutex;
 use std::time::Instant;
-use tauri::{AppHandle, Emitter, Manager};
 
 #[cfg(windows)]
 use crate::overlay::recording::{windows_impl as frame, FrameEvent, FrameMode};
@@ -62,7 +62,7 @@ fn snapshot() -> BarState {
 }
 
 fn publish(app: &AppHandle) {
-    let _ = app.emit_to(LABEL, "recbar://state", snapshot());
+    app.emit_to(LABEL, "recbar://state", snapshot());
 }
 
 pub fn armed_task_id() -> Option<String> {
@@ -79,13 +79,7 @@ fn moved(app: &AppHandle, region: Rectangle) {
     if let Some(s) = SESSION.lock().unwrap().as_mut() {
         s.region = region;
     }
-    if let Some(recorder) = app
-        .state::<AppState>()
-        .gif_recorder
-        .lock()
-        .unwrap()
-        .as_ref()
-    {
+    if let Some(recorder) = app_state().gif_recorder.lock().unwrap().as_ref() {
         recorder.set_region(region);
     }
     place_bar(region);
@@ -160,13 +154,7 @@ pub fn set_paused(app: &AppHandle, paused: bool) {
         };
         clock.update(paused, Instant::now());
     }
-    if let Some(recorder) = app
-        .state::<AppState>()
-        .gif_recorder
-        .lock()
-        .unwrap()
-        .as_ref()
-    {
+    if let Some(recorder) = app_state().gif_recorder.lock().unwrap().as_ref() {
         recorder.set_paused(paused);
     }
     #[cfg(windows)]
@@ -204,29 +192,23 @@ pub fn finish(app: &AppHandle) {
     publish(app);
 }
 
-#[tauri::command]
 pub fn recbar_status() -> BarState {
     snapshot()
 }
 
-#[tauri::command]
 pub fn recbar_record(app: AppHandle) {
-    // starting the recorder blocks; commands without async run on the main thread
-    std::thread::spawn(move || record(&app));
+    record(&app);
 }
 
-#[tauri::command]
 pub fn recbar_pause(app: AppHandle, paused: bool) {
     set_paused(&app, paused);
 }
 
-#[tauri::command]
 pub fn recbar_cancel(app: AppHandle) {
     cancel(&app);
 }
 
 // resizes the frame around its centre; 0x0 fills the monitor it sits on
-#[tauri::command]
 pub fn recbar_preset(width: u32, height: u32) {
     #[cfg(windows)]
     {
@@ -268,44 +250,50 @@ mod bar {
     use std::sync::atomic::{AtomicIsize, Ordering};
     use windows::Win32::Foundation::{HWND, RECT};
     use windows::Win32::UI::WindowsAndMessaging::{
-        GetWindowRect, SetWindowDisplayAffinity, SetWindowPos, ShowWindowAsync, HWND_TOPMOST,
-        SWP_ASYNCWINDOWPOS, SWP_NOACTIVATE, SWP_NOSIZE, SWP_SHOWWINDOW, SW_HIDE,
-        WDA_EXCLUDEFROMCAPTURE,
+        GetWindowRect, SetWindowPos, ShowWindowAsync, HWND_TOPMOST, SWP_ASYNCWINDOWPOS,
+        SWP_NOACTIVATE, SWP_NOSIZE, SWP_SHOWWINDOW, SW_HIDE,
     };
 
     // logical size; keep in sync with .recbar-wide in styles.css
-    const BAR_W: f64 = 300.0;
-    const BAR_H: f64 = 36.0;
+    const BAR_W: u32 = 300;
+    const BAR_H: u32 = 36;
 
-    // read once on the main thread; tauri's hwnd() getter blocks on it
+    // read once the window is open, so the frame thread never waits on the loop
     static BAR_HWND: AtomicIsize = AtomicIsize::new(0);
 
     // built hidden at startup so the bar is up the moment a frame arms
-    pub fn prewarm(app: &tauri::App) -> tauri::Result<()> {
-        let window = tauri::WebviewWindowBuilder::new(
-            app,
-            LABEL,
-            tauri::WebviewUrl::App("recbar.html".into()),
-        )
-        .title("capscr recording")
-        .decorations(false)
-        .resizable(false)
-        .always_on_top(true)
-        .skip_taskbar(true)
-        .focused(false)
-        .shadow(false)
-        .visible(false)
-        .inner_size(BAR_W, BAR_H)
-        .additional_browser_args(crate::commands::WEBVIEW_BROWSER_ARGS)
-        .build()?;
-        let hwnd = HWND(window.hwnd()?.0 as *mut _);
-        unsafe {
-            if let Err(error) = SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE) {
-                tracing::warn!("recbar capture exclusion unavailable: {error}");
-            }
+    pub fn prewarm(app: &AppHandle) {
+        let Some(windows) = app.windows() else {
+            return;
+        };
+        windows.open(ceri::WindowConfig {
+            label: LABEL.to_string(),
+            title: "capscr recording".to_string(),
+            width: BAR_W,
+            height: BAR_H,
+            minimum_width: 1,
+            minimum_height: 1,
+            start_url: "/recbar.html".to_string(),
+            decorations: false,
+            resizable: false,
+            visible: false,
+            always_on_top: true,
+            skip_taskbar: true,
+            shadow: false,
+            focused: false,
+            // keeps the bar out of the recording it controls
+            content_protected: true,
+            ..ceri::WindowConfig::default()
+        });
+    }
+
+    pub fn opened(app: &AppHandle) {
+        let handle = app
+            .windows()
+            .and_then(|windows| windows.state(LABEL)?.handle);
+        if let Some(ceri::NativeHandle::Win32 { hwnd }) = handle {
+            BAR_HWND.store(hwnd, Ordering::SeqCst);
         }
-        BAR_HWND.store(hwnd.0 as isize, Ordering::SeqCst);
-        Ok(())
     }
 
     fn hwnd() -> Option<HWND> {
@@ -353,6 +341,6 @@ mod bar {
 }
 
 #[cfg(windows)]
-pub use bar::prewarm;
-#[cfg(windows)]
 use bar::{hide_bar, place_bar};
+#[cfg(windows)]
+pub use bar::{opened, prewarm};

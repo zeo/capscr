@@ -1,11 +1,9 @@
 use super::*;
 
-#[tauri::command]
-pub fn get_config(state: State<AppState>) -> Result<Config, String> {
+pub fn get_config(state: &AppState) -> Result<Config, String> {
     Ok(state.config.lock().unwrap().clone())
 }
 
-#[tauri::command]
 pub fn get_default_config() -> Config {
     Config::default()
 }
@@ -60,7 +58,6 @@ pub(crate) fn bind_backend_secret_references(
 /// cheap-ish probe: reads PNG chunks until the `cICP` chunk or `IDAT`. The
 /// editor calls this on load to know whether to warn the user that edits
 /// will flatten HDR to SDR. Returns false on any read error.
-#[tauri::command]
 pub fn is_hdr_capture(path: String) -> bool {
     let path = std::path::PathBuf::from(path);
     crate::capture::read_cicp(&path)
@@ -68,12 +65,7 @@ pub fn is_hdr_capture(path: String) -> bool {
         .unwrap_or(false)
 }
 
-#[tauri::command]
-pub fn set_config(
-    mut config: Config,
-    app: AppHandle,
-    state: State<AppState>,
-) -> Result<Config, String> {
+pub fn set_config(mut config: Config, app: AppHandle, state: &AppState) -> Result<Config, String> {
     {
         let mut stored = state.config.lock().unwrap();
         // encrypted references are backend-owned and never accepted from ipc
@@ -86,10 +78,9 @@ pub fn set_config(
             .load(std::sync::atomic::Ordering::SeqCst);
         pin_backend_owned(&mut config, &stored);
         config.validate().map_err(|e| e.to_string())?;
-        let _pending_mutation =
-            PendingFileMutation::begin(&app).map_err(|error| error.to_string())?;
-        let autostart = app.autolaunch();
-        let previous_autostart = autostart.is_enabled().map_err(|e| e.to_string())?;
+        let _pending_mutation = PendingFileMutation::begin().map_err(|error| error.to_string())?;
+        let autostart = crate::autostart();
+        let previous_autostart = autostart.is_enabled()?;
         apply_autostart_transaction(
             previous_autostart,
             config.ui.auto_start,
@@ -99,7 +90,6 @@ pub fn set_config(
                 } else {
                     autostart.disable()
                 }
-                .map_err(|e| e.to_string())
             },
             || {
                 config
@@ -134,7 +124,7 @@ pub fn set_config(
     crate::jumplist::refresh(config.capture_tasks.clone());
     allow_capture_dirs(&app, &config.output.directory);
     crate::rebuild_tray_menu(&app);
-    let _ = app.emit("capscr://config-updated", ());
+    app.emit("capscr://config-updated", ());
     Ok(config)
 }
 
@@ -147,28 +137,27 @@ pub(crate) fn pin_backend_owned(config: &mut Config, stored: &Config) {
     config.output.directory = stored.output.directory.clone();
 }
 
-fn allow_capture_dirs(app: &AppHandle, output_dir: &std::path::Path) {
-    let scope = app.asset_protocol_scope();
-    for dir in [Some(output_dir.to_path_buf()), history_dir()].into_iter().flatten() {
-        if let Err(e) = scope.allow_directory(&dir, true) {
-            tracing::warn!("asset scope allow_directory({dir:?}) failed: {e}");
-        }
-        if let Ok(canonical) = std::fs::canonicalize(&dir) {
-            let _ = scope.allow_directory(&canonical, true);
+// lets pages load files from the output folder and the history folder
+pub fn allow_capture_dirs(app: &AppHandle, output_dir: &std::path::Path) {
+    for dir in [Some(output_dir.to_path_buf()), history_dir()]
+        .into_iter()
+        .flatten()
+    {
+        if let Err(e) = app.files().allow(&dir) {
+            tracing::warn!("file scope allow({dir:?}) failed: {e}");
         }
     }
 }
 
 fn apply_output_dir(app: &AppHandle, directory: PathBuf) -> Result<Config, String> {
-    let state = app.state::<AppState>();
+    let state = app_state();
     let saved = {
         let mut stored = state.config.lock().unwrap();
         let mut config = stored.clone();
         config.output.directory = directory;
         config.validate().map_err(|e| e.to_string())?;
         config.ensure_output_dir().map_err(|e| e.to_string())?;
-        let _pending_mutation =
-            PendingFileMutation::begin(app).map_err(|error| error.to_string())?;
+        let _pending_mutation = PendingFileMutation::begin().map_err(|error| error.to_string())?;
         config
             .save_and_migrate_secrets()
             .map_err(|e| e.to_string())?;
@@ -177,47 +166,40 @@ fn apply_output_dir(app: &AppHandle, directory: PathBuf) -> Result<Config, Strin
     };
     allow_capture_dirs(app, &saved.output.directory);
     crate::rebuild_tray_menu(app);
-    let _ = app.emit("capscr://config-updated", ());
+    app.emit("capscr://config-updated", ());
     Ok(saved)
 }
 
-#[tauri::command]
-pub async fn pick_output_dir(
-    app: AppHandle,
-    window: tauri::WebviewWindow,
-) -> Result<Option<Config>, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        use tauri_plugin_dialog::DialogExt;
-        let current = app.state::<AppState>().config.lock().unwrap().output.directory.clone();
+pub async fn pick_output_dir(app: AppHandle, window: String) -> Result<Option<Config>, String> {
+    tokio::task::spawn_blocking(move || {
+        let current = app_state().config.lock().unwrap().output.directory.clone();
         // the user's own pick in the native picker is the consent
-        let Some(picked) = app
-            .dialog()
-            .file()
-            .set_title("Pick output directory")
-            .set_directory(&current)
-            .set_parent(&window)
-            .blocking_pick_folder()
-        else {
+        let picked = ceri::FileDialog {
+            title: Some("Pick output directory".to_string()),
+            default_path: Some(current),
+            owner: window_handle(&app, &window),
+            ..ceri::FileDialog::default()
+        }
+        .open_folders()?;
+        let Some(directory) = picked.and_then(|folders| folders.into_iter().next()) else {
             return Ok(None);
         };
-        let directory = picked.into_path().map_err(|e| e.to_string())?;
         apply_output_dir(&app, directory).map(Some)
     })
     .await
     .map_err(|e| e.to_string())?
 }
 
-#[tauri::command]
 pub async fn set_output_dir(
     path: String,
     app: AppHandle,
-    window: tauri::WebviewWindow,
+    window: String,
 ) -> Result<Option<Config>, String> {
     let directory = PathBuf::from(path.trim());
     if !directory.is_absolute() {
         return Err("the capture folder must be an absolute path".into());
     }
-    let current = app.state::<AppState>().config.lock().unwrap().output.directory.clone();
+    let current = app_state().config.lock().unwrap().output.directory.clone();
     let same = directory == current
         || matches!(
             (std::fs::canonicalize(&directory), std::fs::canonicalize(&current)),
@@ -226,22 +208,16 @@ pub async fn set_output_dir(
     if same {
         return Ok(None);
     }
-    tauri::async_runtime::spawn_blocking(move || {
-        use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
-        let confirmed = app
-            .dialog()
-            .message(format!(
+    tokio::task::spawn_blocking(move || {
+        let confirmed = confirm(
+            &app,
+            &window,
+            "change capture folder",
+            format!(
                 "capscr will save, list, upload and delete captures in {}.",
                 directory.display()
-            ))
-            .title("change capture folder")
-            .kind(MessageDialogKind::Warning)
-            .buttons(MessageDialogButtons::OkCancelCustom(
-                "use this folder".into(),
-                "keep current".into(),
-            ))
-            .parent(&window)
-            .blocking_show();
+            ),
+        );
         if !confirmed {
             return Ok(None);
         }
@@ -251,18 +227,16 @@ pub async fn set_output_dir(
     .map_err(|e| e.to_string())?
 }
 
-#[tauri::command]
 pub fn set_capture_tasks(
     capture_tasks: Vec<CaptureTask>,
     app: AppHandle,
-    state: State<AppState>,
+    state: &AppState,
 ) -> Result<Vec<CaptureTask>, String> {
     let saved_tasks = {
         let mut stored = state.config.lock().unwrap();
         let mut config = stored.clone();
         config.capture_tasks = capture_tasks;
-        let _pending_mutation =
-            PendingFileMutation::begin(&app).map_err(|error| error.to_string())?;
+        let _pending_mutation = PendingFileMutation::begin().map_err(|error| error.to_string())?;
         config.validate().map_err(|e| e.to_string())?;
         config
             .save_and_migrate_secrets()
@@ -283,7 +257,7 @@ pub fn set_capture_tasks(
     #[cfg(windows)]
     crate::jumplist::refresh(saved_tasks.clone());
     crate::rebuild_tray_menu(&app);
-    let _ = app.emit("capscr://config-updated", ());
+    app.emit("capscr://config-updated", ());
     Ok(saved_tasks)
 }
 
@@ -312,6 +286,37 @@ fn apply_autostart_transaction(
     Ok(())
 }
 
+pub fn set_autostart(enabled: bool, state: &AppState) -> Result<(), String> {
+    let _pending_mutation = PendingFileMutation::begin().map_err(|error| error.to_string())?;
+    let manager = crate::autostart();
+    let previous = manager.is_enabled()?;
+    apply_autostart_transaction(
+        previous,
+        enabled,
+        |target| {
+            if target {
+                manager.enable()
+            } else {
+                manager.disable()
+            }
+        },
+        || {
+            let mut stored = state.config.lock().unwrap();
+            let mut config = stored.clone();
+            config.ui.auto_start = enabled;
+            config
+                .save_and_migrate_secrets()
+                .map_err(|e| e.to_string())?;
+            *stored = config;
+            Ok(())
+        },
+    )
+}
+
+pub fn get_autostart() -> Result<bool, String> {
+    crate::autostart().is_enabled()
+}
+
 #[cfg(test)]
 mod autostart_transaction_tests {
     use super::apply_autostart_transaction;
@@ -334,39 +339,4 @@ mod autostart_transaction_tests {
         assert_eq!(*changes.borrow(), vec![true, false]);
         assert!(error.contains("disk full"));
     }
-}
-
-#[tauri::command]
-pub fn set_autostart(app: AppHandle, enabled: bool, state: State<AppState>) -> Result<(), String> {
-    let _pending_mutation =
-        PendingFileMutation::begin(&app).map_err(|error| error.to_string())?;
-    let manager = app.autolaunch();
-    let previous = manager.is_enabled().map_err(|e| e.to_string())?;
-    apply_autostart_transaction(
-        previous,
-        enabled,
-        |target| {
-            if target {
-                manager.enable()
-            } else {
-                manager.disable()
-            }
-            .map_err(|e| e.to_string())
-        },
-        || {
-            let mut stored = state.config.lock().unwrap();
-            let mut config = stored.clone();
-            config.ui.auto_start = enabled;
-            config
-                .save_and_migrate_secrets()
-                .map_err(|e| e.to_string())?;
-            *stored = config;
-            Ok(())
-        },
-    )
-}
-
-#[tauri::command]
-pub fn get_autostart(app: AppHandle) -> Result<bool, String> {
-    app.autolaunch().is_enabled().map_err(|e| e.to_string())
 }

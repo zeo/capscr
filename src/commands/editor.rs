@@ -1,103 +1,69 @@
 use super::*;
 
 pub const EDITOR_LABEL: &str = "editor";
+pub(crate) const EDITOR_MIN_SIZE: (u32, u32) = (420, 280);
 
-pub fn open_editor_window(app: &AppHandle, image_path: &str) -> tauri::Result<()> {
-    let state = app.state::<AppState>();
+pub fn open_editor_window(app: &AppHandle, image_path: &str) {
+    let state = app_state();
     *state.editor_image_path.lock().unwrap() = Some(image_path.to_string());
 
-    if let Some(window) = app.get_webview_window(EDITOR_LABEL) {
-        fit_window_to_work_area(&window, 420.0, 280.0);
-        let _ = window.show();
-        let _ = window.set_focus();
-        let _ = window.emit("capscr://editor-load", image_path.to_string());
-        // the reused window may be a leftover that never loaded (about:blank);
-        // heal it the same way as a fresh one — once the page boots it pulls
-        // the current path via get_editor_image_path
-        watch_editor_navigation(app, window);
-        return Ok(());
+    let Some(windows) = app.windows() else {
+        return;
+    };
+    if window_is_open(app, EDITOR_LABEL) {
+        fit_window_to_work_area(app, EDITOR_LABEL, EDITOR_MIN_SIZE);
+        windows.act(EDITOR_LABEL, WindowAction::Focus);
+        app.emit_to(EDITOR_LABEL, "capscr://editor-load", image_path.to_string());
+        return;
     }
-    let url = tauri::WebviewUrl::App("index.html".into());
-    let mut builder = tauri::WebviewWindowBuilder::new(app, EDITOR_LABEL, url)
-        .title("capscr — edit")
-        .inner_size(960.0, 640.0)
-        .min_inner_size(420.0, 280.0)
-        .resizable(true)
-        .decorations(false)
-        .visible(false);
-
-    #[cfg(windows)]
-    {
-        builder = builder.additional_browser_args(WEBVIEW_BROWSER_ARGS);
-    }
-
-    if let Some(icon) = app.default_window_icon().cloned() {
-        builder = builder.icon(icon)?;
-    }
-
-    let window = builder.build()?;
-    let sized = window.clone();
-    // window-state's restore holds its locks across calls the main thread has
-    // to answer, so off the main thread it hangs the command; the plugin skips
-    // this window's own restore (main.rs) so the growth below sees the saved size
-    app.run_on_main_thread(move || {
-        let _ = sized.restore_state(WindowStateFlags::all() & !WindowStateFlags::VISIBLE);
-        grow_window_once(&sized, (0.85, 0.85), (960.0, 640.0));
-        fit_window_to_work_area(&sized, 420.0, 280.0);
-        let _ = sized.show();
-        let _ = sized.set_focus();
-    })?;
-    watch_editor_navigation(app, window);
-    Ok(())
-}
-
-// dynamically created webview windows sometimes come up on about:blank instead
-// of loading the app url (tauri#13967). The page never renders, and because the
-// editor is undecorated there's no native close button either — the user is
-// stuck with a dead white window. Probe the webview shortly after creation and
-// navigate explicitly when that happens. The hub window is prewarmed at startup
-// and never destroyed, so its url is the canonical app url to copy.
-fn watch_editor_navigation(app: &AppHandle, window: tauri::WebviewWindow) {
-    let app = app.clone();
-    std::thread::spawn(move || {
-        for wait_ms in [500u64, 1500, 3000] {
-            std::thread::sleep(std::time::Duration::from_millis(wait_ms));
-            match window.url() {
-                Ok(url) if url.scheme() != "about" => {
-                    remember_canonical_url(&app, &url);
-                    return;
-                }
-                Err(_) => return,
-                _ => {}
-            }
-            tracing::warn!("editor webview stuck on about:blank; navigating explicitly");
-            if let Some(url) = canonical_app_url(&app) {
-                if let Err(e) = window.navigate(url) {
-                    tracing::warn!("editor explicit navigation failed: {e}");
-                }
-            } else {
-                tracing::warn!("no canonical app url available for the editor");
-            }
-        }
+    // opened hidden; window_opened sizes it for its monitor and shows it
+    windows.open(WindowConfig {
+        label: EDITOR_LABEL.to_string(),
+        title: "capscr: edit".to_string(),
+        width: 960,
+        height: 640,
+        minimum_width: EDITOR_MIN_SIZE.0,
+        minimum_height: EDITOR_MIN_SIZE.1,
+        geometry_path: window_geometry_path(EDITOR_LABEL),
+        decorations: false,
+        visible: false,
+        background: WINDOW_BACKGROUND,
+        ..WindowConfig::default()
     });
 }
 
-#[tauri::command]
-pub fn get_editor_image_path(state: State<AppState>) -> Option<String> {
+// while on, a close of the editor window is refused and its page is asked
+// instead, so unsaved annotations are not discarded silently
+pub fn set_editor_close_guard(guarded: bool, state: &AppState) {
+    state
+        .editor_close_guarded
+        .store(guarded, std::sync::atomic::Ordering::SeqCst);
+}
+
+// the hub asks the editor page whether the app may close it
+pub fn request_editor_exit(request_id: String, app: AppHandle) {
+    app.emit_to(
+        EDITOR_LABEL,
+        "capscr://editor-exit-request",
+        serde_json::json!({ "requestId": request_id }),
+    );
+}
+
+pub fn answer_editor_exit(request_id: String, allowed: bool, app: AppHandle) {
+    app.emit_to(
+        HUB_LABEL,
+        "capscr://editor-exit-decision",
+        serde_json::json!({ "requestId": request_id, "allowed": allowed }),
+    );
+}
+
+pub fn get_editor_image_path(state: &AppState) -> Option<String> {
     // liveness signal: fires only when the editor frontend actually booted
     tracing::debug!("editor webview alive — frontend requested image path");
     state.editor_image_path.lock().unwrap().clone()
 }
 
-// async so the webview window is built off the main thread — a sync command
-// runs on the main thread and WebviewWindowBuilder::build deadlocks there on
-// windows, leaving a white window that can't be closed
-#[tauri::command]
-pub async fn open_editor(
-    path: String,
-    app: AppHandle,
-    state: State<'_, AppState>,
-) -> Result<(), String> {
+pub fn open_editor(path: String, app: AppHandle, state: &AppState) -> Result<(), String> {
     let _capture_gate = state
         .capture_in_progress
         .compare_exchange(
@@ -129,7 +95,8 @@ pub async fn open_editor(
     if ext == "gif" || ext == "mp4" {
         return Err("Recordings can't be edited — the editor would flatten the animation".into());
     }
-    open_editor_window(&app, &canonical.to_string_lossy()).map_err(|e| e.to_string())
+    open_editor_window(&app, &canonical.to_string_lossy());
+    Ok(())
 }
 
 /// true when `canonical` lives inside the annotate staging dir. `Path::starts_with`
@@ -181,7 +148,7 @@ mod annotate_stage_tests {
 /// capture, surface it to History, and drop the staging file.
 fn save_staged_annotation(
     app: &AppHandle,
-    state: &State<AppState>,
+    state: &AppState,
     bytes: Vec<u8>,
     staged: &std::path::Path,
 ) -> Result<String, String> {
@@ -192,8 +159,7 @@ fn save_staged_annotation(
         return Err("Image too large to save".into());
     }
     let config = state.config.lock().unwrap().clone();
-    let _pending_mutation =
-        PendingFileMutation::begin(app).map_err(|error| error.to_string())?;
+    let _pending_mutation = PendingFileMutation::begin().map_err(|error| error.to_string())?;
     if let Err(e) = std::fs::create_dir_all(&config.output.directory) {
         tracing::warn!("failed to create output dir: {e}");
     }
@@ -238,8 +204,8 @@ fn save_staged_annotation(
 
 /// drop annotate-stage files orphaned by editor sessions that closed without
 /// saving. runs at launch; the save path removes its own file on success.
-pub fn cleanup_annotate_stage(app: &AppHandle) {
-    let Ok(cache_dir) = app.path().app_cache_dir() else {
+pub fn cleanup_annotate_stage() {
+    let Some(cache_dir) = app_cache_dir() else {
         return;
     };
     let stage = cache_dir.join("annotate-stage");
@@ -262,24 +228,19 @@ pub fn cleanup_annotate_stage(app: &AppHandle) {
 
 const EDITOR_TARGET_HEADER: &str = "x-capscr-target";
 
-// the custom-protocol ipc delivers the editor's Uint8Array untouched; tauri's
-// postMessage fallback turns the same body into a json number array
-fn editor_image_bytes(body: &tauri::ipc::InvokeBody) -> Result<Vec<u8>, String> {
-    match body {
-        tauri::ipc::InvokeBody::Raw(bytes) => Ok(bytes.clone()),
-        tauri::ipc::InvokeBody::Json(value) => serde_json::from_value(value.clone())
-            .map_err(|_| "expected the image bytes as the request body".to_string()),
-    }
+// the editor sends its Uint8Array as the call's raw body
+fn editor_image_bytes(call: &CommandCall) -> Result<Vec<u8>, String> {
+    call.body
+        .clone()
+        .ok_or_else(|| "expected the image bytes as the request body".to_string())
 }
 
 // header values are ascii-only, so the editor percent-encodes the path with
 // encodeURIComponent, which also escapes '+', '&' and '=' and leaves one key
-fn editor_target_path(headers: &tauri::http::HeaderMap) -> Result<String, String> {
-    let raw = headers
-        .get(EDITOR_TARGET_HEADER)
-        .ok_or_else(|| "missing target path".to_string())?
-        .to_str()
-        .map_err(|_| "target path header is not ascii".to_string())?;
+fn editor_target_path(call: &CommandCall) -> Result<String, String> {
+    let raw = call
+        .header(EDITOR_TARGET_HEADER)
+        .ok_or_else(|| "missing target path".to_string())?;
     let path = url::form_urlencoded::parse(raw.as_bytes())
         .next()
         .map(|(key, _)| key.into_owned())
@@ -293,12 +254,12 @@ fn editor_target_path(headers: &tauri::http::HeaderMap) -> Result<String, String
 #[cfg(test)]
 mod editor_ipc_tests {
     use super::*;
-    use tauri::http::{HeaderMap, HeaderValue};
 
-    fn headers(value: &str) -> HeaderMap {
-        let mut map = HeaderMap::new();
-        map.insert(EDITOR_TARGET_HEADER, HeaderValue::from_str(value).unwrap());
-        map
+    fn headers(value: &str) -> CommandCall {
+        CommandCall {
+            headers: vec![(EDITOR_TARGET_HEADER.to_string(), value.to_string())],
+            ..CommandCall::default()
+        }
     }
 
     #[test]
@@ -313,41 +274,44 @@ mod editor_ipc_tests {
 
     #[test]
     fn target_path_rejects_missing_empty_and_invalid_utf8() {
-        assert!(editor_target_path(&HeaderMap::new()).is_err());
+        assert!(editor_target_path(&CommandCall::default()).is_err());
         assert!(editor_target_path(&headers("")).is_err());
         assert!(editor_target_path(&headers("%FF%FE.png")).is_err());
     }
 
     #[test]
-    fn image_bytes_accept_raw_and_postmessage_fallback() {
-        let raw = tauri::ipc::InvokeBody::Raw(vec![137, 80, 78, 71]);
+    fn image_bytes_are_the_raw_body() {
+        let raw = CommandCall {
+            body: Some(vec![137, 80, 78, 71]),
+            ..CommandCall::default()
+        };
         assert_eq!(editor_image_bytes(&raw).unwrap(), vec![137, 80, 78, 71]);
-        let json = tauri::ipc::InvokeBody::Json(serde_json::json!([137, 80, 78, 71]));
-        assert_eq!(editor_image_bytes(&json).unwrap(), vec![137, 80, 78, 71]);
-        let wrong = tauri::ipc::InvokeBody::Json(serde_json::json!({ "bytes": [1] }));
-        assert!(editor_image_bytes(&wrong).is_err());
+        let json = CommandCall {
+            payload: "[137,80,78,71]".to_string(),
+            ..CommandCall::default()
+        };
+        assert!(editor_image_bytes(&json).is_err());
     }
 }
 
-#[tauri::command(async)]
 pub fn save_edited_image(
-    request: tauri::ipc::Request<'_>,
+    call: &CommandCall,
     app: AppHandle,
-    state: State<'_, AppState>,
+    state: &AppState,
 ) -> Result<String, String> {
-    let target_path = editor_target_path(request.headers())?;
-    let bytes = editor_image_bytes(request.body())?;
+    let target_path = editor_target_path(call)?;
+    let bytes = editor_image_bytes(call)?;
     let buf = PathBuf::from(&target_path);
     // staged pre-save annotations live under the app cache; saving one mints
     // the real capture in the output dir instead of overwriting the stage.
-    if let Ok(cache_dir) = app.path().app_cache_dir() {
+    if let Some(cache_dir) = app_cache_dir() {
         // canonicalize both sides: AppData can sit behind a symlink or
         // junction, and a raw prefix check would then miss the stage
         let stage_dir = std::fs::canonicalize(cache_dir.join("annotate-stage"))
             .unwrap_or_else(|_| cache_dir.join("annotate-stage"));
         if let Ok(canonical) = std::fs::canonicalize(&buf) {
             if is_annotate_staged_path(&stage_dir, &canonical) {
-                return save_staged_annotation(&app, &state, bytes, &canonical);
+                return save_staged_annotation(&app, state, bytes, &canonical);
             }
         }
     }
@@ -367,8 +331,7 @@ pub fn save_edited_image(
     if bytes.len() > 100 * 1024 * 1024 {
         return Err("Image too large to save".into());
     }
-    let _pending_mutation =
-        PendingFileMutation::begin(&app).map_err(|error| error.to_string())?;
+    let _pending_mutation = PendingFileMutation::begin().map_err(|error| error.to_string())?;
     // atomic write: stage to a sibling temp file, then rename. A disk-full
     // or permission-denied mid-write would otherwise truncate the original
     // — the user would lose the un-edited capture too.
@@ -402,20 +365,18 @@ pub fn save_edited_image(
     Ok(target_path)
 }
 
-#[tauri::command(async)]
-pub fn copy_edited_image_to_clipboard(request: tauri::ipc::Request<'_>) -> Result<(), String> {
-    let bytes = editor_image_bytes(request.body())?;
+pub fn copy_edited_image_to_clipboard(call: &CommandCall) -> Result<(), String> {
+    let bytes = editor_image_bytes(call)?;
     let img = image::load_from_memory(&bytes).map_err(|e| e.to_string())?;
     let rgba = img.into_rgba8();
     let mut cb = ClipboardManager::new().map_err(|e| e.to_string())?;
     cb.copy_image(&rgba).map_err(|e| e.to_string())
 }
 
-#[tauri::command]
 pub async fn upload_file(
     path: String,
     app: AppHandle,
-    state: State<'_, AppState>,
+    state: &AppState,
 ) -> Result<UploadResponse, String> {
     let canonical = std::fs::canonicalize(&path).map_err(|e| e.to_string())?;
     if !canonical.is_file() {
@@ -430,21 +391,19 @@ pub async fn upload_file(
     upload_path(app, config, canonical).await
 }
 
-#[tauri::command]
 pub async fn upload_edited_image(
-    request: tauri::ipc::Request<'_>,
+    call: &CommandCall,
     app: AppHandle,
-    state: State<'_, AppState>,
+    state: &AppState,
 ) -> Result<UploadResponse, String> {
-    let bytes = editor_image_bytes(request.body())?;
+    let bytes = editor_image_bytes(call)?;
     let config = state.config.lock().unwrap().clone();
     let service = build_upload_service(&config);
     let destination = service.label();
-    let pending_mutation =
-        PendingFileMutation::begin(&app).map_err(|error| error.to_string())?;
+    let pending_mutation = PendingFileMutation::begin().map_err(|error| error.to_string())?;
     // reqwest::blocking panics on a tokio worker, which would leave the
     // editor's invoke pending forever
-    let result = tauri::async_runtime::spawn_blocking(move || {
+    let result = tokio::task::spawn_blocking(move || {
         let _pending_mutation = pending_mutation;
         let rgba = image::load_from_memory(&bytes)
             .map_err(|e| e.to_string())?

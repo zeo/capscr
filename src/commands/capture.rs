@@ -1,6 +1,5 @@
 use super::*;
 
-#[tauri::command]
 pub fn take_screenshot(
     mode: CaptureModeArg,
     post: TaskPostAction,
@@ -16,7 +15,7 @@ pub fn take_screenshot(
             tracing::warn!("capture failed: {e:#}");
             let friendly = humanize_capture_error(&e);
             emit_error(&app_handle, "capture", &friendly);
-            let state = app_handle.state::<AppState>();
+            let state = app_state();
             let show = state.config.lock().unwrap().ui.show_notifications;
             if show {
                 let _ = show_notification("Capture failed", &friendly);
@@ -135,7 +134,7 @@ fn run_capture_pipeline_inner(
     }
 
     use std::sync::atomic::Ordering;
-    let gate_state = app.state::<AppState>();
+    let gate_state = app_state();
     // drop the trigger when a previous capture is still in flight (likely
     // hung on a stuck D3D11 device or held selector). Without this gate a
     // user repeatedly mashing the hotkey accumulates stalled worker threads.
@@ -158,12 +157,11 @@ fn run_capture_pipeline_inner(
 
     // keep capscr itself out of the frozen desktop when capture is triggered
     // from an open hub or a second-instance jump command
-    let hub_was_visible = app
-        .get_webview_window(HUB_LABEL)
-        .and_then(|hub| hub.is_visible().ok().map(|visible| (hub, visible)))
-        .filter(|(_, visible)| *visible);
-    if let Some((hub, _)) = hub_was_visible {
-        let _ = hub.hide();
+    let visible_hub = app
+        .windows()
+        .filter(|windows| windows.state(HUB_LABEL).is_some_and(|hub| hub.visible));
+    if let Some(windows) = visible_hub {
+        windows.act(HUB_LABEL, WindowAction::Hide);
         // let the compositor present one frame without the hub before capture
         std::thread::sleep(Duration::from_millis(34));
     }
@@ -173,13 +171,7 @@ fn run_capture_pipeline_inner(
     {
         // a per-task delay overrides the global one; clamp so a hand-edited
         // config can't stall the capture thread for minutes
-        let global_delay = app
-            .state::<AppState>()
-            .config
-            .lock()
-            .unwrap()
-            .capture
-            .delay_ms;
+        let global_delay = app_state().config.lock().unwrap().capture.delay_ms;
         let delay_ms = delay_override.unwrap_or(global_delay).min(30_000);
         if delay_ms > 0 {
             std::thread::sleep(Duration::from_millis(delay_ms as u64));
@@ -499,7 +491,7 @@ fn run_capture_pipeline_inner(
             let hex = format!("#{:02X}{:02X}{:02X}", r, g, b);
             let mut cb = ClipboardManager::new()?;
             cb.copy_text(&hex)?;
-            let state = app.state::<AppState>();
+            let state = app_state();
             let (show, play_sound) = {
                 let cfg = state.config.lock().unwrap();
                 (cfg.ui.show_notifications, cfg.post_capture.play_sound)
@@ -512,7 +504,7 @@ fn run_capture_pipeline_inner(
         }
     };
 
-    let state = app.state::<AppState>();
+    let state = app_state();
 
     // honour the show_cursor toggle by painting the live cursor into the
     // captured pixels at its screen-relative position. Skipped if the
@@ -591,7 +583,7 @@ fn run_capture_pipeline_inner(
         maybe_write_hdr_sidecar(&path, &hdr_bitmap, &config);
         *state.last_save.lock().unwrap() = Some(path.clone());
         notify_capture_saved(app, sized_save(&path, Some(image.dimensions())));
-        open_editor_window(app, &path.to_string_lossy()).map_err(|e| anyhow::anyhow!(e))?;
+        open_editor_window(app, &path.to_string_lossy());
         Sound::Screenshot.play_if_enabled(config.post_capture.play_sound);
         if config.ui.show_notifications {
             let _ = show_notification("Capture opened", &path.to_string_lossy());
@@ -605,10 +597,8 @@ fn run_capture_pipeline_inner(
         // editor. saving there mints the real capture through the staging
         // redirect in save_edited_image; closing without saving discards it.
         let config = state.config.lock().unwrap().clone();
-        let stage_dir = app
-            .path()
-            .app_cache_dir()
-            .map_err(|e| anyhow::anyhow!(e))?
+        let stage_dir = app_cache_dir()
+            .ok_or_else(|| anyhow::anyhow!("no cache folder to stage the capture in"))?
             .join("annotate-stage");
         std::fs::create_dir_all(&stage_dir).map_err(|e| anyhow::anyhow!(e))?;
         let path = stage_dir.join(format!(
@@ -621,7 +611,7 @@ fn run_capture_pipeline_inner(
             crate::config::ImageFormat::Png,
             config.output.quality,
         )?;
-        open_editor_window(app, &path.to_string_lossy()).map_err(|e| anyhow::anyhow!(e))?;
+        open_editor_window(app, &path.to_string_lossy());
         Sound::Screenshot.play_if_enabled(config.post_capture.play_sound);
         if config.ui.show_notifications {
             let _ = show_notification("Annotating capture", "save to keep it, close to discard");
@@ -651,7 +641,7 @@ fn run_capture_pipeline_inner(
         return Ok(());
     }
 
-    let result = run_post_action(app, &state, image.clone(), hdr_bitmap, post, upload_target);
+    let result = run_post_action(app, state, image.clone(), hdr_bitmap, post, upload_target);
     result.map(|_| ())
 }
 
@@ -869,11 +859,11 @@ fn maybe_write_hdr_sidecar(
     }
 }
 
-pub(crate) struct PendingFileMutation(AppHandle);
+pub(crate) struct PendingFileMutation(());
 
 impl PendingFileMutation {
-    pub(crate) fn begin(app: &AppHandle) -> Result<Self, &'static str> {
-        let state = app.state::<AppState>();
+    pub(crate) fn begin() -> Result<Self, &'static str> {
+        let state = app_state();
         if state
             .shutdown_in_progress
             .load(std::sync::atomic::Ordering::SeqCst)
@@ -892,14 +882,13 @@ impl PendingFileMutation {
                 .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
             return Err("application shutdown is already in progress");
         }
-        Ok(Self(app.clone()))
+        Ok(Self(()))
     }
 }
 
 impl Drop for PendingFileMutation {
     fn drop(&mut self) {
-        self.0
-            .state::<AppState>()
+        app_state()
             .pending_file_mutations
             .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
     }
@@ -927,7 +916,7 @@ fn run_post_action(
                          app_handle: AppHandle,
                          on_saved: Box<dyn FnOnce(&std::path::Path) + Send>|
      -> anyhow::Result<PathBuf> {
-        let pending_write = PendingFileMutation::begin(&app_handle).map_err(anyhow::Error::msg)?;
+        let pending_write = PendingFileMutation::begin().map_err(anyhow::Error::msg)?;
         if let Err(e) = std::fs::create_dir_all(&config.output.directory) {
             tracing::warn!("failed to create output dir: {e}");
         }
@@ -943,8 +932,7 @@ fn run_post_action(
             match save_image(&img, &path_clone, format, quality) {
                 Ok(()) => {
                     maybe_write_hdr_sidecar(&path_clone, &hdr, &config_clone);
-                    *app_handle.state::<AppState>().last_save.lock().unwrap() =
-                        Some(path_clone.clone());
+                    *app_state().last_save.lock().unwrap() = Some(path_clone.clone());
                     tracing::info!(
                         "Background save completed in {}ms",
                         t0.elapsed().as_millis()
@@ -978,7 +966,7 @@ fn run_post_action(
         if !config.ui.save_clipboard_to_history {
             return None;
         }
-        let pending_write = match PendingFileMutation::begin(&app_handle) {
+        let pending_write = match PendingFileMutation::begin() {
             Ok(pending_write) => pending_write,
             Err(error) => {
                 tracing::warn!("history save skipped: {error}");
@@ -1123,7 +1111,7 @@ pub fn trigger_task(app: &AppHandle, task_id: &str) {
         return;
     }
     let task = {
-        let state = app.state::<AppState>();
+        let state = app_state();
         let config = state.config.lock().unwrap();
         config
             .capture_tasks
@@ -1147,7 +1135,7 @@ pub fn trigger_task(app: &AppHandle, task_id: &str) {
         if let Err(e) = outcome {
             tracing::warn!("task '{}' failed: {e}", task.id);
             emit_error(&app_handle, "task", &format!("{}: {}", task_label, e));
-            let state = app_handle.state::<AppState>();
+            let state = app_state();
             let show = state.config.lock().unwrap().ui.show_notifications;
             if show {
                 let _ = show_notification(&format!("Task '{}' failed", task_label), &e.to_string());
@@ -1183,7 +1171,6 @@ pub fn run_task(task: &CaptureTask, app: &AppHandle) -> anyhow::Result<()> {
 // whether this platform can deliver hdr pixels at all, gating the hdr
 // settings pane and history filter: always on windows, gnome-on-wayland on
 // linux (the screencast portal's 10-bit pq path), nowhere else
-#[tauri::command]
 pub fn hdr_pipeline_supported() -> bool {
     #[cfg(windows)]
     {
@@ -1205,10 +1192,9 @@ pub fn hdr_pipeline_supported() -> bool {
 // because a region/window capture overlay launched from a focused hub paints
 // over its own selector and looks broken. tray-driven captures already get
 // this for free via the existing hub.hide path; this matches the behaviour.
-#[tauri::command]
 pub fn fire_task(task_id: String, app: AppHandle) -> Result<(), String> {
-    if let Some(hub) = app.get_webview_window(HUB_LABEL) {
-        let _ = hub.hide();
+    if let Some(windows) = app.windows() {
+        windows.act(HUB_LABEL, WindowAction::Hide);
     }
     trigger_task(&app, &task_id);
     Ok(())

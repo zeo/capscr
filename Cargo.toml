@@ -11,7 +11,6 @@ homepage = "https://rot.lt/work/capscr"
 
 [features]
 default = ["sftp", "plugin-runtime"]
-custom-protocol = ["tauri/custom-protocol"]
 # WASM plugin runtime host. When enabled, src/plugin/wasm.rs is compiled
 # and PluginManager::load_all instantiates plugins with `runtime = "wasm"`
 # in their plugin.toml. Shipped on by default since 0.4.0.
@@ -22,13 +21,7 @@ sftp = ["dep:russh", "dep:russh-sftp"]
 
 [dependencies]
 # gui shell
-tauri = { version = "2", features = ["tray-icon", "image-png", "image-ico", "protocol-asset"] }
-tauri-plugin-clipboard-manager = "2"
-tauri-plugin-dialog = "2"
-tauri-plugin-opener = "2"
-tauri-plugin-autostart = "2"
-tauri-plugin-window-state = "2"
-tauri-plugin-single-instance = "2"
+ceri = { path = "../../hAugust/ceri" }
 
 # Global hotkeys (native, OS-event-driven via crossbeam channel)
 global-hotkey = "0.8"
@@ -42,10 +35,7 @@ crossbeam-channel = "0.5"
 # portal/pipewire); every accessor returns XCapResult from this version on
 xcap = "0.9"
 
-# image processing and formats. tauri pulls image with its default features for
-# icon handling, and cargo unifies features additively, so the full codec set is
-# always built regardless of what we request here — default-features=false would
-# be a no-op. we just pin the formats capscr itself encodes/decodes.
+# image processing and formats, with the ones capscr itself encodes and decodes
 image = { version = "0.25", features = ["png", "jpeg", "gif", "webp", "bmp", "avif"] }
 
 # gif encoding. 0.14 matches the version image already pulls in via its gif
@@ -86,7 +76,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # Date/time for filenames
 chrono = "0.4"
 
-# Native notifications (the tauri plugin doesn't expose a Rust-side API yet)
+# Native notifications
 notify-rust = "4.11"
 
 # UUID for unique identifiers
@@ -196,7 +186,7 @@ wasapi = "0.17"
 
 
 [build-dependencies]
-tauri-build = { version = "2", features = [] }
+ceri-build = { path = "../../hAugust/ceri/build" }
 
 [dev-dependencies]
 tempfile = "3"

@@ -6,6 +6,7 @@
 //! the display server and works regardless of which application has focus.
 
 use crate::hotkeys::{MOD_ALT, MOD_CTRL, MOD_SHIFT, MOD_WIN};
+use ceri::AppHandle;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::Read;
@@ -13,7 +14,6 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
-use tauri::{AppHandle, Manager};
 
 // linux/input-event-codes.h — event types and the codes we react to
 const EV_KEY: u16 = 0x01;
@@ -377,8 +377,7 @@ fn read_device(path: PathBuf, app: AppHandle) {
 }
 
 fn dispatch(app: &AppHandle, code: u16, last_fire: &mut HashMap<String, Instant>) {
-    if app
-        .state::<crate::state::AppState>()
+    if crate::state::app_state()
         .hotkeys_disabled
         .load(Ordering::SeqCst)
     {

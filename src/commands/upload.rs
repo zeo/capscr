@@ -77,11 +77,10 @@ pub(crate) fn build_upload_service_for_target(
     }
 }
 
-#[tauri::command]
 pub async fn reupload_capture(
     path: String,
     app: AppHandle,
-    state: State<'_, AppState>,
+    state: &AppState,
 ) -> Result<UploadResponse, String> {
     let config = state.config.lock().unwrap().clone();
     let canonical = std::fs::canonicalize(&path).map_err(|e| e.to_string())?;
@@ -122,10 +121,9 @@ pub(crate) async fn upload_path(
 ) -> Result<UploadResponse, String> {
     let service = build_upload_service(&config);
     let destination = service.label();
-    let pending_mutation =
-        PendingFileMutation::begin(&app).map_err(|error| error.to_string())?;
+    let pending_mutation = PendingFileMutation::begin().map_err(|error| error.to_string())?;
     let source = path.clone();
-    let result = tauri::async_runtime::spawn_blocking(move || {
+    let result = tokio::task::spawn_blocking(move || {
         let _pending_mutation = pending_mutation;
         let (bytes, mime, file_name) = read_upload_file(&source)?;
         crate::upload::shared_uploader()
@@ -148,7 +146,7 @@ pub(crate) fn finish_upload(
     destination: &str,
     path: Option<&std::path::Path>,
 ) {
-    app.state::<AppState>().record_upload(UploadRecord {
+    app_state().record_upload(UploadRecord {
         url: result.url.clone(),
     });
     if let Some(path) = path {
@@ -161,9 +159,7 @@ pub(crate) fn finish_upload(
             remote: result.remote.clone(),
         };
         let key = crate::upload::records::record_key(path);
-        if let Some(Err(error)) = app
-            .state::<AppState>()
-            .with_upload_records(|records| records.add(key, entry))
+        if let Some(Err(error)) = app_state().with_upload_records(|records| records.add(key, entry))
         {
             tracing::warn!("upload record not saved: {error}");
         }
@@ -185,17 +181,15 @@ pub(crate) fn finish_upload(
 
 /// delete one recorded upload from its host after a native confirm. Ok(false)
 /// when the user keeps it
-#[tauri::command]
 pub async fn delete_remote_upload(
     path: String,
     url: String,
     app: AppHandle,
-    window: tauri::WebviewWindow,
+    window: String,
 ) -> Result<bool, String> {
     use crate::upload::records::RemoteRef;
     let key = crate::upload::records::record_key(std::path::Path::new(&path));
-    let entry = app
-        .state::<AppState>()
+    let entry = app_state()
         .with_upload_records(|records| {
             records
                 .entries(&key)
@@ -211,27 +205,18 @@ pub async fn delete_remote_upload(
             entry.destination
         ));
     }
-    let config = app.state::<AppState>().config.lock().unwrap().clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+    let config = app_state().config.lock().unwrap().clone();
+    tokio::task::spawn_blocking(move || {
         let host = url::Url::parse(&entry.url)
             .ok()
             .and_then(|url| url.host_str().map(str::to_string))
             .unwrap_or_else(|| entry.destination.clone());
-        let confirmed = app
-            .dialog()
-            .message(format!(
-                "Delete {} from {host}? This can't be undone.",
-                entry.url
-            ))
-            .title("delete from host")
-            .kind(MessageDialogKind::Warning)
-            .buttons(MessageDialogButtons::OkCancelCustom(
-                "delete".into(),
-                "keep".into(),
-            ))
-            .parent(&window)
-            .blocking_show();
+        let confirmed = confirm(
+            &app,
+            &window,
+            "delete from host",
+            format!("Delete {} from {host}? This can't be undone.", entry.url),
+        );
         if !confirmed {
             return Ok(false);
         }
@@ -251,9 +236,8 @@ pub async fn delete_remote_upload(
             RemoteRef::Url => Err(anyhow::anyhow!("this host has no delete api")),
         }
         .map_err(|e| e.to_string())?;
-        if let Some(Err(error)) = app
-            .state::<AppState>()
-            .with_upload_records(|records| records.remove(&key, &entry.url))
+        if let Some(Err(error)) =
+            app_state().with_upload_records(|records| records.remove(&key, &entry.url))
         {
             tracing::warn!("upload record not updated after delete: {error}");
         }
@@ -276,7 +260,6 @@ pub struct SftpKnownHost {
     pub first_seen_unix: u64,
 }
 
-#[tauri::command]
 pub fn sftp_known_hosts() -> Result<Vec<SftpKnownHost>, String> {
     let path = crate::upload::known_hosts::KnownHosts::default_path()
         .ok_or_else(|| "config dir unresolvable".to_string())?;
@@ -363,13 +346,12 @@ fn connection_test_config(
     Ok(requested)
 }
 
-#[tauri::command]
 pub async fn test_upload_connection(
     destination: String,
     config: Config,
     app: AppHandle,
-    window: tauri::WebviewWindow,
-    state: State<'_, AppState>,
+    window: String,
+    state: &AppState,
 ) -> Result<ConnectionTestReport, String> {
     let mut cfg = {
         let saved = state.config.lock().unwrap();
@@ -383,31 +365,26 @@ pub async fn test_upload_connection(
         other => return Err(format!("'{other}' has no test-connection probe")),
     };
     let pending_sftp_trust = if cfg.upload.destination == UploadDestination::Sftp {
-        Some(PendingFileMutation::begin(&app).map_err(|error| error.to_string())?)
+        Some(PendingFileMutation::begin().map_err(|error| error.to_string())?)
     } else {
         None
     };
     let service = build_upload_service(&cfg);
-    let steps = tauri::async_runtime::spawn_blocking(move || {
+    let steps = tokio::task::spawn_blocking(move || {
         let _pending_sftp_trust = pending_sftp_trust;
         match &service {
             UploadService::Sftp(target) => {
                 crate::upload::test_connection_sftp(target, &|host_port, fingerprint| {
-                    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
-                    app.dialog()
-                        .message(format!(
+                    confirm(
+                        &app,
+                        &window,
+                        "trust this sftp server?",
+                        format!(
                             "{host_port} presented the host key\n\n{fingerprint}\n\nCompare it \
                              with the server's own fingerprint (ssh-keygen -lf on its host key) \
                              before trusting it. Uploads only connect to trusted keys."
-                        ))
-                        .title("trust this sftp server?")
-                        .kind(MessageDialogKind::Warning)
-                        .buttons(MessageDialogButtons::OkCancelCustom(
-                            "trust key".into(),
-                            "cancel".into(),
-                        ))
-                        .parent(&window)
-                        .blocking_show()
+                        ),
+                    )
                 })
             }
             UploadService::Imgur | UploadService::ImgurWithClientId(_) => {
@@ -587,11 +564,9 @@ mod connection_test_config_tests {
     }
 }
 
-#[tauri::command]
-pub fn sftp_forget_host(host_port: String, app: AppHandle) -> Result<bool, String> {
+pub fn sftp_forget_host(host_port: String) -> Result<bool, String> {
     let path = crate::upload::known_hosts::KnownHosts::default_path()
         .ok_or_else(|| "config dir unresolvable".to_string())?;
-    let _pending_mutation =
-        PendingFileMutation::begin(&app).map_err(|error| error.to_string())?;
+    let _pending_mutation = PendingFileMutation::begin().map_err(|error| error.to_string())?;
     crate::upload::known_hosts::forget_locked(&path, &host_port).map_err(|e| e.to_string())
 }

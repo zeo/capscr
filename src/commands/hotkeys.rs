@@ -55,7 +55,7 @@ pub fn record_hotkey_status(
     live_ids: &[String],
     errors: &[crate::hotkeys::HotkeyRegistrationError],
 ) {
-    let state = app.state::<AppState>();
+    let state = app_state();
     let mut status = state.hotkey_status.lock().unwrap();
     status.clear();
     for id in live_ids {
@@ -70,24 +70,22 @@ pub fn record_hotkey_status(
         );
     }
     drop(status);
-    let _ = app.emit("capscr://hotkey-status", ());
+    app.emit("capscr://hotkey-status", ());
 }
 
 // persist the "no system tray" banner dismissal so it never reappears
-#[tauri::command]
-pub fn dismiss_tray_hint(app: AppHandle, state: State<AppState>) -> Result<(), String> {
+pub fn dismiss_tray_hint(app: AppHandle, state: &AppState) -> Result<(), String> {
     {
         let mut stored = state.config.lock().unwrap();
         let mut config = stored.clone();
-        let _pending_mutation =
-            PendingFileMutation::begin(&app).map_err(|error| error.to_string())?;
+        let _pending_mutation = PendingFileMutation::begin().map_err(|error| error.to_string())?;
         config.ui.tray_hint_dismissed = true;
         config
             .save_and_migrate_secrets()
             .map_err(|e| e.to_string())?;
         *stored = config;
     }
-    let _ = app.emit("capscr://config-updated", ());
+    app.emit("capscr://config-updated", ());
     Ok(())
 }
 
@@ -100,7 +98,6 @@ pub struct EvdevStatus {
 
 // settings backing for the advanced-input section: whether the opt-in is on
 // and whether /dev/input is actually readable (input-group membership)
-#[tauri::command]
 pub fn evdev_status() -> EvdevStatus {
     #[cfg(target_os = "linux")]
     {
@@ -145,7 +142,6 @@ fn gnome_extension_dir() -> Option<std::path::PathBuf> {
 // settings backing for the gnome section: install state of the companion
 // shell extension that supplies the window picker, keep-above, and the
 // panel indicator on gnome
-#[tauri::command]
 pub fn gnome_companion_status() -> GnomeCompanionStatus {
     #[cfg(target_os = "linux")]
     {
@@ -168,14 +164,12 @@ pub fn gnome_companion_status() -> GnomeCompanionStatus {
 // copy the bundled extension into the user's gnome-shell extensions dir and
 // flag it enabled; gnome-shell only scans that dir at session start, so the
 // caller tells the user to log out and back in when active stays false
-#[tauri::command]
 pub fn install_gnome_companion(app: AppHandle) -> Result<GnomeCompanionStatus, String> {
     #[cfg(target_os = "linux")]
     {
         use tauri::path::BaseDirectory;
         let target = gnome_extension_dir().ok_or("no home directory")?;
-        let _pending_mutation =
-            PendingFileMutation::begin(&app).map_err(|error| error.to_string())?;
+        let _pending_mutation = PendingFileMutation::begin().map_err(|error| error.to_string())?;
         std::fs::create_dir_all(&target).map_err(|e| e.to_string())?;
         for file in ["extension.js", "metadata.json"] {
             let bundled = app
@@ -201,15 +195,14 @@ pub fn install_gnome_companion(app: AppHandle) -> Result<GnomeCompanionStatus, S
 
 // re-run the portal bind for the current set even when unchanged, so a user
 // who dismissed the desktop's approval dialog can bring it back
-#[tauri::command]
-pub fn portal_rebind_shortcuts(app: AppHandle, state: State<AppState>) -> Result<(), String> {
+pub fn portal_rebind_shortcuts(app: AppHandle, state: &AppState) -> Result<(), String> {
     #[cfg(target_os = "linux")]
     {
         crate::hotkeys::portal_linux::rebind().map_err(|e| format!("{e:#}"))?;
         // re-flush so statuses reflect the fresh outcome
         let tasks = state.config.lock().unwrap().capture_tasks.clone();
         state.send_hotkey_reload(tasks);
-        let _ = app.emit("capscr://hotkey-status", ());
+        app.emit("capscr://hotkey-status", ());
         Ok(())
     }
     #[cfg(not(target_os = "linux"))]
@@ -242,8 +235,7 @@ fn hotkey_backend_name() -> String {
     }
 }
 
-#[tauri::command]
-pub fn hotkey_diagnostics(state: State<AppState>) -> HotkeyDiagnostics {
+pub fn hotkey_diagnostics(state: &AppState) -> HotkeyDiagnostics {
     use std::sync::atomic::Ordering;
     let disabled = state.hotkeys_disabled.load(Ordering::SeqCst);
     #[cfg(target_os = "linux")]
@@ -304,14 +296,12 @@ pub fn hotkey_diagnostics(state: State<AppState>) -> HotkeyDiagnostics {
 /// On press, the backend emits `capscr://hotkey-captured` with the vk +
 /// mods + canonical hotkey string and clears the arm. UI cancels via
 /// `cancel_hotkey_capture` if the user backs out.
-#[tauri::command]
 #[cfg(windows)]
 pub fn start_hotkey_capture() -> Result<(), String> {
     crate::hotkeys::ll_hook::begin_capture();
     Ok(())
 }
 
-#[tauri::command]
 #[cfg(not(windows))]
 pub fn start_hotkey_capture() -> Result<(), String> {
     // no global hook to arm here — the hub window has focus while binding, so
@@ -319,28 +309,24 @@ pub fn start_hotkey_capture() -> Result<(), String> {
     Ok(())
 }
 
-#[tauri::command]
 #[cfg(windows)]
 pub fn cancel_hotkey_capture() -> Result<(), String> {
     crate::hotkeys::ll_hook::cancel_capture();
     Ok(())
 }
 
-#[tauri::command]
 #[cfg(not(windows))]
 pub fn cancel_hotkey_capture() -> Result<(), String> {
     Ok(())
 }
 
-#[tauri::command]
 pub fn set_hotkeys_disabled(
     disabled: bool,
     app: AppHandle,
-    state: State<AppState>,
+    state: &AppState,
 ) -> Result<(), String> {
     use std::sync::atomic::Ordering;
-    let _pending_mutation =
-        PendingFileMutation::begin(&app).map_err(|error| error.to_string())?;
+    let _pending_mutation = PendingFileMutation::begin().map_err(|error| error.to_string())?;
     let tasks = {
         let mut stored = state.config.lock().unwrap();
         let was = state.hotkeys_disabled.load(Ordering::SeqCst);
@@ -365,9 +351,9 @@ pub fn set_hotkeys_disabled(
     crate::hotkeys::ll_hook::set_enabled(!disabled);
     state.send_hotkey_reload(tasks);
     crate::rebuild_tray_menu(&app);
-    let _ = app.emit("capscr://hotkey-status", ());
+    app.emit("capscr://hotkey-status", ());
     // the store mirrors hotkeys.disabled_globally too; nudge it to refetch so a
     // later Settings save doesn't persist a stale (enabled) value over the switch
-    let _ = app.emit("capscr://config-updated", ());
+    app.emit("capscr://config-updated", ());
     Ok(())
 }

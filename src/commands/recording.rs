@@ -8,8 +8,8 @@ struct FfmpegDownloadGuard {
 }
 #[cfg(any(windows, target_os = "linux"))]
 impl FfmpegDownloadGuard {
-    fn begin(app: &AppHandle) -> Result<Self, &'static str> {
-        let mutation = PendingFileMutation::begin(app)?;
+    fn begin() -> Result<Self, &'static str> {
+        let mutation = PendingFileMutation::begin()?;
         FFMPEG_DOWNLOADING
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
             .map_err(|_| "FFmpeg is already downloading")?;
@@ -172,6 +172,22 @@ fn download_verified_ffmpeg(
     Err(anyhow::anyhow!("ffmpeg binary not found in zip archive"))
 }
 
+// an informational question with no owner window; false when it cannot be shown
+#[cfg(any(windows, target_os = "linux"))]
+fn ffmpeg_dialog(title: &str, text: &str, buttons: ceri::MessageButtons) -> bool {
+    let dialog = ceri::MessageDialog {
+        title: title.to_string(),
+        text: text.to_string(),
+        level: ceri::MessageLevel::Info,
+        buttons,
+        owner: None,
+    };
+    dialog.show().unwrap_or_else(|error| {
+        tracing::warn!("the '{title}' dialog failed: {error}");
+        false
+    })
+}
+
 #[cfg(windows)]
 fn perform_ffmpeg_download() -> anyhow::Result<()> {
     download_verified_ffmpeg(WINDOWS_FFMPEG_URL, WINDOWS_FFMPEG_SHA256, "ffmpeg.exe")
@@ -182,8 +198,7 @@ fn perform_ffmpeg_download() -> anyhow::Result<()> {
 // minimal system. offer the verified download when a build is pinned,
 // otherwise fall back to package-manager instructions.
 #[cfg(target_os = "linux")]
-fn handle_missing_ffmpeg(app: &AppHandle) -> anyhow::Result<()> {
-    use tauri_plugin_dialog::DialogExt;
+fn handle_missing_ffmpeg() -> anyhow::Result<()> {
     let instructions = "Recording MP4 requires FFmpeg, which was not found on your system.\n\n\
          Install it with your package manager, e.g.\n\
          sudo apt install ffmpeg   (Debian/Ubuntu)\n\
@@ -191,11 +206,7 @@ fn handle_missing_ffmpeg(app: &AppHandle) -> anyhow::Result<()> {
 
     // the hosted build is x86_64 only; other arches get the instructions
     if LINUX_FFMPEG_SHA256.is_empty() || !cfg!(target_arch = "x86_64") {
-        app.dialog()
-            .message(instructions)
-            .title("FFmpeg Required")
-            .kind(tauri_plugin_dialog::MessageDialogKind::Info)
-            .blocking_show();
+        ffmpeg_dialog("FFmpeg Required", instructions, ceri::MessageButtons::Ok);
         return Ok(());
     }
     if FFMPEG_DOWNLOADING.load(Ordering::SeqCst) {
@@ -205,29 +216,18 @@ fn handle_missing_ffmpeg(app: &AppHandle) -> anyhow::Result<()> {
         );
         return Ok(());
     }
-    let download = app
-        .dialog()
-        .message(
-            "Recording MP4 requires FFmpeg, which was not found on your system.\n\n\
-             Download a verified static FFmpeg (~30 MB, used only by capscr), or \
-             install it with your package manager instead?",
-        )
-        .title("FFmpeg Required")
-        .kind(tauri_plugin_dialog::MessageDialogKind::Info)
-        .buttons(tauri_plugin_dialog::MessageDialogButtons::OkCancelCustom(
-            "Download".into(),
-            "Show instructions".into(),
-        ))
-        .blocking_show();
+    let download = ffmpeg_dialog(
+        "FFmpeg Required",
+        "Recording MP4 requires FFmpeg, which was not found on your system.\n\n\
+         Download a verified static FFmpeg (~30 MB, used only by capscr), or \
+         install it with your package manager instead?",
+        ceri::MessageButtons::OkCancel,
+    );
     if !download {
-        app.dialog()
-            .message(instructions)
-            .title("Install FFmpeg")
-            .kind(tauri_plugin_dialog::MessageDialogKind::Info)
-            .blocking_show();
+        ffmpeg_dialog("Install FFmpeg", instructions, ceri::MessageButtons::Ok);
         return Ok(());
     }
-    let download_guard = match FfmpegDownloadGuard::begin(app) {
+    let download_guard = match FfmpegDownloadGuard::begin() {
         Ok(guard) => guard,
         Err(error) => {
             let _ = show_notification("FFmpeg Download", error);
@@ -254,12 +254,12 @@ fn handle_missing_ffmpeg(app: &AppHandle) -> anyhow::Result<()> {
 }
 
 #[cfg(not(any(windows, target_os = "linux")))]
-fn handle_missing_ffmpeg(_app: &AppHandle) -> anyhow::Result<()> {
+fn handle_missing_ffmpeg() -> anyhow::Result<()> {
     Ok(())
 }
 
 #[cfg(windows)]
-fn handle_missing_ffmpeg(app: &AppHandle) -> anyhow::Result<()> {
+fn handle_missing_ffmpeg() -> anyhow::Result<()> {
     if FFMPEG_DOWNLOADING.load(Ordering::SeqCst) {
         let _ = show_notification(
             "FFmpeg Download",
@@ -268,16 +268,14 @@ fn handle_missing_ffmpeg(app: &AppHandle) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    use tauri_plugin_dialog::DialogExt;
-    let is_confirmed = app.dialog()
-        .message("Recording MP4 requires FFmpeg, which was not found on your system.\n\nWould you like to automatically download and configure it?")
-        .title("FFmpeg Required")
-        .kind(tauri_plugin_dialog::MessageDialogKind::Info)
-        .buttons(tauri_plugin_dialog::MessageDialogButtons::YesNo)
-        .blocking_show();
+    let is_confirmed = ffmpeg_dialog(
+        "FFmpeg Required",
+        "Recording MP4 requires FFmpeg, which was not found on your system.\n\nWould you like to automatically download and configure it?",
+        ceri::MessageButtons::YesNo,
+    );
 
     if is_confirmed {
-        let download_guard = match FfmpegDownloadGuard::begin(app) {
+        let download_guard = match FfmpegDownloadGuard::begin() {
             Ok(guard) => guard,
             Err(error) => {
                 let _ = show_notification("FFmpeg Download", error);
@@ -318,7 +316,7 @@ pub(crate) fn run_gif_task(task: &CaptureTask, app: &AppHandle) -> anyhow::Resul
         return Ok(());
     }
 
-    let state = app.state::<AppState>();
+    let state = app_state();
     let current = *state.recording_state.lock().unwrap();
     let armed_id = crate::recbar::armed_task_id();
     if armed_id.as_deref() == Some(task.id.as_str()) {
@@ -332,7 +330,7 @@ pub(crate) fn run_gif_task(task: &CaptureTask, app: &AppHandle) -> anyhow::Resul
         // same task hotkey re-pressed -> user wants to stop
         // different task hotkey while recording -> reject and tell the user
         if active_id.as_deref() == Some(task.id.as_str()) {
-            stop_gif_recording(app);
+            stop_gif_recording();
         } else {
             let active_name = {
                 let cfg = state.config.lock().unwrap();
@@ -362,7 +360,7 @@ pub(crate) fn run_gif_task(task: &CaptureTask, app: &AppHandle) -> anyhow::Resul
     if matches!(task.capture_mode, TaskCaptureMode::RegionMp4)
         && !crate::recording::is_ffmpeg_available()
     {
-        handle_missing_ffmpeg(app)?;
+        handle_missing_ffmpeg()?;
         return Ok(());
     }
 
@@ -407,7 +405,7 @@ pub(crate) fn start_gif_recording(
     app: &AppHandle,
     region: Rectangle,
 ) -> anyhow::Result<()> {
-    let state = app.state::<AppState>();
+    let state = app_state();
     let cfg = state.config.lock().unwrap().clone();
 
     let is_mp4 = matches!(task.capture_mode, TaskCaptureMode::RegionMp4);
@@ -444,9 +442,11 @@ pub(crate) fn start_gif_recording(
     #[cfg(target_os = "linux")]
     {
         let (drained_tx, drained_rx) = std::sync::mpsc::channel();
-        let _ = app.run_on_main_thread(move || {
-            let _ = drained_tx.send(());
-        });
+        if let Some(windows) = app.windows() {
+            windows.run_on_loop(move || {
+                let _ = drained_tx.send(());
+            });
+        }
         let _ = drained_rx.recv_timeout(Duration::from_millis(500));
         std::thread::sleep(Duration::from_millis(300));
     }
@@ -459,7 +459,7 @@ pub(crate) fn start_gif_recording(
     *state.recording_task_id.lock().unwrap() = Some(task.id.clone());
 
     crate::recbar::begin(app, task, region);
-    let _ = app.emit("capscr://recording-started", task.id.clone());
+    app.emit("capscr://recording-started", task.id.clone());
     set_tray_tooltip(app, &format!("capscr · recording '{}'", task.name));
 
     let app2 = app.clone();
@@ -467,7 +467,7 @@ pub(crate) fn start_gif_recording(
     std::thread::spawn(move || {
         loop {
             std::thread::sleep(Duration::from_millis(300));
-            let st = app2.state::<AppState>();
+            let st = app_state();
 
             let user_stopped = st.recording_task_id.lock().unwrap().is_none();
             let recorder_done = {
@@ -496,9 +496,8 @@ pub struct VideoEncoderSupport {
 }
 
 // the first call runs the hardware trial encodes, so it stays off the main thread
-#[tauri::command]
 pub async fn video_encoder_support() -> Result<VideoEncoderSupport, String> {
-    tauri::async_runtime::spawn_blocking(|| VideoEncoderSupport {
+    tokio::task::spawn_blocking(|| VideoEncoderSupport {
         ffmpeg: crate::recording::is_ffmpeg_available(),
         hardware: crate::recording::hardware_encoders(),
     })
@@ -506,16 +505,15 @@ pub async fn video_encoder_support() -> Result<VideoEncoderSupport, String> {
     .map_err(|e| e.to_string())
 }
 
-#[tauri::command]
-pub fn stop_recording(app: AppHandle) {
-    let recording = *app.state::<AppState>().recording_state.lock().unwrap();
+pub fn stop_recording() {
+    let recording = *app_state().recording_state.lock().unwrap();
     if matches!(recording, RecordingState::Recording) {
-        stop_gif_recording(&app);
+        stop_gif_recording();
     }
 }
 
-fn stop_gif_recording(app: &AppHandle) {
-    let state = app.state::<AppState>();
+fn stop_gif_recording() {
+    let state = app_state();
     // stop the capture thread first, then clear task_id so the monitor thread
     // doesn't call finalize before the stop signal has been sent to the encoder
     {
@@ -530,7 +528,7 @@ fn stop_gif_recording(app: &AppHandle) {
 pub(crate) fn finalize_gif_recording(task: &CaptureTask, app: &AppHandle) {
     crate::recbar::finish(app);
 
-    let state = app.state::<AppState>();
+    let state = app_state();
     *state.recording_state.lock().unwrap() = RecordingState::Processing;
 
     let cfg = state.config.lock().unwrap().clone();
@@ -620,13 +618,13 @@ pub(crate) fn finalize_gif_recording(task: &CaptureTask, app: &AppHandle) {
 
     *state.recording_state.lock().unwrap() = RecordingState::Idle;
     *state.recording_task_id.lock().unwrap() = None;
-    let _ = app.emit("capscr://recording-stopped", task.id.clone());
+    app.emit("capscr://recording-stopped", task.id.clone());
     set_tray_tooltip(app, "capscr");
 }
 
 fn set_tray_tooltip(app: &AppHandle, tooltip: &str) {
-    if let Some(tray) = app.tray_by_id("capscr-tray") {
-        let _ = tray.set_tooltip(Some(tooltip));
+    if let Some(tray) = app.tray() {
+        tray.set_tooltip(tooltip);
     }
 }
 
@@ -811,14 +809,13 @@ fn sibling_output(src: &str, suffix: &str, ext: &str) -> std::path::PathBuf {
 
 async fn run_recording_job(
     path: String,
-    app: AppHandle,
-    state: State<'_, AppState>,
+    state: &AppState,
     job: impl FnOnce(&str) -> anyhow::Result<String> + Send + 'static,
 ) -> Result<String, String> {
     let config = state.config.lock().unwrap().clone();
     let resolved = resolve_recording_path(&path, &config)?;
-    let pending_mutation = PendingFileMutation::begin(&app).map_err(|error| error.to_string())?;
-    tauri::async_runtime::spawn_blocking(move || {
+    let pending_mutation = PendingFileMutation::begin().map_err(|error| error.to_string())?;
+    tokio::task::spawn_blocking(move || {
         let _pending_mutation = pending_mutation;
         job(&resolved).map_err(|e| e.to_string())
     })
@@ -828,16 +825,14 @@ async fn run_recording_job(
 
 // trim an mp4 or gif recording to [start_secs, end_secs) into a new file next
 // to the source and return its path. recordings are video-only, so audio is dropped
-#[tauri::command]
 pub async fn trim_recording(
     path: String,
     start_secs: f64,
     end_secs: f64,
     fast: bool,
-    app: AppHandle,
-    state: State<'_, AppState>,
+    state: &AppState,
 ) -> Result<String, String> {
-    run_recording_job(path, app, state, move |src| {
+    run_recording_job(path, state, move |src| {
         let (kind, start, duration) = check_recording_source(src, start_secs, end_secs)?;
         let ext = match kind {
             RecordingKind::Mp4 => "mp4",
@@ -855,17 +850,15 @@ pub async fn trim_recording(
 }
 
 // convert [start_secs, end_secs) of an mp4 recording to a gif next to it
-#[tauri::command]
 pub async fn export_gif(
     path: String,
     start_secs: f64,
     end_secs: f64,
     fps: u32,
     max_width: u32,
-    app: AppHandle,
-    state: State<'_, AppState>,
+    state: &AppState,
 ) -> Result<String, String> {
-    run_recording_job(path, app, state, move |src| {
+    run_recording_job(path, state, move |src| {
         let (kind, start, duration) = check_recording_source(src, start_secs, end_secs)?;
         if kind != RecordingKind::Mp4 {
             anyhow::bail!("only an mp4 recording can be exported as a gif");
@@ -895,11 +888,10 @@ fn gif_duration_secs(reader: impl std::io::Read) -> anyhow::Result<f64> {
     Ok(hundredths as f64 / 100.0)
 }
 
-#[tauri::command]
-pub async fn gif_duration(path: String, state: State<'_, AppState>) -> Result<f64, String> {
+pub async fn gif_duration(path: String, state: &AppState) -> Result<f64, String> {
     let config = state.config.lock().unwrap().clone();
     let resolved = resolve_recording_path(&path, &config)?;
-    tauri::async_runtime::spawn_blocking(move || {
+    tokio::task::spawn_blocking(move || {
         let file = std::fs::File::open(&resolved).map_err(|e| e.to_string())?;
         gif_duration_secs(std::io::BufReader::new(file)).map_err(|e| e.to_string())
     })
@@ -959,7 +951,7 @@ fn apply_gif_post_action(
             let path = path.to_path_buf();
             let cfg = cfg.clone();
             let target_override = task.target_destination;
-            let pending_mutation = match PendingFileMutation::begin(&app2) {
+            let pending_mutation = match PendingFileMutation::begin() {
                 Ok(mutation) => mutation,
                 Err(error) => {
                     emit_error(&app2, "upload", error);

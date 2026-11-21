@@ -79,52 +79,12 @@ fn read_plugin_listing(body: &str) -> Option<PluginListing> {
     None
 }
 
-#[cfg(test)]
-mod plugin_listing_tests {
-    use super::read_plugin_listing;
-
-    #[test]
-    fn reads_sectioned_wasm_manifest() {
-        let body = "enabled = false\n\
-            [plugin]\nid = \"grayscale\"\nname = \"Grayscale\"\nversion = \"0.1.0\"\ndescription = \"gray\"\n\
-            [runtime]\ntype = \"wasm\"\nfile = \"plugin.wasm\"\n\
-            [hooks]\non_capture = \"capscr_on_capture\"\n\
-            [capabilities]\nimage = [\"read\"]\nfetch = [\"https://api.example.com/*\"]\n";
-        let listing = read_plugin_listing(body).expect("sectioned parses");
-        assert_eq!(listing.name, "Grayscale");
-        assert_eq!(listing.version, "0.1.0");
-        assert_eq!(listing.description, "gray");
-        assert!(!listing.enabled);
-        assert_eq!(
-            listing.capabilities,
-            vec!["fetch:https://api.example.com/*", "image:read"]
-        );
-    }
-
-    #[test]
-    fn reads_legacy_flat_manifest() {
-        let body =
-            "name = \"Sounds\"\nversion = \"0.1.0\"\ndescription = \"sfx\"\nenabled = true\n";
-        let listing = read_plugin_listing(body).expect("flat parses");
-        assert_eq!(listing.name, "Sounds");
-        assert_eq!(listing.version, "0.1.0");
-        assert!(listing.enabled);
-        assert!(listing.capabilities.is_empty());
-    }
-
-    #[test]
-    fn rejects_garbage() {
-        assert!(read_plugin_listing("not [ valid toml").is_none());
-    }
-}
-
 fn plugins_dir() -> Result<PathBuf, String> {
     let project = crate::config::project_dirs()
         .ok_or_else(|| "cannot resolve plugins directory".to_string())?;
     Ok(project.data_dir().to_path_buf().join("plugins"))
 }
 
-#[tauri::command]
 pub fn list_installed_plugins() -> Result<Vec<InstalledPlugin>, String> {
     let dir = plugins_dir()?;
     if !dir.exists() {
@@ -170,20 +130,17 @@ pub fn list_installed_plugins() -> Result<Vec<InstalledPlugin>, String> {
 }
 
 // failures from the latest plugin load pass, surfaced to the plugins tab
-#[tauri::command]
-pub fn plugin_load_errors(state: State<AppState>) -> Vec<String> {
+pub fn plugin_load_errors(state: &AppState) -> Vec<String> {
     state.plugin_load_errors.lock().unwrap().clone()
 }
 
-#[tauri::command]
-pub fn list_upload_plugins(state: State<AppState>) -> Vec<crate::plugin::UploadPlugin> {
+pub fn list_upload_plugins(state: &AppState) -> Vec<crate::plugin::UploadPlugin> {
     state.plugin_manager.read().unwrap().upload_destinations()
 }
 
-#[tauri::command]
 pub async fn reload_plugins(app: AppHandle) -> Result<Vec<String>, String> {
     tokio::task::spawn_blocking(move || {
-        let state = app.state::<AppState>();
+        let state = app_state();
         state.load_plugins();
         crate::rebuild_tray_menu(&app);
         let errors = state.plugin_load_errors.lock().unwrap().clone();
@@ -193,7 +150,6 @@ pub async fn reload_plugins(app: AppHandle) -> Result<Vec<String>, String> {
     .map_err(|error| error.to_string())
 }
 
-#[tauri::command]
 pub async fn plugin_settings(id: String) -> Result<crate::marketplace::PluginSettings, String> {
     let plugins = plugins_dir()?;
     tokio::task::spawn_blocking(move || crate::marketplace::plugin_settings(&plugins, &id))
@@ -202,18 +158,17 @@ pub async fn plugin_settings(id: String) -> Result<crate::marketplace::PluginSet
         .map_err(|error| error.to_string())
 }
 
-#[tauri::command]
 pub async fn set_plugin_settings(
     id: String,
     values: serde_json::Map<String, serde_json::Value>,
     app: AppHandle,
 ) -> Result<(), String> {
     let plugins = plugins_dir()?;
-    let pending_mutation = PendingFileMutation::begin(&app).map_err(|error| error.to_string())?;
+    let pending_mutation = PendingFileMutation::begin().map_err(|error| error.to_string())?;
     tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
         let _pending_mutation = pending_mutation;
         crate::marketplace::set_plugin_settings(&plugins, &id, &values)?;
-        app.state::<AppState>().load_plugins();
+        app_state().load_plugins();
         crate::rebuild_tray_menu(&app);
         Ok(())
     })
@@ -222,25 +177,19 @@ pub async fn set_plugin_settings(
     .map_err(|error| error.to_string())
 }
 
-#[tauri::command]
-pub fn take_startup_notices(state: State<AppState>) -> Vec<String> {
+pub fn take_startup_notices(state: &AppState) -> Vec<String> {
     std::mem::take(&mut *state.startup_notices.lock().unwrap())
 }
 
-#[tauri::command]
-pub fn open_plugins_folder(app: AppHandle) -> Result<(), String> {
+pub fn open_plugins_folder() -> Result<(), String> {
     let dir = plugins_dir()?;
-    let _pending_mutation =
-        PendingFileMutation::begin(&app).map_err(|error| error.to_string())?;
+    let _pending_mutation = PendingFileMutation::begin().map_err(|error| error.to_string())?;
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    app.opener()
-        .open_path(dir.to_string_lossy().to_string(), None::<&str>)
-        .map_err(|e| e.to_string())
+    ceri::opener::open_path(dir)
 }
 
-#[tauri::command]
 pub async fn marketplace_browse(
-    state: State<'_, AppState>,
+    state: &AppState,
 ) -> Result<Vec<crate::marketplace::RegistryEntry>, String> {
     let url = state
         .config
@@ -258,10 +207,8 @@ pub async fn marketplace_browse(
         .map_err(|e| e.to_string())
 }
 
-#[tauri::command]
 pub async fn marketplace_install(id: String, app: AppHandle) -> Result<bool, String> {
-    let url = app
-        .state::<AppState>()
+    let url = app_state()
         .config
         .lock()
         .unwrap()
@@ -269,7 +216,7 @@ pub async fn marketplace_install(id: String, app: AppHandle) -> Result<bool, Str
         .registry_url
         .clone();
     let plugins = plugins_dir()?;
-    let pending_mutation = PendingFileMutation::begin(&app).map_err(|error| error.to_string())?;
+    let pending_mutation = PendingFileMutation::begin().map_err(|error| error.to_string())?;
     tokio::task::spawn_blocking(move || -> anyhow::Result<bool> {
         let _pending_mutation = pending_mutation;
         let registry = crate::marketplace::fetch_registry(&url)?;
@@ -279,7 +226,7 @@ pub async fn marketplace_install(id: String, app: AppHandle) -> Result<bool, Str
             .find(|p| p.id == id)
             .ok_or_else(|| anyhow::anyhow!("plugin '{}' not in registry", id))?;
         let installed = crate::marketplace::install_plugin(&plugins, entry)?;
-        app.state::<AppState>().load_plugins();
+        app_state().load_plugins();
         crate::rebuild_tray_menu(&app);
         Ok(installed)
     })
@@ -288,14 +235,13 @@ pub async fn marketplace_install(id: String, app: AppHandle) -> Result<bool, Str
     .map_err(|e| e.to_string())
 }
 
-#[tauri::command]
 pub async fn marketplace_uninstall(id: String, app: AppHandle) -> Result<(), String> {
     let plugins = plugins_dir()?;
-    let pending_mutation = PendingFileMutation::begin(&app).map_err(|error| error.to_string())?;
+    let pending_mutation = PendingFileMutation::begin().map_err(|error| error.to_string())?;
     tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
         let _pending_mutation = pending_mutation;
         crate::marketplace::uninstall_plugin(&plugins, &id)?;
-        app.state::<AppState>().load_plugins();
+        app_state().load_plugins();
         crate::rebuild_tray_menu(&app);
         Ok(())
     })
@@ -304,22 +250,60 @@ pub async fn marketplace_uninstall(id: String, app: AppHandle) -> Result<(), Str
     .map_err(|error| error.to_string())
 }
 
-#[tauri::command]
 pub async fn toggle_plugin_enabled(
     id: String,
     enabled: bool,
     app: AppHandle,
 ) -> Result<(), String> {
     let plugins = plugins_dir()?;
-    let pending_mutation = PendingFileMutation::begin(&app).map_err(|error| error.to_string())?;
+    let pending_mutation = PendingFileMutation::begin().map_err(|error| error.to_string())?;
     tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
         let _pending_mutation = pending_mutation;
         crate::marketplace::set_plugin_enabled(&plugins, &id, enabled)?;
-        app.state::<AppState>().load_plugins();
+        app_state().load_plugins();
         crate::rebuild_tray_menu(&app);
         Ok(())
     })
     .await
     .map_err(|error| error.to_string())?
     .map_err(|error| error.to_string())
+}
+
+#[cfg(test)]
+mod plugin_listing_tests {
+    use super::read_plugin_listing;
+
+    #[test]
+    fn reads_sectioned_wasm_manifest() {
+        let body = "enabled = false\n\
+            [plugin]\nid = \"grayscale\"\nname = \"Grayscale\"\nversion = \"0.1.0\"\ndescription = \"gray\"\n\
+            [runtime]\ntype = \"wasm\"\nfile = \"plugin.wasm\"\n\
+            [hooks]\non_capture = \"capscr_on_capture\"\n\
+            [capabilities]\nimage = [\"read\"]\nfetch = [\"https://api.example.com/*\"]\n";
+        let listing = read_plugin_listing(body).expect("sectioned parses");
+        assert_eq!(listing.name, "Grayscale");
+        assert_eq!(listing.version, "0.1.0");
+        assert_eq!(listing.description, "gray");
+        assert!(!listing.enabled);
+        assert_eq!(
+            listing.capabilities,
+            vec!["fetch:https://api.example.com/*", "image:read"]
+        );
+    }
+
+    #[test]
+    fn reads_legacy_flat_manifest() {
+        let body =
+            "name = \"Sounds\"\nversion = \"0.1.0\"\ndescription = \"sfx\"\nenabled = true\n";
+        let listing = read_plugin_listing(body).expect("flat parses");
+        assert_eq!(listing.name, "Sounds");
+        assert_eq!(listing.version, "0.1.0");
+        assert!(listing.enabled);
+        assert!(listing.capabilities.is_empty());
+    }
+
+    #[test]
+    fn rejects_garbage() {
+        assert!(read_plugin_listing("not [ valid toml").is_none());
+    }
 }

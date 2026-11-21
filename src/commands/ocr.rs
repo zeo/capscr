@@ -55,14 +55,13 @@ mod ocr_locale_tests {
     }
 }
 
-#[tauri::command]
-pub async fn run_ocr(path: String, state: State<'_, AppState>) -> Result<String, String> {
+pub async fn run_ocr(path: String, state: &AppState) -> Result<String, String> {
     let config = state.config.lock().unwrap().clone();
     let canonical = std::fs::canonicalize(&path).map_err(|e| e.to_string())?;
     if !is_path_allowed(&canonical, &config) {
         return Err("Path is outside the allowed directories".into());
     }
-    tauri::async_runtime::spawn_blocking(move || {
+    tokio::task::spawn_blocking(move || {
         let bytes = std::fs::read(&canonical).map_err(|e| e.to_string())?;
         ocr_image_bytes(&bytes).map_err(|e| e.to_string())
     })

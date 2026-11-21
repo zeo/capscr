@@ -1,11 +1,6 @@
 use super::*;
 
-#[tauri::command]
-pub fn open_in_explorer(
-    path: String,
-    app: AppHandle,
-    state: State<AppState>,
-) -> Result<(), String> {
+pub fn open_in_explorer(path: String, app: AppHandle, state: &AppState) -> Result<(), String> {
     let buf = PathBuf::from(&path);
     let config = state.config.lock().unwrap().clone();
     let canonical = std::fs::canonicalize(&buf).map_err(|e| e.to_string())?;
@@ -26,24 +21,20 @@ pub(crate) fn reveal_in_file_manager(_app: &AppHandle, path: &std::path::Path) {
         .spawn();
 }
 
-// the opener plugin talks to the freedesktop FileManager1 dbus interface and
-// falls back to plain-opening the parent directory itself
 #[cfg(not(windows))]
-pub(crate) fn reveal_in_file_manager(app: &AppHandle, path: &std::path::Path) {
-    use tauri_plugin_opener::OpenerExt;
-    if let Err(e) = app.opener().reveal_item_in_dir(path) {
+pub(crate) fn reveal_in_file_manager(_app: &AppHandle, path: &std::path::Path) {
+    if let Err(e) = ceri::opener::reveal(path) {
         tracing::warn!("reveal in file manager failed: {e}");
     }
 }
 
 struct ExitWorkerGuard {
-    app: AppHandle,
     reset_on_drop: bool,
 }
 
 impl ExitWorkerGuard {
-    fn claim(app: &AppHandle) -> Option<Self> {
-        app.state::<AppState>()
+    fn claim() -> Option<Self> {
+        app_state()
             .exit_worker_running
             .compare_exchange(
                 false,
@@ -53,7 +44,6 @@ impl ExitWorkerGuard {
             )
             .ok()
             .map(|_| Self {
-                app: app.clone(),
                 reset_on_drop: true,
             })
     }
@@ -66,8 +56,7 @@ impl ExitWorkerGuard {
 impl Drop for ExitWorkerGuard {
     fn drop(&mut self) {
         if self.reset_on_drop {
-            self.app
-                .state::<AppState>()
+            app_state()
                 .exit_worker_running
                 .store(false, std::sync::atomic::Ordering::SeqCst);
         }
@@ -75,13 +64,12 @@ impl Drop for ExitWorkerGuard {
 }
 
 pub(crate) struct MutationShutdownGuard {
-    app: AppHandle,
     reset_on_drop: bool,
 }
 
 impl MutationShutdownGuard {
-    pub(crate) fn claim(app: &AppHandle) -> Result<Self, &'static str> {
-        app.state::<AppState>()
+    pub(crate) fn claim() -> Result<Self, &'static str> {
+        app_state()
             .shutdown_in_progress
             .compare_exchange(
                 false,
@@ -91,7 +79,6 @@ impl MutationShutdownGuard {
             )
             .map_err(|_| "application shutdown is already in progress")?;
         Ok(Self {
-            app: app.clone(),
             reset_on_drop: true,
         })
     }
@@ -104,8 +91,7 @@ impl MutationShutdownGuard {
 impl Drop for MutationShutdownGuard {
     fn drop(&mut self) {
         if self.reset_on_drop {
-            self.app
-                .state::<AppState>()
+            app_state()
                 .shutdown_in_progress
                 .store(false, std::sync::atomic::Ordering::SeqCst);
         }
@@ -113,7 +99,7 @@ impl Drop for MutationShutdownGuard {
 }
 
 pub fn exit_app(app: AppHandle) {
-    let Some(exit_guard) = ExitWorkerGuard::claim(&app) else {
+    let Some(exit_guard) = ExitWorkerGuard::claim() else {
         return;
     };
     let report_app = app.clone();
@@ -121,8 +107,7 @@ pub fn exit_app(app: AppHandle) {
         .name("capscr-exit".into())
         .spawn(move || run_exit_worker(app, exit_guard))
     {
-        report_app
-            .state::<AppState>()
+        app_state()
             .exit_worker_running
             .store(false, std::sync::atomic::Ordering::SeqCst);
         emit_error(
@@ -134,7 +119,7 @@ pub fn exit_app(app: AppHandle) {
 }
 
 fn run_exit_worker(app: AppHandle, exit_guard: ExitWorkerGuard) {
-    let state = app.state::<AppState>();
+    let state = app_state();
     UnifiedSelector::cancel_active_selection();
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
     let _capture_gate = loop {
@@ -160,7 +145,7 @@ fn run_exit_worker(app: AppHandle, exit_guard: ExitWorkerGuard) {
         }
         std::thread::sleep(Duration::from_millis(20));
     };
-    let shutdown_guard = match MutationShutdownGuard::claim(&app) {
+    let shutdown_guard = match MutationShutdownGuard::claim() {
         Ok(guard) => guard,
         Err(error) => {
             emit_error(&app, "exit", error);
@@ -255,7 +240,7 @@ fn run_exit_worker(app: AppHandle, exit_guard: ExitWorkerGuard) {
         }
         std::thread::sleep(Duration::from_millis(20));
     }
-    app.exit(0);
+    app.exit();
     shutdown_guard.commit();
     exit_guard.commit();
 }

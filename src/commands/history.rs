@@ -1,7 +1,6 @@
 use super::*;
 
-#[tauri::command]
-pub fn list_captures(state: State<AppState>) -> Result<Vec<HistoryEntry>, String> {
+pub fn list_captures(state: &AppState) -> Result<Vec<HistoryEntry>, String> {
     let config = state.config.lock().unwrap().clone();
     let dir = config.output.directory.clone();
 
@@ -121,20 +120,14 @@ pub fn list_captures(state: State<AppState>) -> Result<Vec<HistoryEntry>, String
     Ok(entries)
 }
 
-#[tauri::command]
-pub fn delete_capture(
-    path: String,
-    app: AppHandle,
-    state: State<AppState>,
-) -> Result<(), String> {
+pub fn delete_capture(path: String, state: &AppState) -> Result<(), String> {
     let buf = PathBuf::from(&path);
     let config = state.config.lock().unwrap().clone();
     let canonical = std::fs::canonicalize(&buf).map_err(|e| e.to_string())?;
     if !is_path_allowed(&canonical, &config) {
         return Err("Path is outside the allowed directories".into());
     }
-    let _pending_mutation =
-        PendingFileMutation::begin(&app).map_err(|error| error.to_string())?;
+    let _pending_mutation = PendingFileMutation::begin().map_err(|error| error.to_string())?;
     let sidecar = canonical
         .file_stem()
         .and_then(|stem| stem.to_str())
@@ -148,8 +141,7 @@ pub fn delete_capture(
     Ok(())
 }
 
-#[tauri::command]
-pub fn copy_capture_to_clipboard(path: String, state: State<AppState>) -> Result<(), String> {
+pub fn copy_capture_to_clipboard(path: String, state: &AppState) -> Result<(), String> {
     let buf = PathBuf::from(&path);
     let config = state.config.lock().unwrap().clone();
     let canonical = std::fs::canonicalize(&buf).map_err(|e| e.to_string())?;
@@ -184,35 +176,27 @@ pub fn copy_capture_to_clipboard(path: String, state: State<AppState>) -> Result
 /// dropped straight into <img> tags decode to gigabytes across a grid, and
 /// files outside the asset-protocol scope render blank; a cached first-frame
 /// jpeg in the app cache dir solves both. keyed by path + size + mtime.
-#[tauri::command]
-pub async fn history_thumbnail(
-    path: String,
-    app: AppHandle,
-    state: State<'_, AppState>,
-) -> Result<String, String> {
+pub async fn history_thumbnail(path: String, state: &AppState) -> Result<String, String> {
     let config = state.config.lock().unwrap().clone();
     let canonical = std::fs::canonicalize(&path).map_err(|e| e.to_string())?;
     if !is_path_allowed(&canonical, &config) {
         return Err("Path is outside the allowed directories".into());
     }
-    let cache_dir = app
-        .path()
-        .app_cache_dir()
-        .map_err(|e| e.to_string())?
+    let cache_dir = app_cache_dir()
+        .ok_or("no cache folder for thumbnails")?
         .join("thumbs");
-    let (sender, receiver) = claim_thumbnail_job(&state, &canonical);
+    let (sender, receiver) = claim_thumbnail_job(state, &canonical);
     if let Some(sender) = sender {
-        let worker_app = app.clone();
         let worker_path = canonical.clone();
         let gate = state.thumbnail_decode_gate.clone();
-        tauri::async_runtime::spawn(async move {
+        tokio::spawn(async move {
             let result = async {
                 let _permit = gate
                     .acquire_owned()
                     .await
                     .map_err(|_| "thumbnail worker is unavailable".to_string())?;
-                let _pending_mutation = PendingFileMutation::begin(&worker_app)
-                    .map_err(|error| error.to_string())?;
+                let _pending_mutation =
+                    PendingFileMutation::begin().map_err(|error| error.to_string())?;
                 tokio::task::spawn_blocking(move || {
                     thumbnail_for(&cache_dir, &worker_path)
                         .map(|thumb| thumb.to_string_lossy().to_string())
@@ -223,8 +207,7 @@ pub async fn history_thumbnail(
             }
             .await;
             let _ = sender.send(Some(result));
-            worker_app
-                .state::<AppState>()
+            app_state()
                 .thumbnail_jobs
                 .lock()
                 .unwrap()

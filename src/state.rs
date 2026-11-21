@@ -6,7 +6,7 @@ use crossbeam_channel::Sender;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
 const RECENT_UPLOADS_CAP: usize = 5;
 const THUMBNAIL_DECODE_LIMIT: usize = 2;
@@ -74,6 +74,10 @@ pub struct AppState {
     pub(crate) thumbnail_decode_gate: Arc<tokio::sync::Semaphore>,
     pub(crate) thumbnail_jobs: Mutex<HashMap<PathBuf, ThumbnailReceiver>>,
     pub pending_hub_close_requests: Mutex<HashSet<String>>,
+    // set for the one close of the hub that the close hook lets through
+    pub hub_close_approved: AtomicBool,
+    // on while the editor page wants to be asked before its window closes
+    pub editor_close_guarded: AtomicBool,
     // user-toggled global kill switch. mirrors config.hotkeys.disabled_globally
     // for in-memory speed; AppState::new restores it from disk so the toggle
     // survives restart.
@@ -89,9 +93,6 @@ pub struct AppState {
     // path only if the user actually dropped it (or it's one of capscr's own
     // files), so a webview-supplied arbitrary path can't be uploaded off disk.
     pub dropped_paths: Mutex<HashSet<PathBuf>>,
-    // last url a healthy webview was observed on; the about:blank watchdogs
-    // navigate stuck webviews here when no live hub exists to copy from
-    pub canonical_webview_url: Mutex<Option<url::Url>>,
     // one-time messages from config load, drained by the hub once it can toast
     pub startup_notices: Mutex<Vec<String>>,
 }
@@ -99,6 +100,19 @@ pub struct AppState {
 // a session's dropped-path set won't grow past a real user's drags, but cap it
 // so a pathological stream of distinct drops can't accumulate unboundedly
 const DROPPED_PATHS_CAP: usize = 4096;
+
+static APP_STATE: OnceLock<AppState> = OnceLock::new();
+
+/// keeps the state for the life of the process; the first call wins
+pub fn manage(state: AppState) {
+    let _ = APP_STATE.set(state);
+}
+
+pub fn app_state() -> &'static AppState {
+    APP_STATE
+        .get()
+        .expect("the app state is managed before the app runs")
+}
 
 #[derive(Clone, Debug)]
 pub struct UploadRecord {
@@ -139,12 +153,13 @@ impl AppState {
             )),
             thumbnail_jobs: Mutex::new(HashMap::new()),
             pending_hub_close_requests: Mutex::new(HashSet::new()),
+            hub_close_approved: AtomicBool::new(false),
+            editor_close_guarded: AtomicBool::new(false),
             hotkeys_disabled: AtomicBool::new(disabled),
             hotkey_status: Mutex::new(HashMap::new()),
             pinned_images: Mutex::new(HashMap::new()),
             last_region: Mutex::new(None),
             dropped_paths: Mutex::new(HashSet::new()),
-            canonical_webview_url: Mutex::new(None),
             startup_notices: Mutex::new(Vec::new()),
         }
     }

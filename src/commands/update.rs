@@ -67,8 +67,7 @@ async fn matching_asset_url(version: &str, kind: &str) -> Option<String> {
     })
 }
 
-#[tauri::command]
-pub async fn check_for_updates(app: AppHandle) -> Result<Option<UpdateInfo>, String> {
+pub async fn check_for_updates() -> Result<Option<UpdateInfo>, String> {
     #[derive(serde::Deserialize)]
     struct InstallerRelease {
         version: String,
@@ -107,7 +106,7 @@ pub async fn check_for_updates(app: AppHandle) -> Result<Option<UpdateInfo>, Str
     })
     .await
     .map_err(|error| error.to_string())??;
-    let current = app.package_info().version.to_string();
+    let current = env!("CARGO_PKG_VERSION").to_string();
     if semver::Version::parse(&release.version).map_err(|error| error.to_string())?
         <= semver::Version::parse(&current).map_err(|error| error.to_string())?
     {
@@ -127,7 +126,6 @@ pub async fn check_for_updates(app: AppHandle) -> Result<Option<UpdateInfo>, Str
     }))
 }
 
-#[tauri::command]
 pub async fn install_update(app: AppHandle) -> Result<(), String> {
     if update_install_kind() != "in-place" {
         return Err("this install updates through your package manager; \
@@ -136,7 +134,7 @@ pub async fn install_update(app: AppHandle) -> Result<(), String> {
     }
     // claim the capture gate before launching the updater so a hotkey cannot
     // start new work between the idle check and process exit
-    let state = app.state::<AppState>();
+    let state = app_state();
     let mut waited = 0u32;
     let _capture_gate = loop {
         match state.capture_in_progress.compare_exchange(
@@ -158,7 +156,7 @@ pub async fn install_update(app: AppHandle) -> Result<(), String> {
             }
         }
     };
-    let shutdown_guard = MutationShutdownGuard::claim(&app).map_err(|error| error.to_string())?;
+    let shutdown_guard = MutationShutdownGuard::claim().map_err(|error| error.to_string())?;
     require_editor_closed(&app, "installing an update")?;
     let mut pending_mutations = state
         .pending_file_mutations
@@ -186,7 +184,7 @@ pub async fn install_update(app: AppHandle) -> Result<(), String> {
         ])
         .spawn()
         .map_err(|error| format!("start updater: {error}"))?;
-    app.exit(0);
+    app.exit();
     shutdown_guard.commit();
     Ok(())
 }

@@ -5,8 +5,9 @@ use crate::overlay::{SelectionResult, UnifiedSelector};
 use crate::plugin::{CaptureType, PluginEvent, PluginResponse};
 use crate::recording::{GifRecorder, RecordingSettings, RecordingState, StopReason};
 use crate::sound::Sound;
-use crate::state::{AppState, HotkeyStatus, UploadRecord};
+use crate::state::{app_state, AppState, HotkeyStatus, UploadRecord};
 use crate::upload::{CustomUploader, UploadService};
+use ceri::{AppHandle, CommandCall, WindowAction, WindowConfig};
 use image::RgbaImage;
 use serde::{Deserialize, Serialize};
 use std::any::Any;
@@ -17,10 +18,6 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use tauri::{AppHandle, Emitter, Manager, State};
-use tauri_plugin_autostart::ManagerExt as AutostartManagerExt;
-use tauri_plugin_opener::OpenerExt;
-use tauri_plugin_window_state::{StateFlags as WindowStateFlags, WindowExt};
 
 mod app;
 mod capture;
@@ -52,6 +49,11 @@ pub use upload::*;
 
 pub fn history_dir() -> Option<PathBuf> {
     Config::config_dir().map(|d| d.join("history"))
+}
+
+// where thumbnails and staged annotations are kept
+pub(crate) fn app_cache_dir() -> Option<PathBuf> {
+    ceri::dirs::cache().map(|dir| dir.join(crate::APP_ID))
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -154,7 +156,7 @@ pub struct ErrorEventPayload {
 }
 
 pub fn emit_error(app: &AppHandle, kind: &str, msg: &str) {
-    let _ = app.emit(
+    app.emit(
         "capscr://error",
         ErrorEventPayload {
             kind: kind.to_string(),
@@ -167,11 +169,11 @@ pub fn emit_error(app: &AppHandle, kind: &str, msg: &str) {
 // fires the plugin on_capture_saved hook. every save path routes through here so
 // the hook can't silently miss a save site
 pub fn notify_capture_saved(app: &AppHandle, save: crate::plugin::SaveInfo) {
-    let _ = app.emit(
+    app.emit(
         "capscr://capture-saved",
         save.path.to_string_lossy().to_string(),
     );
-    let state = app.state::<AppState>();
+    let state = app_state();
     let pm = state.plugin_manager.read().unwrap();
     let _ = pm.dispatch(&PluginEvent::PostSave(save));
 }
@@ -209,14 +211,14 @@ pub struct UploadSuccessPayload {
 }
 
 pub fn emit_upload_success(app: &AppHandle, upload: crate::plugin::UploadInfo) {
-    let _ = app.emit(
+    app.emit(
         "capscr://upload-success",
         UploadSuccessPayload {
             url: upload.url.clone(),
             delete_url: upload.delete_url.clone(),
         },
     );
-    let state = app.state::<AppState>();
+    let state = app_state();
     let pm = state.plugin_manager.read().unwrap();
     let _ = pm.dispatch(&PluginEvent::PostUpload(upload));
 }
