@@ -39,16 +39,4 @@ ignore = [
     "RUSTSEC-2025-0081",  # unic-char-property
     "RUSTSEC-2025-0098",  # unic-ucd-version
     "RUSTSEC-2025-0100",  # unic-ucd-ident
-
-    # quick-xml DoS advisories (quadratic duplicate-attribute scan; unbounded
-    # namespace-declaration allocation) against copies still on <0.41. verified
-    # with `cargo tree -i quick-xml@<ver> --target x86_64-unknown-linux-gnu
-    # -e all`: both are BUILD-time only and never link into the runtime binary
-    # — 0.30.0 is a [build-dependencies] of xcb (its build script parses the
-    # vendored X11 protocol XML) and 0.39.4 is used by the wayland-scanner
-    # proc-macro (compile-time codegen against vendored Wayland protocol XML).
-    # neither parses attacker-controlled input at runtime. re-check when xcb /
-    # wayland-scanner bump to quick-xml 0.41.
-    "RUSTSEC-2026-0194",  # quick-xml quadratic attribute check (build-time only)
-    "RUSTSEC-2026-0195",  # quick-xml unbounded namespace alloc (build-time only)
 ]
