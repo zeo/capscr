@@ -13,7 +13,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@ceri/app": "file:../../../hAugust/ceri/sdk",
+    "@ceri/app": "file:../../../hAugust/ceri-capscr/sdk",
     "lucide-solid": "^1.39.0",
     "solid-js": "^1.9.15"
   },

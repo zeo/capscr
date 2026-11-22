@@ -21,7 +21,7 @@ sftp = ["dep:russh", "dep:russh-sftp"]
 
 [dependencies]
 # gui shell
-ceri = { path = "../../hAugust/ceri" }
+ceri = { path = "../../hAugust/ceri-capscr" }
 
 # Global hotkeys (native, OS-event-driven via crossbeam channel)
 global-hotkey = "0.8"
@@ -186,7 +186,7 @@ wasapi = "0.17"
 
 
 [build-dependencies]
-ceri-build = { path = "../../hAugust/ceri/build" }
+ceri-build = { path = "../../hAugust/ceri-capscr/build" }
 
 [dev-dependencies]
 tempfile = "3"

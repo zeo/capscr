@@ -187,7 +187,7 @@ fn main() {
                 ..TrayConfig::default()
             },
             |app, event| match event {
-                TrayEvent::Click => commands::open_hub_window(app),
+                TrayEvent::Click | TrayEvent::DoubleClick => commands::open_hub_window(app),
                 TrayEvent::Menu(id) => on_tray_menu(app, &id),
             },
         )
