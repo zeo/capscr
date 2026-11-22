@@ -152,11 +152,10 @@ jobs:
           $metadata = cargo metadata --locked --no-deps --format-version 1 | ConvertFrom-Json
           if ($LASTEXITCODE -ne 0) { throw "cargo metadata failed" }
           $cargoVersion = ($metadata.packages | Where-Object name -eq 'capscr' | Select-Object -First 1).version
-          $tauriVersion = (Get-Content -LiteralPath 'tauri.conf.json' -Raw | ConvertFrom-Json).version
           $frontendVersion = (Get-Content -LiteralPath 'frontend\package.json' -Raw | ConvertFrom-Json).version
-          foreach ($version in @($cargoVersion, $tauriVersion, $frontendVersion)) {
+          foreach ($version in @($cargoVersion, $frontendVersion)) {
             if ($version -ne $tagVersion) {
-              throw "release version mismatch: tag=$tagVersion cargo=$cargoVersion tauri=$tauriVersion frontend=$frontendVersion"
+              throw "release version mismatch: tag=$tagVersion cargo=$cargoVersion frontend=$frontendVersion"
             }
           }
           cargo audit
@@ -188,7 +187,7 @@ jobs:
           SIGNING_PFX: ${{ secrets.WINDOWS_SIGNING_PFX }}
           SIGNING_PFX_PASSWORD: ${{ secrets.WINDOWS_SIGNING_PFX_PASSWORD }}
         run: |
-          & frontend\node_modules\.bin\tauri.cmd build --no-bundle --ci
+          cargo build --release --locked
           if ($LASTEXITCODE -ne 0) { throw "application build failed" }
           $app = 'target\release\capscr.exe'
           $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" |
@@ -256,16 +255,10 @@ jobs:
             & $pack @args
             if ($LASTEXITCODE -ne 0) { throw "rot-pack failed with exit code $LASTEXITCODE" }
           }
-          function Invoke-TauriSign([string]$path, [string]$output) {
-            $resolved = (Resolve-Path -LiteralPath $path).Path
-            & frontend\node_modules\.bin\tauri.cmd signer sign $resolved
-            if ($LASTEXITCODE -ne 0) { throw "tauri signer failed with exit code $LASTEXITCODE" }
-            Copy-Item "$resolved.sig" $output
-          }
           New-Item -ItemType Directory -Force dist | Out-Null
           $package = "dist\capscr-$ver-windows-x86_64.rpack"
           Invoke-RotPack pack $stage $package --app capscr --version $ver
-          Invoke-TauriSign $package "$package.minisig"
+          Invoke-RotPack sign $package "$package.minisig"
           $url = "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$env:GITHUB_REF_NAME/$(Split-Path $package -Leaf)"
           Invoke-RotPack manifest $package dist\installer.json --url $url --signature "$package.minisig" --published-at ([DateTime]::UtcNow.ToString('o')) --target windows-x86_64 --notes $env:RELEASE_NOTES
           Invoke-RotPack online $installer "dist\capscr-$ver-online-setup.exe"
