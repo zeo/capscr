@@ -150,6 +150,7 @@ fn main() {
         .assets(ceri::embedded_assets!())
         // a debug build loads the pages from the vite dev server
         .dev_url(DEV_URL)
+        .devtools(cfg!(feature = "devtools"))
         .content_security_policy(
             "default-src 'self'; img-src 'self' https://files.ceri.invalid data:; \
              media-src 'self' https://files.ceri.invalid; style-src 'self' 'unsafe-inline'; \

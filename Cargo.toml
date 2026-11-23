@@ -18,6 +18,9 @@ plugin-runtime = ["dep:wasmtime"]
 # SFTP upload destination. Adds russh + russh-sftp (pure-rust SSH). default-on;
 # can be disabled with --no-default-features to skip the SSH stack entirely.
 sftp = ["dep:russh", "dep:russh-sftp"]
+# for the test suite: serves the devtools protocol on --remote-debugging-port from a release
+# build and keeps its config and data under CAPSCR_HOME when set; release builds leave it off
+devtools = []
 
 [dependencies]
 # gui shell

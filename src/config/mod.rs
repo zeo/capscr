@@ -1152,8 +1152,46 @@ impl Default for Config {
     }
 }
 
-pub fn project_dirs() -> Option<ProjectDirs> {
-    ProjectDirs::from("com", "capscr", "capscr")
+pub struct AppDirs {
+    config: PathBuf,
+    data: PathBuf,
+    #[cfg(target_os = "linux")]
+    cache: PathBuf,
+}
+
+impl AppDirs {
+    pub fn config_dir(&self) -> &Path {
+        &self.config
+    }
+
+    pub fn data_dir(&self) -> &Path {
+        &self.data
+    }
+
+    #[cfg(target_os = "linux")]
+    pub fn cache_dir(&self) -> &Path {
+        &self.cache
+    }
+}
+
+pub fn project_dirs() -> Option<AppDirs> {
+    // the test suite runs beside the user's own capscr in a home of its own
+    #[cfg(feature = "devtools")]
+    if let Some(home) = std::env::var_os("CAPSCR_HOME").map(PathBuf::from) {
+        return Some(AppDirs {
+            config: home.join("config"),
+            data: home.join("data"),
+            #[cfg(target_os = "linux")]
+            cache: home.join("cache"),
+        });
+    }
+    let dirs = ProjectDirs::from("com", "capscr", "capscr")?;
+    Some(AppDirs {
+        config: dirs.config_dir().to_path_buf(),
+        data: dirs.data_dir().to_path_buf(),
+        #[cfg(target_os = "linux")]
+        cache: dirs.cache_dir().to_path_buf(),
+    })
 }
 
 impl Config {
