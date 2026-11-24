@@ -51,8 +51,13 @@ pub(crate) fn app_handle() -> Option<AppHandle> {
 
 /// the runtime the async commands and their background work run on
 pub fn runtime() -> &'static tokio::runtime::Runtime {
-    static RUNTIME: LazyLock<tokio::runtime::Runtime> =
-        LazyLock::new(|| tokio::runtime::Runtime::new().expect("the async runtime starts"));
+    static RUNTIME: LazyLock<tokio::runtime::Runtime> = LazyLock::new(|| {
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .expect("the async runtime starts")
+    });
     &RUNTIME
 }
 
