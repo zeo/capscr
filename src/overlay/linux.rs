@@ -1,4 +1,4 @@
-// linux selector overlay: one undecorated always-on-top webview per output,
+// linux selector overlay: one undecorated always-on-top window per output,
 // showing frozen frames with the same interaction
 // model as the win32 GDI selector (drag region, click window, alt+click color
 // pick, shift aspect-snap, ctrl fine-tune, esc/right-click cancel). the UI
@@ -6,24 +6,25 @@
 // at the bottom of this file.
 //
 // select() blocks the calling capture thread on a channel until the UI
-// commits a result; window creation happens on the main thread via
-// run_on_main_thread. on wayland each webview is fullscreened on its output.
+// commits a result; on wayland the native client runs first and ceri windows
+// serve as the fallback and x11 path.
 
 use std::collections::HashSet;
+use std::path::PathBuf;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
+use ceri::{AppHandle, WindowAction, WindowConfig};
 use image::RgbaImage;
 use serde::Serialize;
-use tauri::{AppHandle, Manager};
 
 use crate::capture::{gui_is_wayland as is_wayland_session, Rectangle};
 
 use super::SelectionResult;
 
 const SELECTOR_LABEL_PREFIX: &str = "selector-";
-// generous upper bound so a wedged webview can't hold the capture gate
+// generous upper bound so a wedged window can't hold the capture gate
 // (capture_in_progress) forever
 const SELECT_TIMEOUT: Duration = Duration::from_secs(600);
 
@@ -32,6 +33,7 @@ static APP: OnceLock<AppHandle> = OnceLock::new();
 struct ActiveSelection {
     surfaces: Vec<SelectorSurface>,
     ready: HashSet<String>,
+    staged_frames: Vec<PathBuf>,
     focus_label: String,
     tx: Sender<SelectionResult>,
 }
@@ -193,28 +195,23 @@ pub fn cancel_active_selection() {
 }
 
 // resolve the pending selection, notify the blocked capture thread, and tear
-// down the overlay window. safe to call from any thread and idempotent — the
-// second caller finds ACTIVE already empty.
+// down the overlay windows. safe to call from any thread and idempotent
 fn finish(result: SelectionResult) {
     let active = ACTIVE.lock().unwrap().take();
     let Some(active) = active else { return };
-    let ActiveSelection { surfaces, tx, .. } = active;
-    let labels: Vec<_> = surfaces.into_iter().map(|surface| surface.label).collect();
-    if let Some(app) = APP.get() {
-        for label in &labels {
-            if let Some(window) = app.get_webview_window(label) {
-                let _ = window.hide();
-            }
+    let ActiveSelection {
+        surfaces,
+        staged_frames,
+        tx,
+        ..
+    } = active;
+    if let Some(windows) = APP.get().and_then(|app| app.windows()) {
+        for surface in &surfaces {
+            windows.act(&surface.label, WindowAction::Destroy);
         }
-        let app = app.clone();
-        let labels = labels.clone();
-        let _ = app.clone().run_on_main_thread(move || {
-            for label in labels {
-                if let Some(window) = app.get_webview_window(&label) {
-                    let _ = window.destroy();
-                }
-            }
-        });
+    }
+    for path in staged_frames {
+        let _ = std::fs::remove_file(path);
     }
     let _ = tx.send(result);
 }
@@ -509,43 +506,32 @@ pub fn select(frozen_frame: Option<Arc<RgbaImage>>) -> SelectionResult {
         })
         .unwrap_or_else(|| surfaces[0].label.clone());
 
+    let Some(window_control) = app.windows() else {
+        tracing::warn!("selector invoked before window loop started");
+        return SelectionResult::Cancelled;
+    };
+
     let (tx, rx): (Sender<SelectionResult>, Receiver<SelectionResult>) = channel();
+    let windows: Vec<_> = surfaces
+        .iter()
+        .map(|surface| (surface.label.clone(), surface.rect))
+        .collect();
     *ACTIVE.lock().unwrap() = Some(ActiveSelection {
         surfaces,
         ready: HashSet::new(),
+        staged_frames: Vec::new(),
         focus_label,
         tx,
     });
 
-    let app_for_build = app.clone();
-    let windows: Vec<_> = ACTIVE
-        .lock()
-        .unwrap()
-        .as_ref()
-        .unwrap()
-        .surfaces
-        .iter()
-        .map(|surface| (surface.label.clone(), surface.rect))
-        .collect();
-    let built = app.run_on_main_thread(move || {
-        for (label, rect) in windows {
-            let rect = (rect.0 as f64, rect.1 as f64, rect.2 as f64, rect.3 as f64);
-            if let Err(error) = build_selector_window(&app_for_build, &label, rect) {
-                tracing::error!("selector window build failed: {error}");
-                finish(SelectionResult::Cancelled);
-                break;
-            }
-        }
-    });
-    if built.is_err() {
-        *ACTIVE.lock().unwrap() = None;
-        return SelectionResult::Cancelled;
+    for (label, rect) in windows {
+        build_selector_window(window_control, &label, rect, pure_wayland);
     }
 
     match rx.recv_timeout(SELECT_TIMEOUT) {
         Ok(result) => result,
         Err(_) => {
-            tracing::warn!("selector timed out — treating as cancelled");
+            tracing::warn!("selector timed out, treating as cancelled");
             finish(SelectionResult::Cancelled);
             SelectionResult::Cancelled
         }
@@ -553,136 +539,34 @@ pub fn select(frozen_frame: Option<Arc<RgbaImage>>) -> SelectionResult {
 }
 
 fn build_selector_window(
-    app: &AppHandle,
+    windows: &ceri::WindowControl,
     label: &str,
-    (x, y, w, h): (f64, f64, f64, f64),
-) -> tauri::Result<()> {
-    if let Some(stale) = app.get_webview_window(label) {
-        let _ = stale.destroy();
+    (x, y, w, h): (i32, i32, u32, u32),
+    fullscreen: bool,
+) {
+    if windows.state(label).is_some() {
+        windows.act(label, WindowAction::Destroy);
     }
-    let url = tauri::WebviewUrl::App("index.html".into());
-    let window = tauri::WebviewWindowBuilder::new(app, label, url)
-        .title("capscr selector")
-        .decorations(false)
-        .resizable(false)
-        .always_on_top(true)
-        .skip_taskbar(true)
-        .visible(false)
-        .position(x, y)
-        .inner_size(w, h)
-        .build()?;
-    use gtk::gdk::prelude::MonitorExt;
-    use gtk::prelude::{Cast, GtkWindowExt, WidgetExt};
-    if let Ok(gtk_window) = window.gtk_window() {
-        gtk_window.set_type_hint(gtk::gdk::WindowTypeHint::Notification);
-        if is_wayland_session() {
-            if let Some(screen) = WidgetExt::screen(&gtk_window) {
-                let display = gtk_window.display();
-                // gdk's invented wayland layout can disagree with the
-                // compositor's logical coordinates on mixed-dpi setups, so
-                // trust exact geometry first and points only as a fallback
-                let expected = (
-                    x.round() as i32,
-                    y.round() as i32,
-                    w.round() as i32,
-                    h.round() as i32,
-                );
-                let by_geometry = (0..display.n_monitors()).find(|index| {
-                    display.monitor(*index).is_some_and(|monitor| {
-                        let geometry = monitor.geometry();
-                        (
-                            geometry.x(),
-                            geometry.y(),
-                            geometry.width(),
-                            geometry.height(),
-                        ) == expected
-                    })
-                });
-                let center_x = (x + w / 2.0).round() as i32;
-                let center_y = (y + h / 2.0).round() as i32;
-                let monitor_index = by_geometry
-                    .or_else(|| {
-                        let target = display.monitor_at_point(center_x, center_y);
-                        (0..display.n_monitors()).find(|index| display.monitor(*index) == target)
-                    })
-                    .or_else(|| {
-                        let primary = display.primary_monitor();
-                        (0..display.n_monitors()).find(|index| display.monitor(*index) == primary)
-                    })
-                    .unwrap_or(0);
-                let layered = display.monitor(monitor_index).is_some_and(|monitor| {
-                    crate::shell::layer_shell::cover_output(
-                        gtk_window.upcast_ref(),
-                        &monitor,
-                        "capscr-selector",
-                    )
-                });
-                if !layered {
-                    gtk_window.fullscreen_on_monitor(&screen, monitor_index);
-                }
-                tracing::info!(
-                    "selector {label} on gdk monitor {monitor_index} (geometry match: {}), layer shell: {layered}",
-                    by_geometry.is_some(),
-                );
-            }
-        }
-    }
-    watch_selector_navigation(app, window);
-    Ok(())
-}
-
-fn set_selector_cursor(window: &tauri::WebviewWindow) {
-    use gtk::prelude::{Cast, ContainerExt, GtkWindowExt, WidgetExt};
-
-    fn set_on_widget(widget: &gtk::Widget, cursor: &gtk::gdk::Cursor) {
-        if let Some(surface) = widget.window() {
-            surface.set_cursor(Some(cursor));
-        }
-        if let Some(container) = widget.dynamic_cast_ref::<gtk::Container>() {
-            for child in container.children() {
-                set_on_widget(&child, cursor);
-            }
-        }
-    }
-
-    let Ok(gtk_window) = window.gtk_window() else {
-        return;
-    };
-    let display = gtk_window.display();
-    if let Some(cursor) = gtk::gdk::Cursor::from_name(&display, "crosshair") {
-        set_on_widget(gtk_window.upcast_ref(), &cursor);
-    }
-}
-
-// dynamically created webviews sometimes come up on about:blank instead of
-// the app url (tauri#13967) — same watchdog the editor window uses, copying
-// the canonical url from the always-alive hub webview
-fn watch_selector_navigation(app: &AppHandle, window: tauri::WebviewWindow) {
-    let app = app.clone();
-    std::thread::spawn(move || {
-        for wait_ms in [500u64, 1500, 3000] {
-            std::thread::sleep(Duration::from_millis(wait_ms));
-            let url = window.url();
-            tracing::info!("selector webview url after {wait_ms}ms: {url:?}");
-            match url {
-                Ok(url) if url.scheme() != "about" => {
-                    crate::commands::remember_canonical_url(&app, &url);
-                    return;
-                }
-                Err(_) => return,
-                _ => {}
-            }
-            tracing::warn!("selector webview stuck on about:blank; navigating explicitly");
-            if let Some(url) = crate::commands::canonical_app_url(&app) {
-                if let Err(e) = window.navigate(url) {
-                    tracing::warn!("selector explicit navigation failed: {e}");
-                }
-            }
-        }
+    windows.open(WindowConfig {
+        label: label.to_string(),
+        title: "capscr selector".to_string(),
+        width: w.max(1),
+        height: h.max(1),
+        minimum_width: 1,
+        minimum_height: 1,
+        position: Some((x, y)),
+        decorations: false,
+        resizable: false,
+        visible: false,
+        fullscreen,
+        always_on_top: true,
+        skip_taskbar: true,
+        app_id: Some("capscr".to_string()),
+        ..WindowConfig::default()
     });
 }
 
-// ---- commands used by frontend/src/views/Selector.tsx ----
+// commands used by frontend/src/views/Selector.tsx
 
 #[derive(Serialize)]
 pub struct SelectorContext {
@@ -695,14 +579,13 @@ pub struct SelectorContext {
     pub windows: Vec<WindowRect>,
 }
 
-#[tauri::command]
-pub fn selector_context(window: tauri::WebviewWindow) -> Result<SelectorContext, String> {
+pub fn selector_context(label: &str) -> Result<SelectorContext, String> {
     let guard = ACTIVE.lock().unwrap();
     let active = guard.as_ref().ok_or("no active selection")?;
     let surface = active
         .surfaces
         .iter()
-        .find(|surface| surface.label == window.label())
+        .find(|surface| surface.label == label)
         .ok_or("selector surface is unavailable")?;
     Ok(SelectorContext {
         origin_x: surface.origin.0,
@@ -713,34 +596,70 @@ pub fn selector_context(window: tauri::WebviewWindow) -> Result<SelectorContext,
     })
 }
 
-// raw RGBA bytes of the frozen frame; the UI paints them straight into a
-// canvas ImageData without an encode/decode round-trip
-#[tauri::command]
-pub fn selector_frame(window: tauri::WebviewWindow) -> Result<tauri::ipc::Response, String> {
-    let guard = ACTIVE.lock().unwrap();
-    let active = guard.as_ref().ok_or("no active selection")?;
-    let surface = active
-        .surfaces
-        .iter()
-        .find(|surface| surface.label == window.label())
-        .ok_or("selector surface is unavailable")?;
-    Ok(tauri::ipc::Response::new(surface.frame.as_raw().clone()))
+// stage the frozen frame as a fast png in the app cache and hand back its path
+// so the page loads it over ceri's file scope instead of json-encoding pixels
+pub fn selector_frame(label: &str) -> Result<String, String> {
+    let frame = {
+        let guard = ACTIVE.lock().unwrap();
+        let active = guard.as_ref().ok_or("no active selection")?;
+        active
+            .surfaces
+            .iter()
+            .find(|surface| surface.label == label)
+            .ok_or("selector surface is unavailable")?
+            .frame
+            .clone()
+    };
+    let dir = crate::commands::app_cache_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join("selector");
+    std::fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
+    if let Some(app) = APP.get() {
+        let _ = app.files().allow(&dir);
+    }
+    let path = dir.join(format!(
+        "{label}-{}.png",
+        uuid::Uuid::new_v4().as_simple()
+    ));
+    let mut file = std::fs::File::create(&path).map_err(|error| error.to_string())?;
+    let encoder = image::codecs::png::PngEncoder::new_with_quality(
+        &mut file,
+        image::codecs::png::CompressionType::Fast,
+        image::codecs::png::FilterType::NoFilter,
+    );
+    image::ImageEncoder::write_image(
+        encoder,
+        frame.as_raw(),
+        frame.width(),
+        frame.height(),
+        image::ExtendedColorType::Rgba8,
+    )
+    .map_err(|error| error.to_string())?;
+    if let Some(active) = ACTIVE.lock().unwrap().as_mut() {
+        active.staged_frames.push(path.clone());
+    } else {
+        let _ = std::fs::remove_file(&path);
+        return Err("no active selection".into());
+    }
+    Ok(path.to_string_lossy().into_owned())
 }
 
-#[tauri::command]
-pub fn selector_ready(window: tauri::WebviewWindow) -> Result<(), String> {
-    let app = APP.get().ok_or("selector app handle is unavailable")?;
+pub fn selector_ready(label: &str) -> Result<(), String> {
+    let windows = APP
+        .get()
+        .and_then(|app| app.windows())
+        .ok_or("selector app handle is unavailable")?;
     let (labels, focus_label) = {
         let mut guard = ACTIVE.lock().unwrap();
         let active = guard.as_mut().ok_or("no active selection")?;
         if !active
             .surfaces
             .iter()
-            .any(|surface| surface.label == window.label())
+            .any(|surface| surface.label == label)
         {
             return Err("selector surface is unavailable".into());
         }
-        active.ready.insert(window.label().to_string());
+        active.ready.insert(label.to_string());
         if active.ready.len() != active.surfaces.len() {
             return Ok(());
         }
@@ -753,16 +672,10 @@ pub fn selector_ready(window: tauri::WebviewWindow) -> Result<(), String> {
             active.focus_label.clone(),
         )
     };
-    for label in labels {
-        let surface = app
-            .get_webview_window(&label)
-            .ok_or("selector window is unavailable")?;
-        surface.show().map_err(|error| error.to_string())?;
-        set_selector_cursor(&surface);
+    for surface_label in labels {
+        windows.act(&surface_label, WindowAction::Show);
     }
-    if let Some(focus) = app.get_webview_window(&focus_label) {
-        focus.set_focus().map_err(|error| error.to_string())?;
-    }
+    windows.act(&focus_label, WindowAction::Focus);
     tracing::info!("selector surfaces mapped");
     Ok(())
 }
@@ -791,8 +704,7 @@ pub enum SelectorOutcome {
     Cancelled,
 }
 
-#[tauri::command]
-pub fn selector_finish(window: tauri::WebviewWindow, outcome: SelectorOutcome) {
+pub fn selector_finish(label: &str, outcome: SelectorOutcome) {
     let result = match outcome {
         SelectorOutcome::Region {
             x,
@@ -838,7 +750,7 @@ pub fn selector_finish(window: tauri::WebviewWindow, outcome: SelectorOutcome) {
                 active
                     .surfaces
                     .iter()
-                    .find(|surface| surface.label == window.label())
+                    .find(|surface| surface.label == label)
                     .map(|surface| (surface.rect, surface.output_name.clone()))
             });
             match monitor {

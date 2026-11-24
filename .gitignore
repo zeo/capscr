@@ -5,8 +5,7 @@
 /signing
 build.log
 build-*.log
-# stray top-level icon.ico that older tauri-icon defaults wrote — ours lives
-# under icons/ now
+# stray top-level icon.ico left by older builds; ours lives under icons/ now
 /icon.ico
 
 # only the icons the builds read are tracked

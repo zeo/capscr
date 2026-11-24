@@ -4,7 +4,6 @@
 // twice. capture source ordering, overlay pinning, hotkey backend selection,
 // and tray detection all key off these answers instead of probing ad hoc.
 
-pub mod layer_shell;
 pub mod tray_detect;
 
 use std::sync::OnceLock;

@@ -374,11 +374,28 @@ pub struct CaptureExclusionGuard {
 
 const EXCLUSION_PLUGIN: &str = "capscr-capture-exclusion";
 
-pub fn exclude_own_windows_from_capture(marker: &str) -> Result<CaptureExclusionGuard> {
+// arm a resident kwin script that pins, positions, and optionally excludes
+// matching windows of this process from capture before they map
+pub fn configure_own_window(
+    marker: &str,
+    position: Option<(i32, i32)>,
+    exclude_from_capture: bool,
+) -> Result<CaptureExclusionGuard> {
     let pid = std::process::id();
-    // kwin appends " — <app name>" to captions, so match on containment
+    let exclude_line = if exclude_from_capture {
+        "        w.excludeFromCapture = true;\n"
+    } else {
+        ""
+    };
+    let place_lines = match position {
+        Some((x, y)) => format!(
+            "        w.keepAbove = true;\n        w.skipTaskbar = true;\n        w.skipSwitcher = true;\n        let g = w.frameGeometry;\n        w.frameGeometry = {{ x: {x}, y: {y}, width: g.width, height: g.height }};\n"
+        ),
+        None => String::new(),
+    };
+    // kwin appends the app name to captions, so match on containment
     let script = format!(
-        "function apply(w) {{\n    if (w.pid == {pid} && w.caption.includes({marker:?})) {{\n        w.excludeFromCapture = true;\n    }}\n}}\nworkspace.windowList().forEach(apply);\nworkspace.windowAdded.connect(apply);\n"
+        "function apply(w) {{\n    if (w.pid == {pid} && w.caption.includes({marker:?})) {{\n{exclude_line}{place_lines}    }}\n}}\nworkspace.windowList().forEach(apply);\nworkspace.windowAdded.connect(apply);\n"
     );
     let file = std::env::temp_dir().join(format!("capscr_kwin_{pid}.js"));
     std::fs::write(&file, script)?;
@@ -402,7 +419,7 @@ pub fn exclude_own_windows_from_capture(marker: &str) -> Result<CaptureExclusion
     let id: i32 = reply.body().deserialize()?;
     if id < 0 {
         let _ = std::fs::remove_file(&file);
-        return Err(anyhow!("kwin refused the capture-exclusion script"));
+        return Err(anyhow!("kwin refused the window helper script"));
     }
     let script_path = format!("/Scripting/Script{id}");
     if let Err(e) = conn.call_method(

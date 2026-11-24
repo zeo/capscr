@@ -242,11 +242,10 @@ mod engine {
 
         unsafe {
             // XAudio2's CreateMasteringVoice internally uses WASAPI, which
-            // requires the calling thread to have COM initialized. our warm-
-            // up thread is fresh, so initialise here with MTA — that's also
-            // what tauri's main thread uses, so subsequent voice calls from
-            // any thread are happy. RPC_E_CHANGED_MODE / S_FALSE mean COM is
-            // already initialised in a different/same mode, both fine.
+            // requires the calling thread to have COM initialized. our warm-up
+            // thread is fresh, so initialise here with MTA so subsequent voice
+            // calls from any thread succeed. RPC_E_CHANGED_MODE / S_FALSE mean
+            // COM is already initialised in a different/same mode, both fine
             let co = CoInitializeEx(None, COINIT_MULTITHREADED);
             if co.is_err() && co != RPC_E_CHANGED_MODE && co != S_FALSE {
                 tracing::warn!("CoInitializeEx failed: {co:?}");

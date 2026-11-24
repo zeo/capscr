@@ -65,7 +65,7 @@ export function RecBar() {
 
   onMount(() => {
     // clear every layer of the app background so only the pill shows; the
-    // window itself can come up larger than the bar on gtk-wayland
+    // window itself can come up larger than the bar on wayland
     document.documentElement.style.background = "transparent";
     document.body.style.background = "transparent";
     const root = document.getElementById("root");

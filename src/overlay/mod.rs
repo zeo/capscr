@@ -9,8 +9,6 @@ mod unified;
 mod wayland_native_selector;
 #[cfg(target_os = "linux")]
 mod wayland_frame;
-#[cfg(target_os = "linux")]
-mod plasma_ffi;
 
 pub use recording::RecordingOverlay;
 pub use unified::{SelectionResult, UnifiedSelector};

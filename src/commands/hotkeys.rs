@@ -165,19 +165,17 @@ pub fn gnome_companion_status() -> GnomeCompanionStatus {
 // flag it enabled; gnome-shell only scans that dir at session start, so the
 // caller tells the user to log out and back in when active stays false
 pub fn install_gnome_companion(app: AppHandle) -> Result<GnomeCompanionStatus, String> {
+    let _ = app;
     #[cfg(target_os = "linux")]
     {
-        use tauri::path::BaseDirectory;
+        const EXTENSION_JS: &[u8] = include_bytes!("../../linux/gnome-extension/extension.js");
+        const METADATA_JSON: &[u8] = include_bytes!("../../linux/gnome-extension/metadata.json");
         let target = gnome_extension_dir().ok_or("no home directory")?;
         let _pending_mutation = PendingFileMutation::begin().map_err(|error| error.to_string())?;
         std::fs::create_dir_all(&target).map_err(|e| e.to_string())?;
-        for file in ["extension.js", "metadata.json"] {
-            let bundled = app
-                .path()
-                .resolve(format!("gnome-extension/{file}"), BaseDirectory::Resource)
-                .map_err(|e| e.to_string())?;
-            std::fs::copy(&bundled, target.join(file))
-                .map_err(|e| format!("copying {} failed: {e}", bundled.display()))?;
+        for (file, bytes) in [("extension.js", EXTENSION_JS), ("metadata.json", METADATA_JSON)] {
+            std::fs::write(target.join(file), bytes)
+                .map_err(|e| format!("writing {file} failed: {e}"))?;
         }
         // records the enabled flag against the freshly copied files; the
         // running shell picks it up at the next login
@@ -188,7 +186,6 @@ pub fn install_gnome_companion(app: AppHandle) -> Result<GnomeCompanionStatus, S
     }
     #[cfg(not(target_os = "linux"))]
     {
-        let _ = app;
         Err("the companion extension only exists on Linux".to_string())
     }
 }

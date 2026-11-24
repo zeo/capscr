@@ -45,6 +45,10 @@ fn handle() -> AppHandle {
         .clone()
 }
 
+pub(crate) fn app_handle() -> Option<AppHandle> {
+    APP.get().cloned()
+}
+
 /// the runtime the async commands and their background work run on
 pub fn runtime() -> &'static tokio::runtime::Runtime {
     static RUNTIME: LazyLock<tokio::runtime::Runtime> =
@@ -100,25 +104,6 @@ fn main() {
         .init();
 
     let (config, startup_notices) = config::Config::load().unwrap_or_default();
-    // ensure the output dir exists off the startup critical path: the capture
-    // and save paths create it on demand anyway, so this is only an early
-    // warning, and canonicalize on a cold or networked Pictures folder can
-    // stall time-to-tray.
-    {
-        let cfg = config.clone();
-        std::thread::spawn(move || {
-            if let Err(e) = cfg.ensure_output_dir() {
-                // the hub UI isn't up yet — surface this through the OS
-                // notification channel so the user knows captures will fail
-                // until they fix it.
-                let _ = clipboard::show_notification(
-                    "capscr: captures folder unreachable",
-                    &format!("{e}. Open Settings → Output to point at a writable path."),
-                );
-                tracing::error!("ensure_output_dir failed at startup: {e:#}");
-            }
-        });
-    }
     install_hdr_runtime_from_config(&config);
 
     // pre-warm the Win32 audio subsystem in the background so the first
@@ -197,7 +182,7 @@ fn main() {
         .on_close_requested(commands::close_requested)
         .on_closed(|_, label| commands::window_closed(label))
         .on_file_drop(|_, label, paths| commands::files_dropped(label, paths));
-    // the tauri builds kept the editor's tool settings in webview2's storage
+    // import editor tool settings stored in the previous webview2 profile
     #[cfg(windows)]
     let app = match ceri::dirs::local_data() {
         Some(dir) => app.import_local_storage(
@@ -244,7 +229,20 @@ fn start(
             );
         }
     }
-    // the linux selector overlay builds its webview through a stored
+    // ensure the output dir exists off the startup critical path once notifications are live
+    {
+        let cfg = app_state().config.lock().unwrap().clone();
+        std::thread::spawn(move || {
+            if let Err(e) = cfg.ensure_output_dir() {
+                let _ = clipboard::show_notification(
+                    "capscr: captures folder unreachable",
+                    &format!("{e}. Open Settings → Output to point at a writable path."),
+                );
+                tracing::error!("ensure_output_dir failed at startup: {e:#}");
+            }
+        });
+    }
+    // the linux selector overlay builds its windows through a stored
     // AppHandle; register it before any capture can fire
     #[cfg(target_os = "linux")]
     overlay::linux::init(app);

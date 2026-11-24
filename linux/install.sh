@@ -1,8 +1,6 @@
 #!/usr/bin/env bash
-# builds a release binary with bundled frontend assets and installs it for the
-# current user. plain `cargo build --release` produces a cfg(dev) binary whose
-# webviews point at the vite dev url — the custom-protocol feature below is what
-# makes tauri embed frontend/dist instead, so don't drop it.
+# builds a release binary with embedded frontend assets and installs it for the
+# current user
 set -euo pipefail
 
 repo="$(cd "$(dirname "$0")/.." && pwd)"
@@ -15,7 +13,7 @@ cd "$repo"
 [ -d frontend/node_modules ] || npm --prefix frontend ci
 npm --prefix frontend run build
 
-cargo build --locked --release --features custom-protocol
+cargo build --locked --release
 
 mkdir -p "$bin_dir" "$app_dir" "$icon_dir"
 

@@ -456,25 +456,9 @@ pub fn show_notification(title: &str, body: &str) -> Result<()> {
         return Ok(());
     }
 
-    let mut n = notify_rust::Notification::new();
-    n.summary(&safe_title)
-        .body(&safe_body)
-        .timeout(notify_rust::Timeout::Milliseconds(3000));
-
-    // anchor the toast to our explicit AUMID so Windows Action Center groups
-    // notifications under "capscr" with our icon, not under the PowerShell
-    // fallback (the generic blue icon).
-    #[cfg(windows)]
-    n.app_id("io.rot.capscr");
-
-    // link the toast to the installed desktop entry so linux notification
-    // daemons show capscr's name and icon and per-app settings apply
-    #[cfg(target_os = "linux")]
-    n.appname("capscr")
-        .icon("capscr")
-        .hint(notify_rust::Hint::DesktopEntry("capscr".into()));
-
-    n.show()?;
+    let app = crate::app_handle().ok_or_else(|| anyhow!("notifications start with the app"))?;
+    app.notify(&safe_title, &safe_body)
+        .map_err(|error| anyhow!(error))?;
 
     Ok(())
 }

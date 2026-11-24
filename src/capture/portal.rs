@@ -22,13 +22,12 @@ pub fn is_wayland_session() -> bool {
 }
 
 // a wayland session also exposes DISPLAY via xwayland, so DISPLAY being set
-// does not mean x11. the gtk/webview toolkit runs as a wayland client whenever
-// the session is wayland and the backend isn't pinned to x11 — overlay
-// placement must match the toolkit, otherwise it takes the x11
-// absolute-positioning path and lands misplaced, showing both monitors
-// crammed into one window
+// does not mean x11. the windowing backend runs as a wayland client whenever
+// the session is wayland and the backend isn't pinned to x11; overlay
+// placement must match the backend, otherwise it takes the x11
+// absolute-positioning path and lands misplaced
 pub fn gui_is_wayland() -> bool {
-    if std::env::var("GDK_BACKEND")
+    if std::env::var("WINIT_UNIX_BACKEND")
         .map(|backend| backend.eq_ignore_ascii_case("x11"))
         .unwrap_or(false)
     {

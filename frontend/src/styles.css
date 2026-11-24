@@ -2706,7 +2706,7 @@ kbd {
 }
 
 
-/* recording control bar. on gtk-wayland the window can come up larger than
+/* recording control bar. on wayland the window can come up larger than
    asked, so the bar is a fixed-size pill anchored to the top-left (the pinned
    position) and everything else stays transparent. sizes match BAR_W/BAR_H
    in recording.rs (linux) and recbar.rs (windows) */

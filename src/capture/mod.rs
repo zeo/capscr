@@ -67,7 +67,7 @@ pub use kwin::capture_interactive_window as capture_wayland_window;
 #[cfg(target_os = "linux")]
 pub use kwin::keep_own_windows_above;
 #[cfg(target_os = "linux")]
-pub use kwin::{exclude_own_windows_from_capture, CaptureExclusionGuard};
+pub use kwin::{configure_own_window, CaptureExclusionGuard};
 
 #[cfg(target_os = "linux")]
 pub fn capture_wayland_region(region: Rectangle) -> Result<RgbaImage> {

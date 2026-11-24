@@ -125,10 +125,10 @@ impl Capture for WindowCapture {
             Err(_e) => {
                 // xcap excludes windows owned by the current process to avoid
                 // a GetWindowText deadlock (see xcap impl_window.rs::is_valid_window).
-                // Use a screen-region capture via the window's DWM-extended
+                // use a screen-region capture via the window's DWM-extended
                 // frame bounds: this works for any window class including
-                // WebView2/Chromium/Tauri whose DirectComposition surfaces
-                // are invisible to PrintWindow.
+                // WebView2 and Chromium whose DirectComposition surfaces
+                // are invisible to PrintWindow
                 #[cfg(windows)]
                 {
                     self_capture_screen_region(self.window_id)

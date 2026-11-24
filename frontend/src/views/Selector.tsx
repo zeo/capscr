@@ -1,5 +1,5 @@
 import { onCleanup, onMount } from "solid-js";
-import { invoke } from "../host";
+import { fileSrc, invoke } from "../host";
 import { aspectTarget } from "./selection";
 
 interface WindowRect {
@@ -43,7 +43,7 @@ export function Selector() {
   let colorLabel!: HTMLDivElement;
 
   let ctxInfo: SelectorContext | null = null;
-  let frame: ImageBitmap | null = null;
+  let frame: HTMLImageElement | null = null;
   let frameData: ImageData | null = null;
   let frameLoading: Promise<void> | null = null;
   let cursorX = -1;
@@ -160,7 +160,12 @@ export function Selector() {
     if (!frame || !ctxInfo) return;
     backdrop.width = ctxInfo.frame_width;
     backdrop.height = ctxInfo.frame_height;
-    backdrop.getContext("2d")?.drawImage(frame, 0, 0);
+    const g = backdrop.getContext("2d");
+    if (!g) return;
+    g.drawImage(frame, 0, 0);
+    if (!frameData) {
+      frameData = g.getImageData(0, 0, ctxInfo.frame_width, ctxInfo.frame_height);
+    }
   };
 
   const loadFrame = () => {
@@ -168,13 +173,14 @@ export function Selector() {
     if (frameLoading) return frameLoading;
     frameLoading = (async () => {
       if (!ctxInfo) return;
-      const raw = await invoke<ArrayBuffer>("selector_frame");
-      frameData = new ImageData(
-        new Uint8ClampedArray(raw),
-        ctxInfo.frame_width,
-        ctxInfo.frame_height,
-      );
-      frame = await createImageBitmap(frameData);
+      const path = await invoke<string>("selector_frame");
+      const img = new Image();
+      await new Promise<void>((resolve, reject) => {
+        img.onload = () => resolve();
+        img.onerror = () => reject(new Error("selector frame image failed to load"));
+        img.src = fileSrc(path);
+      });
+      frame = img;
       paintBackdrop();
       schedule();
     })();
@@ -488,7 +494,7 @@ export function Selector() {
     window.removeEventListener("keydown", onKeyDown);
     window.removeEventListener("keyup", onKeyUp);
     window.removeEventListener("resize", onResize);
-    frame?.close();
+    frame = null;
     dragChannel.close();
     if (raf) cancelAnimationFrame(raf);
   });

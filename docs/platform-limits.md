@@ -127,8 +127,8 @@ These differ under the hood but produce the same result, so they aren't gaps:
 - **credential vault** — DPAPI on Windows, the freedesktop Secret Service on
   Linux.
 - **OCR** — the built-in Windows OCR engine, `tesseract` on Linux.
-- **native menu theming** — Windows needs a nudge to render the tray and
-  context menus dark (`win_darkmode.rs`); GTK menus follow the system theme
-  on their own.
+- **native menu theming** - Windows needs a nudge to render the tray and
+  context menus dark (`win_darkmode.rs`); Linux desktop menus follow the system
+  theme on their own.
 
 [bug 513785]: https://bugs.kde.org/show_bug.cgi?id=513785

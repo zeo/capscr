@@ -1,10 +1,9 @@
-// the blinking red region frame on kde, as a raw wayland client. a gtk
-// toplevel gets kwin's server-side titlebar and its plasma role ignored
-// (verified in a live recording), so this mirrors the native selector's
-// working recipe instead: xdg toplevel + plasma criticalnotification role +
-// set_position, an empty input region, and an shm buffer whose interior is
-// transparent. the blink alternates the ring buffer with a fully clear one
-// so the surface never unmaps.
+// the blinking red region frame on kde, as a raw wayland client. an ordinary
+// toplevel gets kwin's server-side titlebar and cannot place itself at exact
+// coordinates, so this mirrors the native selector's recipe instead: xdg
+// toplevel + plasma criticalnotification role + set_position, an empty input
+// region, and an shm buffer whose interior is transparent. the blink
+// alternates the ring buffer with a fully clear one so the surface never unmaps
 
 use std::io::Write;
 use std::os::fd::AsFd;
@@ -203,8 +202,7 @@ fn run(region: Rectangle, shutdown: Receiver<()>, ready: &Sender<Result<()>>) ->
     let wm_base = globals
         .bind::<xdg_wm_base::XdgWmBase, _, _>(&queue, 1..=6, ())
         .context("bind xdg_wm_base")?;
-    // no plasma shell, no exact placement: the caller falls back to the gtk
-    // path (layer-shell on wlroots, the companion on gnome)
+    // no plasma shell, no exact placement: skip the wayland frame
     let plasma_shell = globals
         .bind::<org_kde_plasma_shell::OrgKdePlasmaShell, _, _>(&queue, 1..=8, ())
         .context("bind org_kde_plasma_shell")?;

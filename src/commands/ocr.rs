@@ -1,60 +1,5 @@
 use super::*;
 
-#[cfg(target_os = "linux")]
-#[cfg(test)]
-mod ocr_locale_tests {
-    use super::desired_tess_langs;
-
-    #[test]
-    fn maps_a_plain_lang_locale() {
-        assert_eq!(
-            desired_tess_langs(None, None, Some("de_DE.UTF-8")),
-            vec!["deu"]
-        );
-    }
-
-    #[test]
-    fn language_priority_list_wins_and_dedupes() {
-        assert_eq!(
-            desired_tess_langs(Some("de_DE:en_US:de_AT"), Some("fr_FR.UTF-8"), None),
-            vec!["deu", "eng"]
-        );
-    }
-
-    #[test]
-    fn c_and_posix_locales_yield_nothing() {
-        assert!(desired_tess_langs(None, Some("C"), Some("POSIX")).is_empty());
-    }
-
-    #[test]
-    fn chinese_splits_by_region() {
-        assert_eq!(
-            desired_tess_langs(Some("zh_TW:zh_CN"), None, None),
-            vec!["chi_tra", "chi_sim"]
-        );
-    }
-
-    #[test]
-    fn unknown_codes_are_skipped() {
-        assert_eq!(
-            desired_tess_langs(Some("xx_YY:ja_JP"), None, None),
-            vec!["jpn"]
-        );
-    }
-
-    #[test]
-    fn modifiers_and_encodings_are_stripped() {
-        assert_eq!(
-            desired_tess_langs(None, None, Some("sr_RS.UTF-8@latin")),
-            Vec::<&str>::new()
-        );
-        assert_eq!(
-            desired_tess_langs(None, None, Some("uk_UA.KOI8-U")),
-            vec!["ukr"]
-        );
-    }
-}
-
 pub async fn run_ocr(path: String, state: &AppState) -> Result<String, String> {
     let config = state.config.lock().unwrap().clone();
     let canonical = std::fs::canonicalize(&path).map_err(|e| e.to_string())?;
@@ -273,4 +218,59 @@ pub(crate) fn ocr_capture(image: &RgbaImage) -> anyhow::Result<String> {
         )
         .map_err(|e| anyhow::anyhow!("failed to encode capture for OCR: {e}"))?;
     ocr_image_bytes(&png)
+}
+
+#[cfg(target_os = "linux")]
+#[cfg(test)]
+mod ocr_locale_tests {
+    use super::desired_tess_langs;
+
+    #[test]
+    fn maps_a_plain_lang_locale() {
+        assert_eq!(
+            desired_tess_langs(None, None, Some("de_DE.UTF-8")),
+            vec!["deu"]
+        );
+    }
+
+    #[test]
+    fn language_priority_list_wins_and_dedupes() {
+        assert_eq!(
+            desired_tess_langs(Some("de_DE:en_US:de_AT"), Some("fr_FR.UTF-8"), None),
+            vec!["deu", "eng"]
+        );
+    }
+
+    #[test]
+    fn c_and_posix_locales_yield_nothing() {
+        assert!(desired_tess_langs(None, Some("C"), Some("POSIX")).is_empty());
+    }
+
+    #[test]
+    fn chinese_splits_by_region() {
+        assert_eq!(
+            desired_tess_langs(Some("zh_TW:zh_CN"), None, None),
+            vec!["chi_tra", "chi_sim"]
+        );
+    }
+
+    #[test]
+    fn unknown_codes_are_skipped() {
+        assert_eq!(
+            desired_tess_langs(Some("xx_YY:ja_JP"), None, None),
+            vec!["jpn"]
+        );
+    }
+
+    #[test]
+    fn modifiers_and_encodings_are_stripped() {
+        assert_eq!(
+            desired_tess_langs(None, None, Some("sr_RS.UTF-8@latin")),
+            Vec::<&str>::new()
+        );
+        assert_eq!(
+            desired_tess_langs(None, None, Some("uk_UA.KOI8-U")),
+            vec!["ukr"]
+        );
+    }
 }

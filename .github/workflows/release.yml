@@ -67,9 +67,6 @@ jobs:
               "capscr-$version-windows-x86_64.rpack.minisig",
               "capscr-$version-online-setup.exe",
               "capscr-$version-offline-setup.exe",
-              "capscr_${version}_amd64.deb",
-              "capscr-$version-1.x86_64.rpm",
-              "capscr_${version}_amd64.AppImage",
               "capscr-$version-linux-x86_64.rpack",
               "capscr-$version-linux-x86_64.rpack.minisig",
               "capscr-$version-linux-x86_64-setup",
@@ -331,10 +328,9 @@ jobs:
           overwrite_files: true
           fail_on_unmatched_files: true
 
-  # linux bundles (deb / rpm / AppImage) on a hosted runner. ubuntu-24.04 is
-  # the oldest image whose pipewire headers libspa 0.9 compiles against, which
-  # puts the AppImage glibc floor at 2.39 (Ubuntu 24.04 / Debian 13 / Fedora 40
-  # or newer). runs after windows so release creation and uploads stay serialized
+  # linux installer release on a hosted runner. ubuntu-24.04 is the oldest image
+  # whose pipewire headers libspa 0.9 compiles against (glibc 2.39 floor).
+  # runs after windows so release creation and uploads stay serialized
   build-linux:
     if: github.actor == 'zeo'
     needs: build-windows
@@ -372,10 +368,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential curl wget file pkg-config \
-            libssl-dev libgtk-3-dev libwebkit2gtk-4.1-dev \
-            libayatana-appindicator3-dev librsvg2-dev libxdo-dev \
-            libclang-dev libxcb1-dev libxcb-shm0-dev libxcb-randr0-dev \
-            libxrandr-dev libdbus-1-dev libpipewire-0.3-dev \
+            libssl-dev libxdo-dev libclang-dev libxcb1-dev libxcb-shm0-dev \
+            libxcb-randr0-dev libxrandr-dev libdbus-1-dev libpipewire-0.3-dev \
             libwayland-dev libegl-dev libgbm-dev libdrm-dev
 
       - name: Install Rust
@@ -396,19 +390,12 @@ jobs:
         working-directory: frontend
         run: npm ci
 
-      - name: Build and release with tauri-action
-        uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        with:
-          args: --bundles deb,rpm,appimage
-          tagName: ${{ github.ref_name }}
-          releaseName: 'capscr ${{ github.ref_name }}'
-          releaseBody: ${{ steps.changelog.outputs.notes }}
-          releaseDraft: true
-          prerelease: false
+      - name: Build frontend
+        working-directory: frontend
+        run: npm run build
+
+      - name: Build Linux application
+        run: cargo build --release --locked
 
       - name: Build shared installer tools
         env:
@@ -435,23 +422,17 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           ver="${GITHUB_REF_NAME#v}"
-          appimage="$(find target/release/bundle/appimage -maxdepth 1 -type f -name '*.AppImage' -print -quit)"
-          test -n "$appimage"
           stage="$RUNNER_TEMP/capscr-rpack"
           mkdir -p "$stage" dist
-          install -m755 "$appimage" "$stage/capscr"
+          install -m755 target/release/capscr "$stage/capscr"
           pack=.rot-installer/target/release/rot-pack
           installer=.rot-installer/target/release/rot-installer
           package="dist/capscr-$ver-linux-x86_64.rpack"
           "$pack" pack "$stage" "$package" --app capscr --version "$ver"
-          package_path="$(realpath "$package")"
-          frontend/node_modules/.bin/tauri signer sign "$package_path"
-          cp "$package_path.sig" "$package.minisig"
+          "$pack" sign "$package" "$package.minisig"
           url="https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME/$(basename "$package")"
           "$pack" manifest "$package" dist/installer.json --url "$url" --signature "$package.minisig" --published-at "$(date --utc --iso-8601=seconds)" --target linux-x86_64
-          manifest_path="$(realpath dist/installer.json)"
-          frontend/node_modules/.bin/tauri signer sign "$manifest_path"
-          cp "$manifest_path.sig" dist/installer.json.minisig
+          "$pack" sign dist/installer.json dist/installer.json.minisig
           "$pack" online "$installer" "dist/capscr-$ver-linux-x86_64-setup"
           "$pack" offline "$installer" "$package" "$package.minisig" "dist/capscr-$ver-linux-x86_64-offline-setup" --app capscr
           chmod 755 dist/capscr-*-setup
@@ -480,9 +461,6 @@ jobs:
             "capscr-$ver-windows-x86_64.rpack.minisig" \
             "capscr-$ver-online-setup.exe" \
             "capscr-$ver-offline-setup.exe" \
-            "capscr_${ver}_amd64.deb" \
-            "capscr-$ver-1.x86_64.rpm" \
-            "capscr_${ver}_amd64.AppImage" \
             "capscr-$ver-linux-x86_64.rpack" \
             "capscr-$ver-linux-x86_64.rpack.minisig" \
             "capscr-$ver-linux-x86_64-setup" \

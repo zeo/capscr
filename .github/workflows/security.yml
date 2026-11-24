@@ -52,10 +52,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential curl wget file pkg-config \
-            libssl-dev libgtk-3-dev libwebkit2gtk-4.1-dev \
-            libayatana-appindicator3-dev librsvg2-dev libxdo-dev \
-            libclang-dev libxcb1-dev libxcb-shm0-dev libxcb-randr0-dev \
-            libxrandr-dev libdbus-1-dev libpipewire-0.3-dev \
+            libssl-dev libxdo-dev libclang-dev libxcb1-dev libxcb-shm0-dev \
+            libxcb-randr0-dev libxrandr-dev libdbus-1-dev libpipewire-0.3-dev \
             libwayland-dev libegl-dev libgbm-dev libdrm-dev xvfb ffmpeg
 
       - name: Install Rust
@@ -120,10 +118,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential curl wget file pkg-config \
-            libssl-dev libgtk-3-dev libwebkit2gtk-4.1-dev \
-            libayatana-appindicator3-dev librsvg2-dev libxdo-dev \
-            libclang-dev libxcb1-dev libxcb-shm0-dev libxcb-randr0-dev \
-            libxrandr-dev libdbus-1-dev libpipewire-0.3-dev \
+            libssl-dev libxdo-dev libclang-dev libxcb1-dev libxcb-shm0-dev \
+            libxcb-randr0-dev libxrandr-dev libdbus-1-dev libpipewire-0.3-dev \
             libwayland-dev libegl-dev libgbm-dev libdrm-dev dbus-user-session
 
       - name: Install compositor (${{ matrix.rig }})
@@ -155,7 +151,7 @@ jobs:
         run: npm ci && npm run build
 
       - name: Build capscr
-        run: cargo build --bin capscr --features custom-protocol --locked
+        run: cargo build --bin capscr --locked
 
       - name: Run ${{ matrix.rig }} diagnostic rig
         run: bash ci/compositors/${{ matrix.rig }}-diag.sh target/debug/capscr
@@ -191,14 +187,12 @@ jobs:
           if command -v apt-get >/dev/null; then
             $SUDO apt-get update
             $SUDO apt-get install -y build-essential pkg-config libssl-dev \
-              libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev \
-              librsvg2-dev libxdo-dev libclang-dev libxcb1-dev libxcb-shm0-dev \
+              libxdo-dev libclang-dev libxcb1-dev libxcb-shm0-dev \
               libxcb-randr0-dev libxrandr-dev libdbus-1-dev libpipewire-0.3-dev \
               libwayland-dev libegl-dev libgbm-dev libdrm-dev
           elif command -v dnf >/dev/null; then
             $SUDO dnf install -y gcc gcc-c++ pkgconf-pkg-config openssl-devel \
-              gtk3-devel webkit2gtk4.1-devel libayatana-appindicator-gtk3-devel \
-              librsvg2-devel xdotool-devel clang-devel libxcb-devel \
+              xdotool-devel clang-devel libxcb-devel \
               libXrandr-devel dbus-devel pipewire-devel wayland-devel \
               mesa-libEGL-devel mesa-libgbm-devel libdrm-devel
           fi
@@ -226,7 +220,7 @@ jobs:
 
       - name: Build capscr
         if: steps.probe.outputs.usable == 'true'
-        run: cargo build --bin capscr --features custom-protocol --locked
+        run: cargo build --bin capscr --locked
 
       - name: Run KDE diagnostic rig
         if: steps.probe.outputs.usable == 'true'

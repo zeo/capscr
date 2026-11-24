@@ -1,7 +1,7 @@
-// Windows taskbar jump list — populates the right-click menu on the capscr
-// taskbar button with capture shortcuts. Each entry launches the exe with a
-// `--jump=<kind>` arg; tauri-plugin-single-instance forwards that to the
-// already-running process (see main.rs).
+// windows taskbar jump list: populates the right-click menu on the capscr
+// taskbar button with capture shortcuts. each entry launches the exe with a
+// `--jump=<kind>` arg; single-instance forwarding hands that to the
+// already-running process (see main.rs)
 //
 // the COM calls here are all best-effort: if any step fails, the jump list
 // silently stays as Windows' default. We never want this to block startup.
@@ -106,7 +106,7 @@ fn register(tasks: &[CaptureTask]) -> windows::core::Result<()> {
     unsafe {
         // COINIT_APARTMENTTHREADED matches what most desktop apps use; safe to
         // call repeatedly (returns RPC_E_CHANGED_MODE on conflict, which we
-        // ignore — Tauri may have already initialised COM on this thread).
+        // ignore because the window loop may have already initialised COM)
         let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
 
         let list: ICustomDestinationList =

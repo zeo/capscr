@@ -24,11 +24,9 @@ From the [releases page](https://github.com/zeo/capscr/releases/latest):
 | file | for |
 |---|---|
 | `*-online-setup.exe`, `*-offline-setup.exe` | Windows 10 1903+ |
-| `*-linux-x86_64-setup`, `*-linux-x86_64-offline-setup` | Linux installer |
-| `.deb`, `.rpm` | Debian, Ubuntu, Mint; Fedora, openSUSE |
-| `.AppImage` | any distro with glibc 2.39+ |
+| `*-linux-x86_64-setup`, `*-linux-x86_64-offline-setup` | Linux installer (glibc 2.39+) |
 
-Linux needs webkit2gtk 4.1. MP4 uses `ffmpeg` (downloaded automatically on Windows), OCR uses `tesseract`. X11 and Wayland both work, with these differences:
+MP4 uses `ffmpeg` (downloaded automatically on Windows), OCR uses `tesseract`. X11 and Wayland both work, with these differences:
 
 | | X11 | KDE | wlroots | GNOME |
 |---|---|---|---|---|
@@ -43,7 +41,7 @@ Settings live in `%APPDATA%\capscr\capscr\config\config.toml` or `~/.config/caps
 
 ## build from source
 
-Rust 1.97+, Node 22.12+, MSVC build tools on Windows, and a ceri checkout at `../../hAugust/ceri`.
+Rust 1.97+, Node 22.12+, and MSVC build tools on Windows.
 
 ```sh
 git clone https://github.com/zeo/capscr.git
@@ -59,8 +57,7 @@ Debian/Ubuntu build dependencies:
 
 ```sh
 sudo apt install build-essential curl wget file pkg-config libssl-dev \
-  libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev \
-  librsvg2-dev libxdo-dev libclang-dev libxcb1-dev libxcb-shm0-dev \
+  libxdo-dev libclang-dev libxcb1-dev libxcb-shm0-dev \
   libxcb-randr0-dev libxrandr-dev libdbus-1-dev libpipewire-0.3-dev \
   libwayland-dev libegl-dev libgbm-dev libdrm-dev
 ```
