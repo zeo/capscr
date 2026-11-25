@@ -13,7 +13,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@ceri/app": "https://github.com/zeo/ceri/releases/download/v0.1.12/ceri-app-0.1.12.tgz",
+    "@ceri/app": "https://github.com/zeo/ceri/releases/download/v0.1.13/ceri-app-0.1.13.tgz",
     "lucide-solid": "^1.39.0",
     "solid-js": "^1.9.15"
   },
