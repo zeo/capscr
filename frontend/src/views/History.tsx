@@ -1,11 +1,15 @@
 import {
+  createEffect,
   createMemo,
   createResource,
   createSignal,
   For,
+  on,
   onCleanup,
   onMount,
   Show,
+  untrack,
+  type JSX,
 } from "solid-js";
 import { fileSrc, listen, type Unlisten } from "../host";
 import {
@@ -26,6 +30,13 @@ import {
 import { api, type HistoryEntry } from "../api";
 import { hdrSupported } from "../hdrSupport";
 import { TrimModal } from "../components/TrimModal";
+import {
+  computeGridWindow,
+  DEFAULT_OVERSCAN_ROWS,
+  gridWindowEquals,
+  TILE_GAP,
+  TILE_MIN_WIDTH,
+} from "./historyGrid";
 
 type FilterKind = "all" | "images" | "gifs" | "videos" | "hdr";
 
@@ -45,78 +56,83 @@ const latestUpload = (e: HistoryEntry) => e.uploads[e.uploads.length - 1];
 const fileOnly = (e: HistoryEntry) =>
   e.is_gif || e.is_mp4 || /\.(avif|jxl)$/i.test(e.path);
 
-function ThumbImg(props: { path: string; alt: string }) {
-  const [shouldLoad, setShouldLoad] = createSignal(false);
+const THUMB_CACHE_LIMIT = 2000;
+const thumbCache = new Map<string, string>();
+
+function cacheThumb(key: string, value: string) {
+  if (thumbCache.size >= THUMB_CACHE_LIMIT) {
+    const oldest = thumbCache.keys().next().value;
+    if (oldest !== undefined) thumbCache.delete(oldest);
+  }
+  thumbCache.set(key, value);
+}
+
+function ThumbImg(props: { path: string; alt: string; cacheKey: string }) {
+  const [thumb, setThumb] = createSignal<string | null>(null);
   const [failed, setFailed] = createSignal(false);
-  const [thumb] = createResource(
-    () => shouldLoad() && props.path,
-    (path) => api.historyThumbnail(path).catch(() => null),
-  );
-  let target!: HTMLDivElement;
-  onMount(() => {
-    if (typeof IntersectionObserver === "undefined") {
-      setShouldLoad(true);
+
+  createEffect(() => {
+    const path = props.path;
+    const key = props.cacheKey;
+    const cached = thumbCache.get(key);
+    if (cached) {
+      setFailed(false);
+      setThumb(cached);
       return;
     }
-    const observer = new IntersectionObserver(
-      ([entry]) => {
-        if (!entry?.isIntersecting) return;
-        observer.disconnect();
-        setShouldLoad(true);
-      },
-      { rootMargin: "320px 0px" },
-    );
-    observer.observe(target);
-    onCleanup(() => observer.disconnect());
+    let cancelled = false;
+    setThumb(null);
+    setFailed(false);
+    void api
+      .historyThumbnail(path)
+      .then((resolved) => {
+        if (cancelled) return;
+        cacheThumb(key, resolved);
+        setThumb(resolved);
+      })
+      .catch(() => {
+        if (!cancelled) setFailed(true);
+      });
+    onCleanup(() => {
+      cancelled = true;
+    });
   });
+
   return (
     <Show
       when={thumb() && !failed()}
-      fallback={<div ref={target} class="tile-img" aria-hidden="true" />}
+      fallback={<div class="tile-img" aria-hidden="true" />}
     >
       <img
         class="tile-img"
         src={fileSrc(thumb()!)}
         alt={props.alt}
-        loading="lazy"
         decoding="async"
-        onError={() => setFailed(true)}
+        onError={() => {
+          thumbCache.delete(props.cacheKey);
+          setFailed(true);
+        }}
       />
     </Show>
   );
 }
 
 function ThumbVideo(props: { path: string }) {
-  const [shouldLoad, setShouldLoad] = createSignal(false);
   let target!: HTMLVideoElement;
-  onMount(() => {
-    if (typeof IntersectionObserver === "undefined") {
-      setShouldLoad(true);
-      return;
-    }
-    const observer = new IntersectionObserver(
-      ([entry]) => {
-        if (!entry?.isIntersecting) return;
-        observer.disconnect();
-        setShouldLoad(true);
-      },
-      { rootMargin: "320px 0px" },
-    );
-    observer.observe(target);
-    onCleanup(() => observer.disconnect());
+  onCleanup(() => {
+    target?.pause();
   });
   return (
     <video
       ref={target}
       class="tile-img"
-      src={shouldLoad() ? `${fileSrc(props.path)}#t=0.1` : undefined}
+      src={`${fileSrc(props.path)}#t=0.1`}
       muted
       loop
       playsinline
       preload="metadata"
       aria-hidden="true"
       onMouseEnter={(event) => {
-        setShouldLoad(true);
         void event.currentTarget.play().catch(() => {});
       }}
       onMouseLeave={(event) => {
@@ -126,6 +142,158 @@ function ThumbVideo(props: { path: string }) {
         }
       }}
     />
+  );
+}
+
+function VirtualTileGrid(props: {
+  entries: HistoryEntry[];
+  layoutTick: number;
+  scrollReset: number;
+  renderTile: (entry: HistoryEntry) => JSX.Element;
+}) {
+  let tilesEl!: HTMLDivElement;
+  let gridEl!: HTMLDivElement;
+  let scroller: HTMLElement | null = null;
+
+  const [containerWidth, setContainerWidth] = createSignal(0);
+  const [viewportHeight, setViewportHeight] = createSignal(0);
+  const [scrollTop, setScrollTop] = createSignal(0);
+  const [gridOffsetTop, setGridOffsetTop] = createSignal(0);
+  const [rowHeight, setRowHeight] = createSignal(0);
+
+  const measure = () => {
+    if (!tilesEl || !gridEl) return;
+    const width = tilesEl.clientWidth;
+    if (width > 0) setContainerWidth(width);
+    if (scroller) {
+      const vh = scroller.clientHeight;
+      if (vh > 0) setViewportHeight(vh);
+      const scrollRect = scroller.getBoundingClientRect();
+      const tilesRect = tilesEl.getBoundingClientRect();
+      const offsetTop = Math.max(
+        0,
+        tilesRect.top + tilesEl.clientTop - scrollRect.top + scroller.scrollTop,
+      );
+      setGridOffsetTop(offsetTop);
+      setScrollTop(scroller.scrollTop);
+    }
+    const firstTile = gridEl.firstElementChild as HTMLElement | null;
+    if (firstTile) {
+      const measured = firstTile.getBoundingClientRect().height;
+      if (measured > 0 && Math.abs(measured - untrack(rowHeight)) > 0.5) {
+        setRowHeight(measured);
+      }
+    }
+  };
+
+  const gridWindow = createMemo(
+    () =>
+      computeGridWindow({
+        itemCount: props.entries.length,
+        containerWidth: containerWidth(),
+        viewportHeight: viewportHeight(),
+        scrollTop: scrollTop(),
+        gridOffsetTop: gridOffsetTop(),
+        rowHeight: rowHeight(),
+        minTileWidth: TILE_MIN_WIDTH,
+        gap: TILE_GAP,
+        overscanRows: DEFAULT_OVERSCAN_ROWS,
+      }),
+    undefined,
+    { equals: gridWindowEquals },
+  );
+
+  const visibleEntries = createMemo(() => {
+    const win = gridWindow();
+    return props.entries.slice(win.startIndex, win.endIndex);
+  });
+
+  onMount(() => {
+    scroller = tilesEl.closest(".content") as HTMLElement | null;
+    measure();
+    const raf =
+      typeof requestAnimationFrame === "function"
+        ? requestAnimationFrame(measure)
+        : 0;
+
+    const onScroll = () => {
+      if (!scroller) return;
+      setScrollTop(scroller.scrollTop);
+    };
+    scroller?.addEventListener("scroll", onScroll, { passive: true });
+
+    let observer: ResizeObserver | null = null;
+    if (typeof ResizeObserver !== "undefined") {
+      observer = new ResizeObserver(() => measure());
+      observer.observe(tilesEl);
+      if (scroller) observer.observe(scroller);
+    }
+
+    onCleanup(() => {
+      if (raf && typeof cancelAnimationFrame === "function") {
+        cancelAnimationFrame(raf);
+      }
+      scroller?.removeEventListener("scroll", onScroll);
+      observer?.disconnect();
+    });
+  });
+
+  createEffect(
+    on(
+      () => props.layoutTick,
+      () => measure(),
+      { defer: true },
+    ),
+  );
+
+  createEffect(
+    on(
+      () => props.scrollReset,
+      () => {
+        if (scroller) scroller.scrollTop = 0;
+        setScrollTop(0);
+      },
+      { defer: true },
+    ),
+  );
+
+  // clamp scroll when the list shrinks after delete, refresh, or resize
+  createEffect(
+    on(
+      () => [props.entries.length, gridWindow().totalHeight] as const,
+      () => {
+        if (!scroller) return;
+        const maxScroll = Math.max(
+          0,
+          scroller.scrollHeight - scroller.clientHeight,
+        );
+        if (scroller.scrollTop > maxScroll) {
+          scroller.scrollTop = maxScroll;
+        }
+        if (scroller.scrollTop !== untrack(scrollTop)) {
+          setScrollTop(scroller.scrollTop);
+        }
+      },
+      { defer: true },
+    ),
+  );
+
+  return (
+    <div class="tiles" ref={tilesEl}>
+      <div
+        class="tiles-spacer"
+        style={{ height: `${gridWindow().topSpacer}px` }}
+        aria-hidden="true"
+      />
+      <div class="tiles-grid" ref={gridEl}>
+        <For each={visibleEntries()}>{(entry) => props.renderTile(entry)}</For>
+      </div>
+      <div
+        class="tiles-spacer"
+        style={{ height: `${gridWindow().bottomSpacer}px` }}
+        aria-hidden="true"
+      />
+    </div>
   );
 }
 
@@ -316,9 +484,23 @@ export function History() {
     });
   };
 
+  let headRef!: HTMLDivElement;
+  const [scrollReset, setScrollReset] = createSignal(0);
+  createEffect(
+    on(
+      [search, filter],
+      () => {
+        const scroller = headRef?.closest(".content") as HTMLElement | null;
+        if (scroller) scroller.scrollTop = 0;
+        setScrollReset((n) => n + 1);
+      },
+      { defer: true },
+    ),
+  );
+
   return (
     <>
-      <div class="view-head">
+      <div class="view-head" ref={headRef}>
         <h1>history</h1>
         <span class="lede">
           {entries.loading
@@ -429,9 +611,11 @@ export function History() {
             </div>
           }
         >
-        <div class="tiles">
-          <For each={filtered()}>
-            {(e) => (
+          <VirtualTileGrid
+            entries={filtered()}
+            layoutTick={flash() ? 1 : 0}
+            scrollReset={scrollReset()}
+            renderTile={(e) => (
               <div
                 class="tile"
                 role="group"
@@ -445,7 +629,13 @@ export function History() {
                 >
                   <Show
                     when={e.is_mp4}
-                    fallback={<ThumbImg path={e.path} alt="" />}
+                    fallback={
+                      <ThumbImg
+                        path={e.path}
+                        alt=""
+                        cacheKey={`${e.path}\0${e.size_bytes}\0${e.modified_unix}`}
+                      />
+                    }
                   >
                     <ThumbVideo path={e.path} />
                   </Show>
@@ -575,8 +765,7 @@ export function History() {
                 </div>
               </div>
             )}
-          </For>
-        </div>
+          />
         </Show>
       </Show>
 

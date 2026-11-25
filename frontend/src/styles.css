@@ -1254,13 +1254,21 @@ button.btn,
 /* ---------------- history tiles ---------------- */
 
 .tiles {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
-  gap: 1px;
   border: 1px solid var(--rule);
   border-radius: var(--r-card);
   overflow: hidden;
   box-shadow: var(--bevel);
+}
+
+.tiles-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 1px;
+}
+
+.tiles-spacer {
+  width: 100%;
+  pointer-events: none;
 }
 
 /* each tile draws its own grid line into the gap, so a short last row ends
