@@ -837,8 +837,8 @@ dependencies = [
 
 [[package]]
 name = "ceri"
-version = "0.1.11"
-source = "git+https://github.com/zeo/ceri?tag=v0.1.11#3e290f820cb7b50df7f3b25fa4e863d2f3dda315"
+version = "0.1.12"
+source = "git+https://github.com/zeo/ceri?tag=v0.1.12#ff131b85b8bcffe29ce9e88ec2bacb2b829744d7"
 dependencies = [
  "arboard",
  "ceri-build",
@@ -852,13 +852,13 @@ dependencies = [
 
 [[package]]
 name = "ceri-build"
-version = "0.1.11"
-source = "git+https://github.com/zeo/ceri?tag=v0.1.11#3e290f820cb7b50df7f3b25fa4e863d2f3dda315"
+version = "0.1.12"
+source = "git+https://github.com/zeo/ceri?tag=v0.1.12#ff131b85b8bcffe29ce9e88ec2bacb2b829744d7"
 
 [[package]]
 name = "ceri-engine"
-version = "0.1.11"
-source = "git+https://github.com/zeo/ceri?tag=v0.1.11#3e290f820cb7b50df7f3b25fa4e863d2f3dda315"
+version = "0.1.12"
+source = "git+https://github.com/zeo/ceri?tag=v0.1.12#ff131b85b8bcffe29ce9e88ec2bacb2b829744d7"
 dependencies = [
  "brotli-decompressor",
  "serde_json",
